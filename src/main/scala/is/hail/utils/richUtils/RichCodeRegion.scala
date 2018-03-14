@@ -68,6 +68,10 @@ class RichCodeRegion(val region: Code[Region]) extends AnyVal {
     region.invoke[Long, Long]("loadAddress", off)
   }
 
+  def loadString(off: Code[Long]): Code[String] = {
+    region.invoke[Long, String]("loadString", off)
+  }
+
   def loadBit(byteOff: Code[Long], bitOff: Code[Long]): Code[Boolean] = {
     region.invoke[Long, Long, Boolean]("loadBit", byteOff, bitOff)
   }
@@ -78,6 +82,7 @@ class RichCodeRegion(val region: Code[Region]) extends AnyVal {
     case _: TInt64 => loadLong
     case _: TFloat32 => loadFloat
     case _: TFloat64 => loadDouble
+    case _: TString => loadString
     case _: TArray => loadAddress
     case _: TBinary => loadAddress
     case _: TBaseStruct => off => off

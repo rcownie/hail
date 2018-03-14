@@ -8,6 +8,8 @@ import scala.collection.generic.Growable
 import scala.language.implicitConversions
 import scala.reflect.ClassTag
 
+import is.hail.utils._
+
 package object asm4s {
 
   def typeInfo[T](implicit tti: TypeInfo[T]): TypeInfo[T] = tti
@@ -201,6 +203,8 @@ package object asm4s {
 
   implicit def toCodeArray[T](c: Code[Array[T]])(implicit tti: TypeInfo[T]): CodeArray[T] = new CodeArray(c)
 
+  implicit def toCodeString(c: Code[String]): CodeString = new CodeString(c)
+
   implicit def toCodeObject[T <: AnyRef : ClassTag](c: Code[T]): CodeObject[T] =
     new CodeObject(c)
 
@@ -231,6 +235,15 @@ package object asm4s {
   implicit def toCodeArray[T](f: LocalRef[Array[T]])(implicit tti: TypeInfo[T]): CodeArray[T] = new CodeArray(f.load())
 
   implicit def toCodeBoolean(f: LocalRef[Boolean]): CodeBoolean = new CodeBoolean(f.load())
+
+/*
+  implicit def toCodeString(f: LocalRef[Array[Byte]]): CodeString = {
+    new CodeString(
+      // Parameters to String constructor are (byteArray, offset, length)
+      Code.invokeStatic[String, Array[Byte], Long, Long, String]("String", )
+    )
+  }
+ */
 
   implicit def toCodeObject[T <: AnyRef : ClassTag](f: LocalRef[T]): CodeObject[T] = new CodeObject[T](f.load())
 

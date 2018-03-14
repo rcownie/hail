@@ -10,6 +10,8 @@ import org.objectweb.asm.tree._
 import scala.collection.generic.Growable
 import scala.reflect.ClassTag
 
+import is.hail.utils._
+
 object Code {
   def apply[T](insn: => AbstractInsnNode): Code[T] = new Code[T] {
     def emit(il: Growable[AbstractInsnNode]): Unit = {
@@ -550,6 +552,30 @@ class CodeArray[T](val lhs: Code[Array[T]])(implicit tti: TypeInfo[T]) {
     Code(lhs, new InsnNode(ARRAYLENGTH))
 }
 
+class CodeString(val lhs: Code[String]) extends AnyVal {
+  /*
+  def ceq(rhs: Code[String]): Code[Boolean] = {
+    info("CodeString.ceq ...")
+    lhs.invoke[String]("equals", rhs)
+  }
+
+  def cne(rhs: Code[String]): Code[Boolean] = {
+    info("CodeString.cne ...")
+    ! lhs.invoke[String]("equals", rhs)
+  }
+
+  def contains(rhs: Code[String]): Code[Boolean] = {
+    info("CodeString.contains ...")
+    ! lhs.invoke[String]("contains", rhs)
+  }
+
+  def matches(rhs: Code[String]): Code[Boolean] = {
+    info("CodeString.matches ...")
+    lhs.invoke[String]("matches", rhs)
+  }
+  */
+}
+
 object Invokeable {
   def apply[T](c: Constructor[_])(implicit tct: ClassTag[T]): Invokeable[T, Unit] = new Invokeable[T, Unit]("<init>",
     isStatic = false,
@@ -606,7 +632,13 @@ class Invokeable[T, S](val name: String,
   val invokeOp: Int,
   val descriptor: String,
   val concreteReturnType: Class[_])(implicit tct: ClassTag[T], sct: ClassTag[S]) {
-  def invoke(lhs: Code[T], args: Array[Code[_]]): Code[S] =
+  def invoke(lhs: Code[T], args: Array[Code[_]]): Code[S] = {
+    info(s"DEBUG: Invokeable(name ${name}, isStatic ${isStatic}, desc ${descriptor}")
+    if (name.equals("loadAddress")) {
+      info("loadAddress - before brk")
+      info("loadAddress - after brk")
+
+    }
     new Code[S] {
       def emit(il: Growable[AbstractInsnNode]): Unit = {
         if (!isStatic && lhs != null)
@@ -621,6 +653,7 @@ class Invokeable[T, S](val name: String,
         }
       }
     }
+  }
 }
 
 object FieldRef {

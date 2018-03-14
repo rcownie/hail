@@ -117,15 +117,27 @@ object BinaryOp {
         case _ => incompatible(lt, rt, op)
       }
     case (_: TString, _: TString) =>
-      // RegionValue stores length and encoded bytes from String.getBytes
-
+      // The operands may be either Code[String] or Code[LocalRef[Array[Byte]]] -
+      // so we may need to build a String
+      info(s"DEBUG: l is ${l}")
+      info(s"DEBUG: r is ${r}")
+      l match {
+        case _: Code[Long] => info("DEBUG: l is Code[Long]")
+        case _ =>
+      }
+      r match {
+        case _: Code[Long] => info("DEBUG: r is Code[Long]")
+        case _ =>
+      }
       val ll = coerce[String](l)
       val rr = coerce[String](r)
+      info(s"DEBUG: ll is ${ll}")
+      info(s"DEBUG: rr is ${rr}")
       op match {
         case EQ() =>
           ll.invoke[Object, Boolean]("equals", Code.checkcast[Object](rr))
         case NEQ() =>
-          ! ll.invoke[Object, Boolean]("equals", rr)
+          ! Code.checkcast[String](ll).invoke[Object, Boolean]("equals", Code.checkcast[Object](rr))
         case _ => incompatible(lt, rt, op)
       }
 

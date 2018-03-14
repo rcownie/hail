@@ -84,6 +84,17 @@ final class Region(private var mem: Array[Byte], private var end: Long = 0) exte
     Memory.memcpy(to, toOff, mem, off, n)
   }
 
+  /**
+    * @param stringFieldOff offset-within-Region of a string-ref
+    * @return String made by default-decoding of referenced bytes
+    */
+  def loadString(stringFieldOff: Long): String = {
+    val lengthOff = loadAddress(stringFieldOff)
+    val arrayOff = (lengthOff.toInt + 4)
+    val length = loadInt(lengthOff)
+    new String(mem, arrayOff, length)
+  }
+
   def storeInt(off: Long, i: Int) {
     assert(size <= capacity)
     assert(off >= 0 && off + 4 <= size)
