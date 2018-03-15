@@ -637,7 +637,6 @@ class Invokeable[T, S](val name: String,
     if (name.equals("loadAddress")) {
       info("loadAddress - before brk")
       info("loadAddress - after brk")
-
     }
     new Code[S] {
       def emit(il: Growable[AbstractInsnNode]): Unit = {

@@ -82,9 +82,13 @@ class RichCodeRegion(val region: Code[Region]) extends AnyVal {
     case _: TInt64 => loadLong
     case _: TFloat32 => loadFloat
     case _: TFloat64 => loadDouble
-    case _: TString => loadString
     case _: TArray => loadAddress
-    case _: TBinary => loadAddress
+    case _: TBinary =>
+      // Currently a TString is stored as fundamentalType TBinary
+      typ match {
+        case _: TString => loadString
+        case _ => loadAddress
+      }
     case _: TBaseStruct => off => off
   }
 

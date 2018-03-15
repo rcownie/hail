@@ -166,7 +166,7 @@ public final class Memory {
     public static void copyFromArray(long dst, byte[] src, long srcOff, long n) {
         unsafe.copyMemory(src, Unsafe.ARRAY_BYTE_BASE_OFFSET + srcOff, null, dst, n);
     }
-
+    
     static {
         Unsafe t;
         try {
