@@ -11,6 +11,7 @@ package object ir {
     case _: TFloat32 => typeInfo[Float]
     case _: TFloat64 => typeInfo[Double]
     case _: TBoolean => typeInfo[Boolean]
+    case _: TBinary => typeInfo[Long]
     case _: TArray => typeInfo[Long]
     case _: TBaseStruct => typeInfo[Long]
     case _ => throw new RuntimeException(s"unsupported type found, $t")
@@ -35,6 +36,16 @@ package object ir {
         else
           ir.GetField(s, f.name))
     })
+  }
+
+  // Build consistent expression for a filter-condition with keep polarity,
+  // using Let to manage missing-ness.
+  def filterPredicateWithKeep(irPred: ir.IR, keep: Boolean, letName: String): ir.IR = {
+    ir.Let(letName,
+      if (keep) irPred else ir.ApplyUnaryPrimOp(ir.Bang(), irPred),
+      ir.If(ir.IsNA(ir.Ref(letName)),
+        ir.False(),
+        ir.Ref(letName)))
   }
 
   private[ir] def coerce[T](c: Code[_]): Code[T] = asm4s.coerce(c)

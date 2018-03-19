@@ -34,7 +34,7 @@ object Infer {
         infer(cnsq)
         infer(altr)
         assert(cond.typ.isOfType(TBoolean()))
-        assert(cnsq.typ == altr.typ, s"${cnsq.typ}, ${altr.typ}")
+        assert(cnsq.typ == altr.typ, s"${cnsq.typ}, ${altr.typ}, $cond")
         x.typ = cnsq.typ
 
       case x@Let(name, value, body, _) =>
@@ -67,7 +67,7 @@ object Infer {
         infer(a)
         infer(i)
         assert(i.typ.isOfType(TInt32()))
-        x.typ = coerce[TArray](a.typ).elementType
+        x.typ = -coerce[TArray](a.typ).elementType
       case ArrayMissingnessRef(a, i) =>
         infer(a)
         infer(i)
@@ -153,7 +153,7 @@ object Infer {
         infer(o)
         val t = coerce[TStruct](o.typ)
         assert(t.index(name).nonEmpty)
-        x.typ = t.field(name).typ
+        x.typ = -t.field(name).typ
       case GetFieldMissingness(o, name) =>
         infer(o)
         val t = coerce[TStruct](o.typ)
@@ -165,7 +165,7 @@ object Infer {
         infer(o)
         val t = coerce[TTuple](o.typ)
         assert(idx >= 0 && idx < t.size)
-        x.typ = t.types(idx)
+        x.typ = -t.types(idx)
       case In(i, typ) =>
         assert(typ != null)
       case InMissingness(i) =>

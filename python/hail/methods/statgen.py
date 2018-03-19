@@ -1,3 +1,6 @@
+import itertools
+
+import hail as hl
 import hail.expr.aggregators as agg
 from hail.expr.expressions import *
 from hail.expr.types import *
@@ -5,23 +8,22 @@ from hail.genetics import KinshipMatrix
 from hail.genetics.reference_genome import reference_genome_type
 from hail.linalg import BlockMatrix
 from hail.matrixtable import MatrixTable
+from hail.methods.misc import require_biallelic, require_col_key_str
+from hail.stats import UniformDist, BetaDist, TruncatedBetaDist
 from hail.table import Table
 from hail.typecheck import *
 from hail.utils import wrap_to_list
 from hail.utils.java import *
 from hail.utils.misc import check_collisions
-from hail.methods.misc import require_biallelic, require_col_key_str
-from hail.stats import UniformDist, BetaDist, TruncatedBetaDist
-import itertools
 
 
 @typecheck(dataset=MatrixTable,
-           maf=nullable(expr_numeric),
+           maf=nullable(expr_float64),
            bounded=bool,
            min=nullable(numeric),
            max=nullable(numeric))
 def identity_by_descent(dataset, maf=None, bounded=True, min=None, max=None):
-    """Compute matrix of identity-by-descent estimations.
+    """Compute matrix of identity-by-descent estimates.
 
     .. include:: ../_templates/req_tvariant.rst
 
@@ -70,9 +72,9 @@ def identity_by_descent(dataset, maf=None, bounded=True, min=None, max=None):
     Parameters
     ----------
     dataset : :class:`.MatrixTable`
-        A variant-keyed :class:`.MatrixTable` containing genotype information.
-    maf : :class:`.Expression` of type :py:data:`.tfloat64`, optional
-        (optional) expression on `dataset` for the minor allele frequency.
+        Variant-keyed :class:`.MatrixTable` containing genotype information.
+    maf : :class:`.Float64Expression`, optional
+        Row-indexed expression for the minor allele frequency.
     bounded : :obj:`bool`
         Forces the estimations for `Z0``, ``Z1``, ``Z2``, and ``PI_HAT`` to take
         on biologically meaningful values (in the range [0,1]).
@@ -227,9 +229,9 @@ def impute_sex(call, aaf_threshold=0.0, include_par=False, female_threshold=0.2,
 
 
 @typecheck(dataset=MatrixTable,
-           ys=oneof(expr_numeric, listof(expr_numeric)),
-           x=expr_numeric,
-           covariates=listof(oneof(expr_numeric, expr_bool)),
+           ys=oneof(expr_float64, listof(expr_float64)),
+           x=expr_float64,
+           covariates=listof(expr_float64),
            root=str,
            block_size=int)
 def linear_regression(dataset, ys, x, covariates=[], root='linreg', block_size=16):
@@ -294,12 +296,12 @@ def linear_regression(dataset, ys, x, covariates=[], root='linreg', block_size=1
 
     Parameters
     ----------
-    ys : :class:`.NumericExpression` or (:obj:`list` of :class:`.NumericExpression`)
-        One or more response expressions.
-    x : :class:`.NumericExpression`
-        Input variable.
-    covariates : :obj:`list` of (:class:`.NumericExpression` or :class:`.BooleanExpression`
-        Covariate expressions.
+    y : :class:`.Float64Expression` or :obj:`list` of :class:`.Float64Expression`
+        One or more column-indexed response expressions.
+    x : :class:`.Float64Expression`
+        Row- and column-indexed expression for input variable.
+    covariates : :obj:`list` of :class:`.Float64Expression`
+        List of column-indexed covariate expressions.
     root : :obj:`str`
         Name of resulting row-indexed field.
     block_size : :obj:`int`
@@ -342,10 +344,10 @@ def linear_regression(dataset, ys, x, covariates=[], root='linreg', block_size=1
 
 
 @typecheck(dataset=MatrixTable,
-           test=str,
-           y=oneof(expr_bool, expr_numeric),
-           x=expr_numeric,
-           covariates=listof(oneof(expr_numeric, expr_bool)),
+           test=enumeration('wald', 'lrt', 'score', 'firth'),
+           y=expr_float64,
+           x=expr_float64,
+           covariates=listof(expr_float64),
            root=str)
 def logistic_regression(dataset, test, y, x, covariates=[], root='logreg'):
     r"""For each row, test a derived input variable for association with a
@@ -530,13 +532,15 @@ def logistic_regression(dataset, test, y, x, covariates=[], root='logreg'):
     ----------
     test : {'wald', 'lrt', 'score', 'firth'}
         Statistical test.
-    y : numeric or Boolean expression
-        Response expression. Must evaluate to Boolean or numeric with all values
-        0 or 1.
-    x : numeric expression
-        Expression for input variable.
-    covariates : :obj:`list` of :class:`.NumericExpression`, optional
-        Covariate expressions.
+    y : :class:`.Float64Expression`
+        Column-indexed response expression.
+        All non-missing values must evaluate to 0 or 1.
+        Note that a :class:`.BooleanExpression` will be implicitly converted to
+        a :class:`.Float64Expression` with this property.
+    x : :class:`.Float64Expression`
+        Row- and column-indexed expression for input variable.
+    covariates : :obj:`list` of :class:`.Float64Expression`
+        List of column-indexed covariate expressions.
     root : :obj:`str`, optional
         Name of resulting row-indexed field.
 
@@ -572,9 +576,9 @@ def logistic_regression(dataset, test, y, x, covariates=[], root='logreg'):
 
 @typecheck(ds=MatrixTable,
            kinship_matrix=KinshipMatrix,
-           y=expr_numeric,
-           x=expr_numeric,
-           covariates=listof(oneof(expr_numeric, expr_bool)),
+           y=expr_float64,
+           x=expr_float64,
+           covariates=listof(expr_float64),
            global_root=str,
            row_root=str,
            run_assoc=bool,
@@ -1015,12 +1019,12 @@ def linear_mixed_regression(ds, kinship_matrix, y, x, covariates=[], global_root
     ----------
     kinship_matrix : :class:`.KinshipMatrix`
         Kinship matrix to be used.
-    y : :class:`.NumericExpression`
-        Response sample expression.
-    x : :class:`.NumericExpression`
-        Input variable.
-    covariates : :obj:`list` of :class:`.NumericExpression`
-        List of covariate sample expressions.
+    y : :class:`.Float64Expression`
+        Column-indexed response expression.
+    x : :class:`.Float64Expression`
+        Row- and column-indexed expression for input variable.
+    covariates : :obj:`list` of :class:`.Float64Expression`
+        List of column-indexed covariate expressions.
     global_root : :obj:`str`
         Global field root.
     row_root : :obj:`str`
@@ -1078,10 +1082,10 @@ def linear_mixed_regression(ds, kinship_matrix, y, x, covariates=[], global_root
 
 @typecheck(dataset=MatrixTable,
            key_expr=expr_any,
-           weight_expr=expr_numeric,
-           y=oneof(expr_numeric, expr_bool),
-           x=expr_numeric,
-           covariates=listof(oneof(expr_numeric, expr_bool)),
+           weight_expr=expr_float64,
+           y=expr_float64,
+           x=expr_float64,
+           covariates=listof(expr_float64),
            logistic=bool,
            max_size=int,
            accuracy=numeric,
@@ -1215,13 +1219,13 @@ def skat(dataset, key_expr, weight_expr, y, x, covariates=[], logistic=False,
     ----------
     key_expr : :class:`.Expression`
         Row-indexed expression for key associated to each row.
-    weight_expr : :class:`.NumericExpression`
-        Row-indexed expression of numeric type for row weights.
-    y : :class:`.NumericExpression` or :class:`.BooleanExpression`
+    weight_expr : :class:`.Float64Expression`
+        Row-indexed expression for row weights.
+    y : :class:`.Float64Expression`
         Column-indexed response expression.
-    x : :class:`.NumericExpression`
+    x : :class:`.Float64Expression`
         Row- and column-indexed expression for input variable.
-    covariates : :obj:`list` of (:class:`.NumericExpression` or :class:`.BooleanExpression`)
+    covariates : :obj:`list` of :class:`.Float64Expression`
         List of column-indexed covariate expressions.
     logistic : :obj:`bool`
         If true, use the logistic test rather than the linear test.
@@ -1350,7 +1354,7 @@ def hwe_normalized_pca(dataset, k=10, compute_loadings=False, as_array=False):
         lambda mean_gt: hl.cond(hl.is_defined(dataset.GT),
                                 (dataset.GT.n_alt_alleles() - mean_gt) /
                                 hl.sqrt(mean_gt * (2 - mean_gt) * n_variants / 2),
-                                0))
+                                0.0))
     result = pca(entry_expr,
                  k,
                  compute_loadings,
@@ -1359,7 +1363,7 @@ def hwe_normalized_pca(dataset, k=10, compute_loadings=False, as_array=False):
     return result
 
 
-@typecheck(entry_expr=expr_numeric,
+@typecheck(entry_expr=expr_float64,
            k=int,
            compute_loadings=bool,
            as_array=bool)
@@ -2048,10 +2052,10 @@ def split_multi_hts(ds, keep_star=False, left_aligned=False):
         AD=hl.or_missing(hl.is_defined(ds.AD),
                          [hl.sum(ds.AD) - ds.AD[sm.a_index()], ds.AD[sm.a_index()]]),
         DP=ds.DP,
+        GQ=hl.gq_from_pl(pl),
         PL=pl
     )
-    split = sm.result()
-    return split.annotate_entries(GQ=hl.gq_from_pl(split.PL))
+    return sm.result()
 
 
 @typecheck(dataset=MatrixTable)

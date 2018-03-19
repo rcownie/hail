@@ -17,11 +17,10 @@ object LogisticRegression {
     xExpr: String,
     covExpr: Array[String],
     root: String): MatrixTable = {
-    val logRegTest = LogisticRegressionTest.tests.getOrElse(test,
-      fatal(s"Supported tests are ${ LogisticRegressionTest.tests.keys.mkString(", ") }, got: $test"))
+    val logRegTest = LogisticRegressionTest.tests(test)
 
     val ec = vsm.matrixType.genotypeEC
-    val xf = RegressionUtils.parseExprAsDouble(xExpr, ec)
+    val xf = RegressionUtils.parseFloat64Expr(xExpr, ec)
 
     val (y, cov, completeSampleIndex) = RegressionUtils.getPhenoCovCompleteSamples(vsm, yExpr, covExpr)
 
@@ -54,7 +53,7 @@ object LogisticRegression {
 
     val sc = vsm.sparkContext
 
-    val localGlobalAnnotationBc = sc.broadcast(vsm.globals)
+    val localGlobalAnnotationBc = vsm.globals.broadcast
     val sampleAnnotationsBc = vsm.colValuesBc
 
     val completeSampleIndexBc = sc.broadcast(completeSampleIndex)

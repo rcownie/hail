@@ -1,14 +1,16 @@
-from pyspark.sql import DataFrame
-import hail
-from hail.expr.expressions import *
-from hail.expr.expr_ast import *
-from hail.expr.types import *
-from hail.typecheck import *
-from hail.utils import wrap_to_list, storage_level, LinkedList
-from hail.utils.java import *
-from hail.utils.misc import get_nice_field_error, get_nice_attr_error, check_collisions, check_field_uniqueness
 import itertools
 
+from pyspark.sql import DataFrame
+
+import hail
+import hail as hl
+from hail.expr.expr_ast import *
+from hail.expr.expressions import *
+from hail.expr.types import *
+from hail.typecheck import *
+from hail.utils import wrap_to_list, storage_level, LinkedList, Struct
+from hail.utils.java import *
+from hail.utils.misc import get_nice_field_error, get_nice_attr_error, check_collisions, check_field_uniqueness
 
 table_type = lazy()
 
@@ -1205,7 +1207,7 @@ class Table(ExprContainer):
                     uids = [Env.get_uid() for _ in range(len(exprs))]
 
                     def joiner(left):
-                        from hail.expr import functions, aggregators as agg
+                        from hail.expr import aggregators as agg
 
                         rk_uids = [Env.get_uid() for _ in left.row_key]
                         k_uid = Env.get_uid()
@@ -1715,14 +1717,7 @@ class Table(ExprContainer):
         -------
         :obj:`bool`
         """
-        expr = to_expr(expr)
-        analyze('Table.all', expr, self._row_indices)
-        base, cleanup = self._process_joins(expr)
-        if expr.dtype != tbool:
-            raise TypeError("method 'filter' expects an expression of type 'bool', found '{}'"
-                            .format(expr.dtype))
-
-        return base._jt.forall(expr._ast.to_hql())
+        return self.aggregate(hail.agg.all(expr))
 
     @typecheck_method(expr=BooleanExpression)
     def any(self, expr):
@@ -1746,14 +1741,7 @@ class Table(ExprContainer):
         :obj:`bool`
             ``True`` if the predicate evaluated for ``True`` for any row, otherwise ``False``.
         """
-        expr = to_expr(expr)
-        analyze('Table.any', expr, self._row_indices)
-        base, cleanup = self._process_joins(expr)
-        if expr.dtype != tbool:
-            raise TypeError("method 'filter' expects an expression of type 'bool', found '{}'"
-                            .format(expr.dtype))
-
-        return base._jt.exists(expr._ast.to_hql())
+        return self.aggregate(hail.agg.any(expr))
 
     @typecheck_method(mapping=dictof(str, str))
     def rename(self, mapping):

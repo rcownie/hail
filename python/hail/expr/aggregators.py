@@ -1,3 +1,4 @@
+import hail as hl
 from hail.typecheck import *
 from hail.expr.expressions import *
 from hail.expr.expr_ast import *
@@ -586,6 +587,7 @@ def stats(expr):
     agg = _to_agg(expr)
     if not is_numeric(agg._type):
         raise TypeError("'stats' expects a numeric argument, found '{}'".format(agg._type))
+    agg = Expression._promote_numeric(agg, tfloat64)
     return _agg_func('stats', agg, tstruct(mean=tfloat64,
                                            stdev=tfloat64,
                                            min=tfloat64,
@@ -629,6 +631,7 @@ def product(expr):
     agg = _to_agg(expr)
     if not is_numeric(agg._type):
         raise TypeError("'product' expects a numeric argument, found '{}'".format(agg._type))
+    agg = Expression._promote_numeric(agg, tfloat64)
     return _agg_func('product', agg, agg._type)
 
 @typecheck(predicate=oneof(Aggregable, expr_bool))
@@ -728,7 +731,7 @@ def hardy_weinberg(expr):
     return _agg_func('hardyWeinberg', agg, t)
 
 
-@typecheck(expr=oneof(Aggregable, expr_array(...), expr_set(...)))
+@typecheck(expr=oneof(Aggregable, expr_array(), expr_set()))
 def explode(expr):
     """Explode an array or set expression to aggregate the elements of all records.
 
@@ -1004,7 +1007,7 @@ def call_stats(expr, alleles):
     return construct_expr(ast, t, Indices(source=indices.source),
                           aggregations.push(Aggregation(agg, alleles)), joins)
 
-@typecheck(expr=oneof(Aggregable, expr_numeric), start=numeric, end=numeric, bins=numeric)
+@typecheck(expr=oneof(Aggregable, expr_numeric), start=expr_float64, end=expr_float64, bins=expr_int32)
 def hist(expr, start, end, bins):
     """Compute binned counts of a numeric expression.
 
@@ -1053,8 +1056,9 @@ def hist(expr, start, end, bins):
     agg = _to_agg(expr)
     if not is_numeric(agg._type):
         raise TypeError("'hist' expects argument 'expr' to be a numeric type, found '{}'".format(agg._type))
+    agg = Expression._promote_numeric(agg, tfloat64)
     t = tstruct(bin_edges=tarray(tfloat64),
                 bin_freq=tarray(tint64),
-                nLess=tint64,
+                n_less=tint64,
                 n_larger=tint64)
     return _agg_func('hist', agg, t, start, end, bins)

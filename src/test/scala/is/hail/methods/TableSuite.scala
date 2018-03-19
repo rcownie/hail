@@ -86,7 +86,7 @@ class TableSuite extends SparkSuite {
   @Test def testAnnotate() {
     val inputFile = "src/test/resources/sampleAnnotations.tsv"
     val kt1 = hc.importTable(inputFile, impute = true).keyBy("Sample")
-    val kt2 = kt1.annotate("""qPhen2 = pow(row.qPhen, 2), NotStatus = row.Status == "CASE", X = row.qPhen == 5""")
+    val kt2 = kt1.annotate("""qPhen2 = pow(row.qPhen.toFloat64, 2d), NotStatus = row.Status == "CASE", X = row.qPhen == 5""")
     val kt3 = kt2.annotate("")
     val kt4 = kt3.select(kt3.fieldNames.map(n => s"row.$n")).keyBy("qPhen", "NotStatus")
 
@@ -383,7 +383,7 @@ class TableSuite extends SparkSuite {
     val statComb = localData.flatMap { ld => ld.qPhen }
       .aggregate(new StatCounter())({ case (sc, i) => sc.merge(i) }, { case (sc1, sc2) => sc1.merge(sc2) })
 
-    val Array(ktMean, ktStDev) = kt.query(Array("AGG.map(r => r.qPhen).stats().mean", "AGG.map(r => r.qPhen).stats().stdev")).map(_._1)
+    val Array(ktMean, ktStDev) = kt.query(Array("AGG.map(r => r.qPhen.toFloat64).stats().mean", "AGG.map(r => r.qPhen.toFloat64).stats().stdev")).map(_._1)
 
     assert(D_==(ktMean.asInstanceOf[Double], statComb.mean))
     assert(D_==(ktStDev.asInstanceOf[Double], statComb.stdev))
@@ -431,125 +431,6 @@ class TableSuite extends SparkSuite {
     val kt = hc.importTable("src/test/resources/sampleAnnotations.tsv", impute = true).keyBy("Sample")
     assert(kt.join(kt, "inner").forall("(isMissing(row.Status) || row.Status == row.Status_1) && " +
       "(isMissing(row.qPhen) || row.qPhen == row.qPhen_1)"))
-  }
-
-  @Test def testUngroup() {
-    // test Table method
-    val data1 = Array(
-      Array("Sample1", 5, Row(23.0f, "rabbit"), Row(1, "foo")),
-      Array("Sample1", 5, null, Row(1, "foo")))
-    val sig1 = TStruct(
-      ("field0", TString()),
-      ("field1", TInt32()),
-      ("field2", TStruct(("1", TFloat32()), ("2", TString()))),
-      ("field3", TStruct(("1", TInt32()), ("2", TString()))))
-    val kt1 = Table(hc, sc.parallelize(data1.map(Row.fromSeq(_))), sig1)
-    kt1.typeCheck()
-
-    val ungroupedData1 = Array(
-      Array("Sample1", 5, 1, "foo", 23.0f, "rabbit"),
-      Array("Sample1", 5, 1, "foo", null, null))
-    val ungroupedSig1 = TStruct(
-      ("field0", TString()),
-      ("field1", TInt32()),
-      ("1", TInt32()),
-      ("2", TString()),
-      ("field2.1", TFloat32()),
-      ("field2.2", TString())
-    )
-    val ungroupedKt1 = Table(hc, sc.parallelize(ungroupedData1.map(Row.fromSeq(_))), ungroupedSig1)
-    ungroupedKt1.typeCheck()
-
-    assert(kt1.ungroup("field3").ungroup("field2", mangle = true).same(ungroupedKt1))
-
-    TestUtils.interceptFatal("Can only ungroup fields of type Struct, but found type") {
-      kt1.ungroup("field0")
-    }
-    TestUtils.interceptFatal("Struct does not have field with name") {
-      kt1.ungroup("nonExistentField")
-    }
-    TestUtils.interceptFatal("Either rename manually or use the 'mangle' option to handle duplicates") {
-      kt1.ungroup("field2").ungroup("field3")
-    }
-
-    // test ungroup/group gives same result
-    val data2 = Array(Array(Row(23, 1)))
-    val rdd2 = sc.parallelize(data2.map(Row.fromSeq(_)))
-    val kt2 = Table(hc, rdd2, TStruct(("A", TStruct(("c1", TInt32()), ("c2", TInt32())))))
-    kt2.typeCheck()
-    assert(kt2.ungroup("A").group("A", Array("c1", "c2")).same(kt2))
-
-    // test function registry method
-    val data3 = Array(Array(Row(6, Row("hello"))))
-    val sig3 = TStruct(("foo", TStruct(("a", TInt32()), ("b", TStruct(("i", TString()))))))
-    val kt3 = Table(hc, sc.parallelize(data3.map(Row.fromSeq(_))), sig3)
-    kt3.typeCheck()
-
-    val ungroupedData3 = Array(Array(Row(6, "hello")))
-    val ungroupedSig3 = TStruct(("foo", TStruct(("a", TInt32()), ("i", TString()))))
-    val ungroupedKt3 = Table(hc, sc.parallelize(ungroupedData3.map(Row.fromSeq(_))), ungroupedSig3)
-    ungroupedKt3.typeCheck()
-
-    assert(kt3.annotate("foo = ungroup(row.foo, b, false)").same(ungroupedKt3))
-    assert(!kt3.annotate("foo = ungroup(row.foo, b, false)").same(kt3.annotate("foo = ungroup(row.foo, b, true)")))
-
-    TestUtils.interceptFatal("invalid arguments for method") {
-      kt3.annotate("foo = ungroup(foo)")
-    }
-    TestUtils.interceptFatal("expects a Struct argument in the first position") {
-      kt3.annotate("foo = ungroup(false, b, true)")
-    }
-    TestUtils.interceptFatal("Expected boolean argument in the third position, but found a") {
-      kt3.annotate("foo = ungroup(row.foo, b, b)")
-    }
-  }
-
-  @Test def testGroup() {
-    val data = Array(
-      Row("Sample1", Row(23.0f, "rabbit"), 9, 5))
-
-    val rdd = sc.parallelize(data)
-    val kt = Table(hc, rdd, TStruct(
-      ("Sample", TString()),
-      ("field0", TStruct(("1", TFloat32()), ("2", TString()))),
-      ("field1", TInt32()),
-      ("field2", TInt32())), key = Array("Sample"))
-    kt.typeCheck()
-
-    assert(kt.group("dest", Array("Sample", "field0")).signature == TStruct(("field1", TInt32()), ("field2", TInt32()),
-      ("dest", TStruct(("Sample", TString()), ("field0", TStruct(("1", TFloat32()), ("2", TString())))))))
-
-    assert(kt.group("Sample", Array("Sample", "field0")).signature == TStruct(("field1", TInt32()), ("field2", TInt32()),
-      ("Sample", TStruct(("Sample", TString()), ("field0", TStruct(("1", TFloat32()), ("2", TString())))))))
-
-    TestUtils.interceptFatal("Struct does not have field with name") {
-      kt.group("foo", Array("nonExistentField"))
-    }
-
-    val data2 = Array(Row(Row("Sample1", 5)))
-    val rdd2 = sc.parallelize(data2)
-    val kt2 = Table(hc, rdd2, TStruct(("foo", TStruct(("a", TString()), ("b", TInt32())))))
-    kt2.typeCheck()
-
-    val dataExpected = Array(Array(Row("Sample1", 5), Row(Row(5, "Sample1"))))
-    val sigExpected = TStruct(("foo", TStruct(("a", TString()), ("b", TInt32()))), ("X", TStruct(("a", TStruct(("b", TInt32()), ("a", TString()))))))
-    val kt2Expected = Table(hc, sc.parallelize(dataExpected.map(Row.fromSeq(_))), sigExpected)
-    kt2Expected.typeCheck()
-
-    assert(kt2.annotate("X = group(row.foo, a, b, a)").same(kt2Expected))
-
-    TestUtils.interceptFatal("Duplicate") {
-      kt2.annotate("X = group(row.foo, a, b, b)")
-    }
-    TestUtils.interceptFatal("Expected struct field identifiers after the first position, but found a") {
-      kt2.annotate("X = group(row.foo, x, true)")
-    }
-    TestUtils.interceptFatal("too few arguments for method") {
-      kt2.annotate("X = group(row.foo, a)")
-    }
-    TestUtils.interceptFatal("Struct does not have field with name") {
-      kt2.annotate("X = group(row.foo, x, y)")
-    }
   }
 
   @Test def issue2231() {
