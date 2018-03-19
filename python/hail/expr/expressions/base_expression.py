@@ -1,12 +1,10 @@
-import itertools
-from typing import *
-
 import hail
+import hail as hl
 from hail.expr import expressions
 from hail.expr.expr_ast import *
 from hail.expr.types import *
 from hail.genetics import Locus, Call
-from hail.utils.interval import Interval
+from hail.utils import Interval, Struct
 from hail.utils.java import *
 from hail.utils.linkedlist import LinkedList
 from hail.utils.misc import plural
@@ -94,7 +92,7 @@ def impute_type(x):
         raise ExpressionException("Hail cannot automatically impute type of {}: {}".format(type(x), x))
 
 
-def to_expr(e, dtype=None):
+def to_expr(e, dtype=None) -> 'Expression':
     if isinstance(e, Expression):
         if dtype and not dtype == e.dtype:
             raise TypeError("expected expression of type '{}', found expression of type '{}'".format(dtype, e.dtype))
@@ -127,31 +125,30 @@ def _to_expr(e, dtype):
         return e
     elif isinstance(dtype, tstruct):
         new_fields = []
-        any_expr = False
+        found_expr = False
         for f, t in dtype.items():
             value = _to_expr(e[f], t)
-            any_expr = any_expr or isinstance(value, Expression)
+            found_expr = found_expr or isinstance(value, Expression)
             new_fields.append(value)
 
-        if not any_expr:
+        if not found_expr:
             return e
         else:
             exprs = [new_fields[i] if isinstance(new_fields[i], Expression)
                      else hl.literal(new_fields[i], dtype[i])
                      for i in range(len(new_fields))]
-            indices, aggregations, joins = unify_all(*exprs)
-            return expressions.construct_expr(StructDeclaration(list(dtype),
-                                                                [expr._ast for expr in exprs]),
-                                              dtype, indices, aggregations, joins)
+            fields = {name: expr for name, expr in zip(dtype.keys(), exprs)}
+            from .typed_expressions import StructExpression
+            return StructExpression._from_fields(fields)
 
     elif isinstance(dtype, tarray):
         elements = []
-        any_expr = False
+        found_expr = False
         for element in e:
             value = _to_expr(element, dtype.element_type)
-            any_expr = any_expr or isinstance(value, Expression)
+            found_expr = found_expr or isinstance(value, Expression)
             elements.append(value)
-        if not any_expr:
+        if not found_expr:
             return e
         else:
             assert (len(elements) > 0)
@@ -163,12 +160,12 @@ def _to_expr(e, dtype):
                                           dtype, indices, aggregations, joins)
     elif isinstance(dtype, tset):
         elements = []
-        any_expr = False
+        found_expr = False
         for element in e:
             value = _to_expr(element, dtype.element_type)
-            any_expr = any_expr or isinstance(value, Expression)
+            found_expr = found_expr or isinstance(value, Expression)
             elements.append(value)
-        if not any_expr:
+        if not found_expr:
             return e
         else:
             assert (len(elements) > 0)
@@ -180,13 +177,13 @@ def _to_expr(e, dtype):
                                                      tarray(dtype.element_type), indices, aggregations, joins))
     elif isinstance(dtype, ttuple):
         elements = []
-        any_expr = False
+        found_expr = False
         assert len(e) == len(dtype.types)
         for i in range(len(e)):
             value = _to_expr(e[i], dtype.types[i])
-            any_expr = any_expr or isinstance(value, Expression)
+            found_expr = found_expr or isinstance(value, Expression)
             elements.append(value)
-        if not any_expr:
+        if not found_expr:
             return e
         else:
             exprs = [elements[i] if isinstance(elements[i], Expression)
@@ -198,15 +195,15 @@ def _to_expr(e, dtype):
     elif isinstance(dtype, tdict):
         keys = []
         values = []
-        any_expr = False
+        found_expr = False
         for k, v in e.items():
             k_ = _to_expr(k, dtype.key_type)
             v_ = _to_expr(v, dtype.value_type)
-            any_expr = any_expr or isinstance(k_, Expression)
-            any_expr = any_expr or isinstance(v_, Expression)
+            found_expr = found_expr or isinstance(k_, Expression)
+            found_expr = found_expr or isinstance(v_, Expression)
             keys.append(k_)
             values.append(v_)
-        if not any_expr:
+        if not found_expr:
             return e
         else:
             assert len(keys) > 0
@@ -219,52 +216,9 @@ def _to_expr(e, dtype):
     else:
         raise NotImplementedError(dtype)
 
-
-_lazy_int32 = lazy()
-_lazy_numeric = lazy()
-_lazy_array = lazy()
-_lazy_set = lazy()
-_lazy_dict = lazy()
-_lazy_bool = lazy()
-_lazy_struct = lazy()
-_lazy_tuple = lazy()
-_lazy_string = lazy()
-_lazy_locus = lazy()
-_lazy_interval = lazy()
-_lazy_call = lazy()
-_lazy_expr = lazy()
-
-expr_int32 = transformed((_lazy_int32, identity),
-                         (int, to_expr))
-expr_numeric = transformed((_lazy_numeric, identity),
-                           (int, to_expr),
-                           (float, to_expr))
-expr_array = transformed((list, to_expr),
-                         (_lazy_array, identity))
-expr_set = transformed((set, to_expr),
-                       (_lazy_set, identity))
-expr_dict = transformed((dict, to_expr),
-                        (_lazy_dict, identity))
-expr_bool = transformed((bool, to_expr),
-                        (_lazy_bool, identity))
-expr_struct = transformed((Struct, to_expr),
-                          (_lazy_struct, identity))
-expr_tuple = transformed((tuple, to_expr),
-                         (_lazy_tuple, identity))
-expr_str = transformed((str, to_expr),
-                       (_lazy_string, identity))
-expr_locus = transformed((Locus, to_expr),
-                         (_lazy_locus, identity))
-expr_interval = transformed((Interval, to_expr),
-                            (_lazy_interval, identity))
-expr_call = transformed((Call, to_expr),
-                        (_lazy_call, identity))
-expr_any = transformed((_lazy_expr, identity),
-                       (anytype, to_expr))
-
-
 def unify_all(*exprs) -> Tuple[Indices, LinkedList, LinkedList]:
-    assert len(exprs) > 0
+    if len(exprs) == 0:
+        return Indices(), LinkedList(Join), LinkedList(Aggregation)
     try:
         new_indices = Indices.unify(*[e._indices for e in exprs])
     except ExpressionException:
@@ -272,7 +226,7 @@ def unify_all(*exprs) -> Tuple[Indices, LinkedList, LinkedList]:
         from collections import defaultdict
         sources = defaultdict(lambda: [])
         for e in exprs:
-            from .utils import get_refs
+            from .expression_utils import get_refs
             for name, inds in get_refs(e, *e._aggregations.exprs):
                 sources[inds.source].append(str(name))
         raise ExpressionException("Cannot combine expressions from different source objects."
@@ -398,6 +352,55 @@ class Expression(object):
 
     def __iter__(self):
         raise TypeError("'Expression' object is not iterable")
+
+    def _promote_scalar(self, typ):
+        if typ == tint32:
+            return hail.int32(self)
+        elif typ == tint64:
+            return hail.int64(self)
+        elif typ == tfloat32:
+            return hail.float32(self)
+        else:
+            assert typ == tfloat64
+            return hail.float64(self)
+
+    def _promote_numeric(self, typ):
+        if isinstance(typ, tarray):
+            if isinstance(self.dtype, tarray):
+                return hail.map(lambda x: x._promote_scalar(typ.element_type), self)
+            else:
+                return self._promote_scalar(typ.element_type)
+        elif isinstance(self, expressions.Aggregable):
+            return self._map(lambda x: x._promote_scalar(typ))
+        else:
+            return self._promote_scalar(typ)
+
+    def _bin_op_numeric_unify_types(self, name, other):
+        t = unify_types(self.dtype._scalar_type(), other.dtype._scalar_type())
+        if t is None:
+            raise NotImplementedError("'{}' {} '{}'".format(
+                self.dtype, name, other.dtype))
+        if isinstance(self.dtype, tarray) or isinstance(other.dtype, tarray):
+            t = tarray(t)
+        return t
+
+    def _bin_op_numeric(self, name, other, ret_type_f=None):
+        other = to_expr(other)
+        unified_type = self._bin_op_numeric_unify_types(name, other)
+        me = self._promote_numeric(unified_type)
+        other = other._promote_numeric(unified_type)
+        if ret_type_f:
+            if isinstance(unified_type, tarray):
+                ret_type = tarray(ret_type_f(unified_type.element_type))
+            else:
+                ret_type = ret_type_f(unified_type)
+        else:
+            ret_type = unified_type
+        return me._bin_op(name, other, ret_type)
+
+    def _bin_op_numeric_reverse(self, name, other, ret_type_f=None):
+        other = to_expr(other)
+        return other._bin_op_numeric(name, self, ret_type_f)
 
     def _unary_op(self, name):
         return expressions.construct_expr(UnaryOperation(self._ast, name),
@@ -768,6 +771,16 @@ class Aggregable(object):
 
     def __ne__(self, other):
         raise NotImplementedError('Comparison of aggregable collections is undefined')
+
+    def _map(self, f):
+        uid = Env.get_uid()
+        ref = expressions.construct_expr(
+            VariableReference(uid), self._type, self._indices, self._aggregations, self._joins)
+        mapped = f(ref)
+        indices, aggregations, joins = unify_all(ref, mapped)
+        return expressions.Aggregable(
+            LambdaClassMethod('map', uid, self._ast, mapped._ast), mapped.dtype,
+            indices, aggregations, joins)
 
     @property
     def dtype(self) -> HailType:

@@ -373,6 +373,11 @@ class TableTests(unittest.TestCase):
         kt2 = kt2.annotate_globals(kt_foo=kt[:].foo)
         self.assertEqual(kt2.globals.kt_foo.value, 5)
 
+    def test_join_with_key(self):
+        ht = hl.utils.range_table(10)
+        ht1 = ht.annotate(foo = 5)
+        self.assertTrue(ht.all(ht1[ht.key].foo == 5))
+
     def test_index_maintains_count(self):
         t1 = hl.Table.parallelize([
             {'a': 'foo', 'b': 1},
@@ -499,6 +504,13 @@ class TableTests(unittest.TestCase):
         g = t1.collect_by_key().explode('values')
         g = g.transmute(**g.values)
         self.assertTrue(g._same(t1))
+
+    def test_str_annotation_regression(self):
+        t = hl.Table.parallelize([{'alleles': ['A', 'T']}],
+                                 hl.tstruct(alleles=hl.tarray(hl.tstr)))
+        t = t.annotate(ref = t.alleles[0])
+        t._force_count()
+
 
 class MatrixTests(unittest.TestCase):
     def get_vds(self, min_partitions=None) -> hl.MatrixTable:
@@ -653,6 +665,19 @@ class MatrixTests(unittest.TestCase):
 
         self.assertTrue(rt.all(rt.y2 == 2))
         self.assertTrue(ct.all(ct.c2 == 2))
+
+    def test_joins_with_key_structs(self):
+        mt = self.get_vds()
+
+        rows = mt.rows()
+        cols = mt.cols()
+
+        self.assertEqual(rows[mt.locus, mt.alleles].take(1), rows[mt.row_key].take(1))
+        self.assertEqual(cols[mt.s].take(1), cols[mt.col_key].take(1))
+
+        self.assertEqual(mt[mt.row_key, :].take(1), mt[(mt.locus, mt.alleles), :].take(1))
+        self.assertEqual(mt[:, mt.col_key].take(1), mt[:, mt.s].take(1))
+        self.assertEqual(mt[mt.row_key, mt.col_key].take(1), mt[(mt.locus, mt.alleles), mt.s].take(1))
 
     def test_table_join(self):
         ds = self.get_vds()
@@ -922,7 +947,6 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(mt['s'][0].take(1), [mt.cols().select('s').take(1)[0].s[0]])
 
 
-
 class GroupedMatrixTests(unittest.TestCase):
 
     def get_groupable_matrix(self):
@@ -1116,8 +1140,6 @@ class ColumnTests(unittest.TestCase):
                     'x27': False, 'x28': True, 'x29': False,
                     'x30': False, 'x31': True, 'x32': False,
                     'x33': False, 'x34': False, 'x35': False, 'x36': True}
-
-        self.maxDiff = 2000
 
         for k, v in expected.items():
             if isinstance(v, float):

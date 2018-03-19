@@ -52,12 +52,12 @@ class SplitMultiRowIR(rowIRs: Array[(String, IR)], entryIRs: Array[(String, IR)]
 
   val (t, splitRow): (Type, () => AsmFunction13[Region, Long, Boolean, Long, Boolean, Long, Boolean, Long, Boolean, Int, Boolean, Boolean, Boolean, Long]) =
     Compile[Long, Long, Long, Long, Int, Boolean, Long](
-      "global", RegionValueRep[Long](oldMatrixType.globalType),
-      "newLocus", RegionValueRep[Long](oldMatrixType.rowType.fieldByName("locus").typ),
-      "newAlleles", RegionValueRep[Long](oldMatrixType.rowType.fieldByName("alleles").typ),
-      "va", RegionValueRep[Long](oldMatrixType.rvRowType),
-      "aIndex", RegionValueRep[Int](TInt32()),
-      "wasSplit", RegionValueRep[Boolean](TBoolean()),
+      "global", oldMatrixType.globalType,
+      "newLocus", oldMatrixType.rowType.fieldByName("locus").typ,
+      "newAlleles", oldMatrixType.rowType.fieldByName("alleles").typ,
+      "va", oldMatrixType.rvRowType,
+      "aIndex", TInt32(),
+      "wasSplit", TBoolean(),
       newRowIR)
 
   val newMatrixType: MatrixType = oldMatrixType.copy(rvRowType = coerce[TStruct](t))
@@ -293,7 +293,7 @@ class SplitMulti(vsm: MatrixTable, variantExpr: String, genotypeExpr: String, ke
 
   def split(sortAlleles: Boolean, removeLeftAligned: Boolean, removeMoving: Boolean, verifyLeftAligned: Boolean): RDD[RegionValue] = {
     val localKeepStar = keepStar
-    val localGlobalAnnotation = vsm.globals
+    val globalsBc = vsm.globals.broadcast
     val localNSamples = vsm.numCols
     val localRowType = vsm.rvRowType
     val localMatrixType = vsm.matrixType
@@ -307,7 +307,7 @@ class SplitMulti(vsm: MatrixTable, variantExpr: String, genotypeExpr: String, ke
 
     if (useAST) {
       vsm.rvd.mapPartitions { it =>
-        val context = new SplitMultiPartitionContextAST(localKeepStar, localNSamples, localGlobalAnnotation,
+        val context = new SplitMultiPartitionContextAST(localKeepStar, localNSamples, globalsBc.value,
           localMatrixType, localVAnnotator, localGAnnotator, newRowType)
         it.flatMap { rv =>
           val splitit = context.splitRow(rv, sortAlleles, removeLeftAligned, removeMoving, verifyLeftAligned)
@@ -317,7 +317,7 @@ class SplitMulti(vsm: MatrixTable, variantExpr: String, genotypeExpr: String, ke
       }
     } else {
       vsm.rvd.mapPartitions { it =>
-        val context = new SplitMultiPartitionContextIR(localKeepStar, localNSamples, localGlobalAnnotation,
+        val context = new SplitMultiPartitionContextIR(localKeepStar, localNSamples, globalsBc.value,
           localMatrixType, localSplitRow, newRowType)
         it.flatMap { rv =>
           val splitit = context.splitRow(rv, sortAlleles, removeLeftAligned, removeMoving, verifyLeftAligned)

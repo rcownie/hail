@@ -586,89 +586,6 @@ case class Apply(posn: Position, fn: String, args: Array[AST]) extends AST(posn,
         assert(identifiers.duplicates().isEmpty)
         `type` = struct.`type`.asInstanceOf[TStruct].filter(identifiers.toSet, include = false)._1
 
-      case "ungroup" =>
-        if (args.length != 3)
-          parseError(
-            s"""invalid arguments for method `$fn'
-               |  Usage: $fn(Struct, identifier, mangle)
-               |  Found ${ args.length } ${ plural(args.length, "argument") }""".stripMargin)
-
-        val Array(s, id, m) = args
-        s.typecheck(ec)
-        val struct = s.`type` match {
-          case t: TStruct => t
-          case other => parseError(
-            s"""method `$fn' expects a Struct argument in the first position
-               |  Expected: $fn(Struct, ...)
-               |  Found: $fn($other, ...)""".stripMargin)
-        }
-        val identifier = id match {
-          case SymRef(_, n) => n
-          case other =>
-            parseError(
-              s"""invalid arguments for method `$fn'
-                 |  Expected struct field identifier in the second position, but found a `${ other.getClass.getSimpleName }' expression""".stripMargin)
-        }
-        val mangle = m match {
-          case Const(_, v, TBoolean(_)) => v.asInstanceOf[Boolean]
-          case other =>
-            parseError(
-              s"""invalid arguments for method `$fn'
-                 |  Expected boolean argument in the third position, but found a `${ other.getClass.getSimpleName }' expression""".stripMargin)
-        }
-
-        val (tNew, _) = try {
-          struct.ungroup(identifier, mangle)
-        } catch {
-          case e: Throwable => parseError(
-            s"""invalid arguments for method `$fn'
-               |  $e""".stripMargin)
-        }
-
-        `type` = tNew
-
-      case "group" =>
-        if (args.length < 3)
-          parseError(
-            s"""too few arguments for method `$fn'
-               |  Expected 3 or more arguments: $fn(Struct, dest, identifiers...)
-               |  Found ${ args.length } ${ plural(args.length, "argument") }""".stripMargin)
-        val (head, tail) = (args.head, args.tail)
-        head.typecheck(ec)
-        val struct = head.`type` match {
-          case t: TStruct => t
-          case other => parseError(
-            s"""method `$fn' expects a Struct argument in the first position
-               |  Expected: $fn(Struct, ...)
-               |  Found: $fn($other, ...)""".stripMargin)
-        }
-        val identifiers = tail.map {
-          case SymRef(_, id) => id
-          case other =>
-            parseError(
-              s"""invalid arguments for method `$fn'
-                 |  Expected struct field identifiers after the first position, but found a `${ other.getClass.getSimpleName }' expression""".stripMargin)
-        }
-
-        val dest = identifiers.head
-        val idsToGroup = identifiers.tail
-
-        val duplicates = idsToGroup.duplicates()
-        if (duplicates.nonEmpty)
-          parseError(
-            s"""invalid arguments for method `$fn'
-               |  Duplicate ${ plural(duplicates.size, "identifier") } found: [ ${ duplicates.map(prettyIdentifier).mkString(", ") } ]""".stripMargin)
-
-        val (tNew, _) = try {
-          struct.group(dest, idsToGroup)
-        } catch {
-          case e: Throwable => parseError(
-            s"""invalid arguments for method `$fn'
-               |  $e""".stripMargin)
-        }
-
-        `type` = tNew
-
       case "uniroot" =>
         if (args.length != 3)
           parseError("wrong number of arguments to uniroot")
@@ -702,7 +619,7 @@ case class Apply(posn: Position, fn: String, args: Array[AST]) extends AST(posn,
       result <- CM.invokePrimitive2(merger)(f1, f2)
     ) yield result.asInstanceOf[Code[AnyRef]] // totally could be a problem
 
-    case ("select" | "drop" | "group", Array(head, tail@_*)) =>
+    case ("select" | "drop", Array(head, tail@_*)) =>
       val struct = head.`type`.asInstanceOf[TStruct]
       val identifiers = tail.map { ast =>
         (ast: @unchecked) match {
@@ -713,7 +630,6 @@ case class Apply(posn: Position, fn: String, args: Array[AST]) extends AST(posn,
       val f = fn match {
         case "select" => struct.select(identifiers.toArray)._2
         case "drop" => struct.filter(identifiers.toSet, include = false)._2
-        case "group" => struct.group(identifiers.head, identifiers.tail.toArray)._2
       }
 
       AST.evalComposeCodeM[AnyRef](head)(CM.invokePrimitive1(f.asInstanceOf[(AnyRef) => AnyRef]))
@@ -724,14 +640,6 @@ case class Apply(posn: Position, fn: String, args: Array[AST]) extends AST(posn,
       (_, annotator) = struct1.`type`.asInstanceOf[TStruct].annotate(struct2.`type`.asInstanceOf[TStruct]);
       result <- CM.invokePrimitive2(annotator)(f1, f2)
     ) yield result.asInstanceOf[Code[AnyRef]]
-
-    case ("ungroup", Array(s, id, m)) =>
-      val struct = s.`type`.asInstanceOf[TStruct]
-      val (identifier, mangle) = (id: @unchecked, m: @unchecked) match {
-        case (SymRef(_, n), Const(_, v, _)) => (n, v.asInstanceOf[Boolean])
-      }
-      val f = struct.ungroup(identifier, mangle)._2
-      AST.evalComposeCodeM[AnyRef](s)(CM.invokePrimitive1(f.asInstanceOf[(AnyRef) => AnyRef]))
 
     case ("index", Array(structArray, k)) =>
       val key = (k: @unchecked) match {
@@ -753,24 +661,29 @@ case class Apply(posn: Position, fn: String, args: Array[AST]) extends AST(posn,
       FunctionRegistry.call(fn, args, args.map(_.`type`).toSeq)
   }
 
-  private val tryPrimOpConversion: IndexedSeq[IR] => Option[IR] = flatLift {
-      case IndexedSeq(x) => for {
+  private def tryPrimOpConversion: IndexedSeq[(Type, IR)] => Option[IR] = flatLift {
+      case IndexedSeq((xt, x)) => for {
         op <- ir.UnaryOp.fromString.lift(fn)
-        t <- ir.UnaryOp.returnTypeOption(op, x.typ)
+        t <- ir.UnaryOp.returnTypeOption(op, xt)
       } yield ir.ApplyUnaryPrimOp(op, x, t)
-      case IndexedSeq(x, y) => for {
+      case IndexedSeq((xt, x), (yt, y)) => for {
         op <- ir.BinaryOp.fromString.lift(fn)
-        t <- ir.BinaryOp.returnTypeOption(op, x.typ, y.typ)
+        t <- ir.BinaryOp.returnTypeOption(op, xt, yt)
       } yield ir.ApplyBinaryPrimOp(op, x, y, t)
     }
 
   def toIR_raw(agg: Option[String] = None): Option[IR] = {
-    for {
-      irArgs <- anyFailAllFail(args.map(_.toIR(agg)))
-      ir <- tryPrimOpConversion(irArgs).orElse(
-        IRFunctionRegistry.lookupFunction(fn, args.map(_.`type`))
-          .map { irf => irf(irArgs) })
-    } yield ir
+    fn match {
+      case "merge" | "select" | "drop" | "annotate" | "index" =>
+        None
+      case _ =>
+        for {
+          irArgs <- anyFailAllFail(args.map(_.toIR(agg)))
+          ir <- tryPrimOpConversion(args.map(_.`type`).zip(irArgs)).orElse(
+            IRFunctionRegistry.lookupFunction(fn, args.map(_.`type`))
+              .map { irf => irf(irArgs) })
+        } yield ir
+    }
   }
   
   def toIR(agg: Option[String] = None): Option[IR] = {
@@ -896,7 +809,8 @@ case class ApplyMethod(posn: Position, lhs: AST, method: String, args: Array[AST
             case (_: TAggregable, "map") => ir.AggMap(a, name, b, `type`.asInstanceOf[TAggregable])
             case (_: TAggregable, "filter") => ir.AggFilter(a, name, b, `type`.asInstanceOf[TAggregable])
             case (_: TAggregable, "flatMap") => ir.AggFlatMap(a, name, b, `type`.asInstanceOf[TAggregable])
-            case (_, "map") => ir.ArrayMap(a, name, b)
+            case (_: TArray, "map") => ir.ArrayMap(a, name, b)
+            case (_: TArray, "filter") => ir.ArrayFilter(a, name, b)
           }
         } yield result
       case _ =>
@@ -929,7 +843,7 @@ case class Let(posn: Position, bindings: Array[(String, AST)], body: AST) extend
   def toIR(agg: Option[String] = None): Option[IR] = for {
     irBindings <- anyFailAllFail(bindings.map { case (x, y) => y.toIR(agg).map(irY => (x, irY)) })
     irBody <- body.toIR(agg)
-  } yield irBindings.foldRight(irBody) { case ((name, v), x) => ir.Let(name, v, x, x.typ) }
+  } yield irBindings.foldRight(irBody) { case ((name, v), x) => ir.Let(name, v, x) }
 }
 
 case class SymRef(posn: Position, symbol: String) extends AST(posn) {

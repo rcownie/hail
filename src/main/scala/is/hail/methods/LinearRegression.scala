@@ -3,7 +3,6 @@ package is.hail.methods
 import breeze.linalg._
 import breeze.numerics.sqrt
 import is.hail.annotations._
-import is.hail.expr._
 import is.hail.expr.types._
 import is.hail.stats._
 import is.hail.utils._
@@ -24,7 +23,7 @@ object LinearRegression {
     ysExpr: Array[String], xExpr: String, covExpr: Array[String], root: String, variantBlockSize: Int
   ): MatrixTable = {
     val ec = vsm.matrixType.genotypeEC
-    val xf = RegressionUtils.parseExprAsDouble(xExpr, ec)
+    val xf = RegressionUtils.parseFloat64Expr(xExpr, ec)
 
     val (y, cov, completeSampleIndex) = RegressionUtils.getPhenosCovCompleteSamples(vsm, ysExpr, covExpr)
 
@@ -44,7 +43,7 @@ object LinearRegression {
 
     val sc = vsm.sparkContext
 
-    val localGlobalAnnotationBc = sc.broadcast(vsm.globals)
+    val localGlobalAnnotationBc = vsm.globals.broadcast
     val sampleAnnotationsBc = vsm.colValuesBc
 
     val completeSampleIndexBc = sc.broadcast(completeSampleIndex)

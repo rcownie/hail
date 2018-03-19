@@ -1,8 +1,7 @@
-from collections import Mapping, Sequence
-
+import hail as hl
 from hail.expr.expr_ast import *
 from hail.expr.expressions import Expression, to_expr, ExpressionException, \
-    unify_all, Indices, Join, Aggregation, unify_types
+    unify_all, Indices, Join, Aggregation
 from hail.expr.expressions.expression_typecheck import *
 from hail.expr.types import *
 from hail.typecheck import *
@@ -413,7 +412,7 @@ class ArrayExpression(CollectionExpression):
                             "    type of arg 'item': '{}'".format(self._type._element_type, item._type))
         return self._method("append", self._type, item)
 
-    @typecheck_method(a=expr_array(...))
+    @typecheck_method(a=expr_array())
     def extend(self, a):
         """Concatenate two arrays and return the result.
 
@@ -457,37 +456,6 @@ class ArrayNumericExpression(ArrayExpression):
     >>> a2 = hl.literal([1, -1, 1, -1, 1, -1])
 
     """
-
-    def _bin_op_ret_typ(self, other):
-        if isinstance(other._type, tarray):
-            t = other._type.element_type
-        else:
-            t = other._type
-        t = unify_types(self._type.element_type, t)
-        if not t:
-            return None
-        else:
-            return tarray(t)
-
-    def _bin_op_numeric(self, name, other, ret_type_f=None):
-        other = to_expr(other)
-        ret_type = self._bin_op_ret_typ(other)
-        if not ret_type:
-            raise NotImplementedError("'{}' {} '{}'".format(
-                self._type, name, other._type))
-        if ret_type_f:
-            ret_type = ret_type_f(ret_type)
-        return self._bin_op(name, other, ret_type)
-
-    def _bin_op_numeric_reverse(self, name, other, ret_type_f=None):
-        other = to_expr(other)
-        ret_type = self._bin_op_ret_typ(other)
-        if not ret_type:
-            raise NotImplementedError("'{}' {} '{}'".format(
-                other._type, name, self._type))
-        if ret_type_f:
-            ret_type = ret_type_f(ret_type)
-        return self._bin_op_reverse(name, other, ret_type)
 
     def __neg__(self):
         """Negate elements of the array.
@@ -615,10 +583,9 @@ class ArrayNumericExpression(ArrayExpression):
         """
 
         def ret_type_f(t):
-            assert isinstance(t, tarray)
-            assert is_numeric(t.element_type)
-            if t.element_type == tint32 or t.element_type == tint64:
-                return tarray(tfloat32)
+            assert is_numeric(t)
+            if t == tint32 or t == tint64:
+                return tfloat32
             else:
                 # Float64 or Float32
                 return t
@@ -627,10 +594,9 @@ class ArrayNumericExpression(ArrayExpression):
 
     def __rtruediv__(self, other):
         def ret_type_f(t):
-            assert isinstance(t, tarray)
-            assert is_numeric(t.element_type)
-            if t.element_type == tint32 or t.element_type == tint64:
-                return tarray(tfloat32)
+            assert is_numeric(t)
+            if t == tint32 or t == tint64:
+                return tfloat32
             else:
                 # Float64 or Float32
                 return t
@@ -704,10 +670,10 @@ class ArrayNumericExpression(ArrayExpression):
         -------
         :class:`.ArrayNumericExpression`
         """
-        return self._bin_op_numeric('**', other, lambda _: tarray(tfloat64))
+        return self._bin_op_numeric('**', other, lambda _: tfloat64)
 
     def __rpow__(self, other):
-        return self._bin_op_numeric_reverse('**', other, lambda _: tarray(tfloat64))
+        return self._bin_op_numeric_reverse('**', other, lambda _: tfloat64)
 
 
 class SetExpression(CollectionExpression):
@@ -805,7 +771,7 @@ class SetExpression(CollectionExpression):
                             "    type of arg 'item': '{}'".format(self._type._element_type, item._type))
         return self._method("contains", tbool, item)
 
-    @typecheck_method(s=expr_set(...))
+    @typecheck_method(s=expr_set())
     def difference(self, s):
         """Return the set of elements in the set that are not present in set `s`.
 
@@ -835,7 +801,7 @@ class SetExpression(CollectionExpression):
                             "    type of 's': '{}'".format(self._type, s._type))
         return self._method("difference", self._type, s)
 
-    @typecheck_method(s=expr_set(...))
+    @typecheck_method(s=expr_set())
     def intersection(self, s):
         """Return the intersection of the set and set `s`.
 
@@ -862,7 +828,7 @@ class SetExpression(CollectionExpression):
                             "    type of 's': '{}'".format(self._type, s._type))
         return self._method("intersection", self._type, s)
 
-    @typecheck_method(s=expr_set(...))
+    @typecheck_method(s=expr_set())
     def is_subset(self, s):
         """Returns ``True`` if every element is contained in set `s`.
 
@@ -892,7 +858,7 @@ class SetExpression(CollectionExpression):
                             "    type of 's': '{}'".format(self._type, s._type))
         return self._method("isSubset", tbool, s)
 
-    @typecheck_method(s=expr_set(...))
+    @typecheck_method(s=expr_set())
     def union(self, s):
         """Return the union of the set and set `s`.
 
@@ -1149,6 +1115,18 @@ class StructExpression(Mapping, Expression):
     to access fields that are not valid Python identifiers, like fields with
     spaces or symbols.
     """
+
+    @classmethod
+    def _from_fields(cls, fields: Dict[str, Expression]):
+        t = tstruct(**{k: v.dtype for k, v in fields.items()})
+        ast = StructDeclaration(list(fields), list(expr._ast for expr in fields.values()))
+        indices, aggregations, joins = unify_all(*fields.values())
+        s = StructExpression.__new__(cls)
+        s._fields = {}
+        for k, v in fields.items():
+            s._set_field(k, v)
+        super(StructExpression, s).__init__(ast, t, indices, aggregations, joins)
+        return s
 
     @typecheck_method(ast=AST, type=HailType, indices=Indices, aggregations=LinkedList, joins=LinkedList)
     def __init__(self, ast, type, indices=Indices(), aggregations=LinkedList(Aggregation), joins=LinkedList(Join)):
@@ -1569,39 +1547,6 @@ class NumericExpression(Expression):
     >>> y = hl.literal(4.5)
     """
 
-    def _bin_op_ret_typ(self, other):
-        if isinstance(other.dtype, tarray):
-            t = other.dtype.element_type
-            wrapper = lambda t: tarray(t)
-        else:
-            t = other.dtype
-            wrapper = lambda t: t
-        t = unify_types(self.dtype, t)
-        if not t:
-            return None
-        else:
-            return t, wrapper
-
-    def _bin_op_numeric(self, name, other, ret_type_f=None):
-        other = to_expr(other)
-        ret_type, wrapper = self._bin_op_ret_typ(other)
-        if not ret_type:
-            raise NotImplementedError("'{}' {} '{}'".format(
-                self.dtype, name, other.dtype))
-        if ret_type_f:
-            ret_type = ret_type_f(ret_type)
-        return self._bin_op(name, other, wrapper(ret_type))
-
-    def _bin_op_numeric_reverse(self, name, other, ret_type_f=None):
-        other = to_expr(other)
-        ret_type, wrapper = self._bin_op_ret_typ(other)
-        if not ret_type:
-            raise NotImplementedError("'{}' {} '{}'".format(
-                self.dtype, name, other.dtype))
-        if ret_type_f:
-            ret_type = ret_type_f(ret_type)
-        return self._bin_op_reverse(name, other, wrapper(ret_type))
-
     @typecheck_method(other=expr_numeric)
     def __lt__(self, other):
         """Less-than comparison.
@@ -1623,7 +1568,7 @@ class NumericExpression(Expression):
         :class:`.BooleanExpression`
             ``True`` if the left side is smaller than the right side.
         """
-        return self._bin_op("<", other, tbool)
+        return self._bin_op_numeric("<", other, lambda _: tbool)
 
     @typecheck_method(other=expr_numeric)
     def __le__(self, other):
@@ -1646,7 +1591,7 @@ class NumericExpression(Expression):
         :class:`.BooleanExpression`
             ``True`` if the left side is smaller than or equal to the right side.
         """
-        return self._bin_op("<=", other, tbool)
+        return self._bin_op_numeric("<=", other, lambda _: tbool)
 
     @typecheck_method(other=expr_numeric)
     def __gt__(self, other):
@@ -1669,7 +1614,7 @@ class NumericExpression(Expression):
         :class:`.BooleanExpression`
             ``True`` if the left side is greater than the right side.
         """
-        return self._bin_op(">", other, tbool)
+        return self._bin_op_numeric(">", other, lambda _: tbool)
 
     @typecheck_method(other=expr_numeric)
     def __ge__(self, other):
@@ -1692,7 +1637,7 @@ class NumericExpression(Expression):
         :class:`.BooleanExpression`
             ``True`` if the left side is greater than or equal to the right side.
         """
-        return self._bin_op(">=", other, tbool)
+        return self._bin_op_numeric(">=", other, lambda _: tbool)
 
     def __pos__(self):
         return self
@@ -1838,7 +1783,7 @@ class NumericExpression(Expression):
             if t == tint32 or t == tint64:
                 return tfloat32
             else:
-                # Float64 or Float32
+                # float64 or float32
                 return t
 
         return self._bin_op_numeric_reverse("/", other, ret_type_f)

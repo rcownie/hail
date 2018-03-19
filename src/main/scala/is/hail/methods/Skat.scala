@@ -205,7 +205,7 @@ object Skat {
     // returns ((key, [(gs_v, weight_v)]), keyType)
     weightExpr: String): (RDD[(Annotation, Iterable[(DenseVector[Double], Double)])], Type) = {
     val ec = vsm.matrixType.genotypeEC
-    val xf = RegressionUtils.parseExprAsDouble(xExpr, ec)
+    val xf = RegressionUtils.parseFloat64Expr(xExpr, ec)
 
     val (keyType, keyQuerier) = vsm.queryVA(keyExpr)
     val (weightType, weightQuerier) = vsm.queryVA(weightExpr)
@@ -217,7 +217,7 @@ object Skat {
     
     val sc = vsm.sparkContext
 
-    val localGlobalAnnotationBc = sc.broadcast(vsm.globals)
+    val localGlobalAnnotationBc = vsm.globals.broadcast
     val sampleAnnotationsBc = vsm.colValuesBc
     val fullRowType = vsm.rvRowType
     val localRowType = vsm.rowType

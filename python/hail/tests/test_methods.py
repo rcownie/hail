@@ -32,10 +32,10 @@ class Tests(unittest.TestCase):
                                               "--max {}".format(max) if max else "")
 
             plink_command = "plink --double-id --allow-extra-chr --vcf {} --genome full --out {} {}" \
-                .format(utils.get_URI(vcf),
-                        utils.get_URI(plinkpath),
+                .format(utils.uri_path(vcf),
+                        utils.uri_path(plinkpath),
                         threshold_string)
-            result_file = utils.get_URI(plinkpath + ".genome")
+            result_file = utils.uri_path(plinkpath + ".genome")
 
             syscall(plink_command, shell=True, stdout=DEVNULL, stderr=DEVNULL)
 
@@ -81,8 +81,8 @@ class Tests(unittest.TestCase):
 
         sex = hl.impute_sex(ds.GT, include_par=True)
 
-        vcf_file = utils.get_URI(utils.new_temp_file(prefix="plink", suffix="vcf"))
-        out_file = utils.get_URI(utils.new_temp_file(prefix="plink"))
+        vcf_file = utils.uri_path(utils.new_temp_file(prefix="plink", suffix="vcf"))
+        out_file = utils.uri_path(utils.new_temp_file(prefix="plink"))
 
         hl.export_vcf(ds, vcf_file)
 
@@ -138,14 +138,72 @@ class Tests(unittest.TestCase):
         dataset.count_rows()
 
     def test_trio_matrix(self):
+        """
+        This test depends on certain properties of the trio matrix VCF and
+        pedigree structure. This test is NOT a valid test if the pedigree
+        includes quads: the trio_matrix method will duplicate the parents
+        appropriately, but the genotypes_table and samples_table orthogonal
+        paths would require another duplication/explode that we haven't written.
+        """
         ped = hl.Pedigree.read(resource('triomatrix.fam'))
-        fam_table = hl.import_fam(resource('triomatrix.fam'))
-        dataset = hl.import_vcf(resource('triomatrix.vcf'))
-        dataset = dataset.annotate_cols(fam=fam_table[dataset.s])
+        ht = hl.import_fam(resource('triomatrix.fam'))
 
-        tm = hl.trio_matrix(dataset, ped, complete_trios=True)
+        mt = hl.import_vcf(resource('triomatrix.vcf'))
+        mt = mt.annotate_cols(fam=ht[mt.s])
 
-        tm.count_rows()
+        dads = ht.filter(hl.is_defined(ht.pat_id))
+        dads = dads.select(dads.pat_id, is_dad=True).key_by('pat_id')
+
+        moms = ht.filter(hl.is_defined(ht.mat_id))
+        moms = moms.select(moms.mat_id, is_mom=True).key_by('mat_id')
+
+        et = (mt.entries()
+            .key_by('s')
+            .join(dads, how='left')
+            .join(moms, how='left'))
+        et = et.annotate(is_dad=hl.is_defined(et.is_dad),
+                         is_mom=hl.is_defined(et.is_mom))
+
+        et = (et
+            .group_by(et.locus, et.alleles, fam=et.fam.fam_id)
+            .aggregate(data=hl.agg.collect(hl.struct(
+            role=hl.case().when(et.is_dad, 1).when(et.is_mom, 2).default(0),
+            g=hl.struct(GT=et.GT, AD=et.AD, DP=et.DP, GQ=et.GQ, PL=et.PL)))))
+
+        et = et.filter(hl.len(et.data) == 3)
+        et = et.select('locus', 'alleles', 'fam', 'data').explode('data')
+
+        tt = hl.trio_matrix(mt, ped, complete_trios=True).entries()
+        tt = tt.annotate(fam=tt.proband.fam.fam_id,
+                         data=[hl.struct(role=0, g=tt.proband_entry.select('GT', 'AD', 'DP', 'GQ', 'PL')),
+                               hl.struct(role=1, g=tt.father_entry.select('GT', 'AD', 'DP', 'GQ', 'PL')),
+                               hl.struct(role=2, g=tt.mother_entry.select('GT', 'AD', 'DP', 'GQ', 'PL'))])
+        tt = tt.select('locus', 'alleles', 'fam', 'data').explode('data')
+        tt = tt.filter(hl.is_defined(tt.data.g)).key_by('locus', 'alleles', 'fam')
+
+        self.assertTrue(et._same(tt))
+
+        # test annotations
+        e_cols = (mt.cols()
+            .join(dads, how='left')
+            .join(moms, how='left'))
+        e_cols = e_cols.annotate(is_dad=hl.is_defined(e_cols.is_dad),
+                                 is_mom=hl.is_defined(e_cols.is_mom))
+        e_cols = (e_cols.group_by(fam=e_cols.fam.fam_id)
+            .aggregate(data=hl.agg.collect(hl.struct(role=hl.case()
+                                                     .when(e_cols.is_dad, 1).when(e_cols.is_mom, 2).default(0),
+                                                     sa=e_cols.row.select(*mt.col)))))
+        e_cols = e_cols.filter(hl.len(e_cols.data) == 3).select('fam', 'data').explode('data')
+
+        t_cols = hl.trio_matrix(mt, ped, complete_trios=True).cols()
+        t_cols = t_cols.annotate(fam=t_cols.proband.fam.fam_id,
+                                 data=[
+                                     hl.struct(role=0, sa=t_cols.proband),
+                                     hl.struct(role=1, sa=t_cols.father),
+                                     hl.struct(role=2, sa=t_cols.mother)]).select('fam', 'data').explode('data')
+        t_cols = t_cols.filter(hl.is_defined(t_cols.data.sa)).key_by('fam')
+
+        self.assertTrue(e_cols._same(t_cols))
 
     def test_sample_qc(self):
         dataset = self.get_dataset()
@@ -226,7 +284,7 @@ class Tests(unittest.TestCase):
 
         p_file = utils.new_temp_file(prefix="plink")
         syscall('''plink --bfile {} --make-rel --out {}'''
-                .format(utils.get_URI(b_file), utils.get_URI(p_file)), shell=True, stdout=DEVNULL, stderr=DEVNULL)
+                .format(utils.uri_path(b_file), utils.uri_path(p_file)), shell=True, stdout=DEVNULL, stderr=DEVNULL)
         self.assertEqual(load_id_file(p_file + ".rel.id"), sample_ids)
 
         grm.export_rel(rel_file)
@@ -240,7 +298,7 @@ class Tests(unittest.TestCase):
 
         p_file = utils.new_temp_file(prefix="plink")
         syscall('''plink --bfile {} --make-grm-gz --out {}'''
-                .format(utils.get_URI(b_file), utils.get_URI(p_file)), shell=True, stdout=DEVNULL, stderr=DEVNULL)
+                .format(utils.uri_path(b_file), utils.uri_path(p_file)), shell=True, stdout=DEVNULL, stderr=DEVNULL)
         self.assertEqual(load_id_file(p_file + ".grm.id"), sample_ids)
 
         grm.export_gcta_grm(grm_file)
@@ -253,7 +311,7 @@ class Tests(unittest.TestCase):
 
         p_file = utils.new_temp_file(prefix="plink")
         syscall('''plink --bfile {} --make-grm-bin --out {}'''
-                .format(utils.get_URI(b_file), utils.get_URI(p_file)), shell=True, stdout=DEVNULL, stderr=DEVNULL)
+                .format(utils.uri_path(b_file), utils.uri_path(p_file)), shell=True, stdout=DEVNULL, stderr=DEVNULL)
 
         self.assertEqual(load_id_file(p_file + ".grm.id"), sample_ids)
 
@@ -267,7 +325,7 @@ class Tests(unittest.TestCase):
                                     atol=tolerance))
 
     def test_block_matrix_from_numpy(self):
-        ndarray = np.matrix([[0, 1, 2, 3, 4], [5, 6, 7, 8, 9], [10, 11, 12, 13, 14]])
+        ndarray = np.matrix([[0, 1, 2, 3, 4], [5, 6, 7, 8, 9], [10, 11, 12, 13, 14]], dtype=np.float64)
 
         for block_size in [1, 2, 5, 1024]:
             block_matrix = BlockMatrix.from_numpy(ndarray, block_size)
@@ -317,7 +375,7 @@ class Tests(unittest.TestCase):
 
             rrm.export_tsv(fn)
             data = []
-            with open(utils.get_URI(fn)) as f:
+            with open(utils.uri_path(fn)) as f:
                 f.readline()
                 for line in f:
                     row = line.strip().split()

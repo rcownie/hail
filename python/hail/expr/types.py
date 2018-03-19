@@ -1,15 +1,41 @@
 import abc
-
-import hail as hl
-from hail.typecheck import *
-from hail.utils import Struct, Interval
-from hail.utils.java import scala_object, jset, jindexed_seq, Env, jarray_to_list, escape_parsable
-from hail.genetics import Locus, Call, ReferenceGenome
-from hail.genetics.reference_genome import reference_genome_type
-from hail import genetics
-from hail.expr.type_parsing import type_grammar, type_node_visitor
 import json
 from collections import Mapping
+
+import hail as hl
+from hail import genetics
+from hail.expr.type_parsing import type_grammar, type_node_visitor
+from hail.genetics.reference_genome import reference_genome_type
+from hail.typecheck import *
+from hail.utils import Struct, Interval
+from hail.utils.java import scala_object, jset, Env, escape_parsable
+
+__all__ = [
+    'dtype',
+    'HailType',
+    'hail_type',
+    'is_container',
+    'is_numeric',
+    'is_primitive',
+    'types_match',
+    'tint',
+    'tint32',
+    'tint64',
+    'tfloat',
+    'tfloat32',
+    'tfloat64',
+    'tstr',
+    'tbool',
+    'tarray',
+    'tset',
+    'tdict',
+    'tstruct',
+    'ttuple',
+    'tinterval',
+    'tlocus',
+    'tcall',
+    'hts_entry_schema',
+]
 
 
 def dtype(type_str):
@@ -171,6 +197,13 @@ class HailType(object):
 
     def _convert_from_json(self, x):
         return x
+
+    def _scalar_type(self):
+        if isinstance(self, tarray):
+            return self.element_type
+        else:
+            assert is_numeric(self)
+            return self
 
 
 hail_type = oneof(HailType, transformed((str, dtype)))
@@ -1125,6 +1158,12 @@ def is_container(t):
             or isinstance(t, tdict)
             or isinstance(t, ttuple)
             or isinstance(t, tstruct))
+
+
+def types_match(left, right):
+    return (len(left) == len(right)
+            and all(map(lambda lr: lr[0].dtype == lr[1].dtype, zip(left, right))))
+
 
 import pprint
 

@@ -44,10 +44,10 @@ object BaseIR {
 
       // only recons if necessary
       val rewritten =
-        if ((ast.children, newChildren).zipped.forall(_ eq _))
-          ast
-        else
-          ast.copy(newChildren)
+      if ((ast.children, newChildren).zipped.forall(_ eq _))
+        ast
+      else
+        ast.copy(newChildren)
 
       rule.lift(rewritten) match {
         case Some(newAST) if newAST != rewritten =>
@@ -81,7 +81,7 @@ abstract class BaseIR {
 
 case class MatrixValue(
   typ: MatrixType,
-  globals: Annotation,
+  globals: BroadcastValue,
   colValues: IndexedSeq[Annotation],
   rvd: OrderedRVD) {
 
@@ -101,13 +101,13 @@ case class MatrixValue(
   def filterSamplesKeep(keep: Array[Int]): MatrixValue = {
     val rowType = typ.rvRowType
     val keepType = TArray(+TInt32())
-    val makeF = ir.Compile("row", ir.RegionValueRep[Long](rowType),
-      "keep", ir.RegionValueRep[Long](keepType),
-      ir.RegionValueRep[Long](rowType),
+    val (rTyp, makeF) = ir.Compile[Long, Long, Long]("row", rowType,
+      "keep", keepType,
       body = ir.insertStruct(ir.Ref("row"), rowType, MatrixType.entriesIdentifier,
         ir.ArrayMap(ir.Ref("keep"), "i",
           ir.ArrayRef(ir.GetField(ir.In(0, rowType), MatrixType.entriesIdentifier),
             ir.Ref("i")))))
+    assert(rTyp == rowType)
 
     val keepBc = sparkContext.broadcast(keep)
     copy(colValues = keep.map(colValues),
@@ -141,12 +141,11 @@ object MatrixIR {
       MatrixRead(path, spec, dropSamples, _),
       Const(_, false, TBoolean(_))) =>
         MatrixRead(path, spec, dropSamples, dropRows = true)
-
       case FilterCols(
       MatrixRead(path, spec, _, dropVariants),
       Const(_, false, TBoolean(_))) =>
         MatrixRead(path, spec, dropCols = true, dropVariants)
-    
+
       case FilterRows(m, Const(_, true, TBoolean(_))) =>
         m
       case FilterCols(m, Const(_, true, TBoolean(_))) =>
@@ -161,31 +160,6 @@ object MatrixIR {
 
       case FilterCols(FilterCols(m, pred1), pred2) =>
         FilterCols(m, Apply(pred1.getPos, "&&", Array(pred1, pred2)))
-
-      // Equivalent rewrites for the new Filter{Cols,Rows}IR
-      case FilterRowsIR(MatrixRead(path, spec, dropSamples, _), False()) =>
-        MatrixRead(path, spec, dropSamples, dropRows = true)
-
-      case FilterColsIR(MatrixRead(path, spec, dropVariants, _), False()) =>
-        MatrixRead(path, spec, dropCols = true, dropVariants)
-
-      // Keep all rows/cols = do nothing
-      case FilterRowsIR(m, True()) => m
-      
-      case FilterColsIR(m, True()) => m
-      
-      // Push FilterRowsIR into FilterColsIR
-      case FilterRowsIR(FilterColsIR(m, colPred), rowPred) =>
-        FilterColsIR(FilterRowsIR(m, rowPred), colPred)
-      
-      // Combine multiple filters into one
-      case FilterRowsIR(FilterRowsIR(m, pred1), pred2) =>
-        FilterRowsIR(m,
-          ApplyBinaryPrimOp(DoubleAmpersand(), pred1, pred2))
-    
-      case FilterColsIR(FilterColsIR(m, pred1), pred2) =>
-        FilterColsIR(m,
-          ApplyBinaryPrimOp(DoubleAmpersand(), pred1, pred2))
     })
   }
 }
@@ -319,7 +293,7 @@ case class MatrixRead(
 
     MatrixValue(
       typ,
-      globals,
+      BroadcastValue(globals, typ.globalType, hc.sc),
       colAnnotations,
       rvd)
   }
@@ -327,10 +301,6 @@ case class MatrixRead(
   override def toString: String = s"MatrixRead($path, dropSamples = $dropCols, dropVariants = $dropRows)"
 }
 
-/*
- * FilterCols is only used for a predicate which fails toIR()
- * This should go away when everything is IR-compatible
- */
 case class FilterCols(
   child: MatrixIR,
   pred: AST) extends MatrixIR {
@@ -364,66 +334,6 @@ case class FilterCols(
   }
 }
 
-case class FilterColsIR(
-  child: MatrixIR,
-  pred: IR) extends MatrixIR {
-
-  def children: IndexedSeq[BaseIR] = Array(child, pred)
-
-  def copy(newChildren: IndexedSeq[BaseIR]): FilterColsIR = {
-    assert(newChildren.length == 2)
-    FilterColsIR(newChildren(0).asInstanceOf[MatrixIR], newChildren(1).asInstanceOf[IR])
-  }
-
-  def typ: MatrixType = child.typ
-
-  def execute(hc: HailContext): MatrixValue = {
-    val prev = child.execute(hc)
-
-    val localGlobals = prev.globals
-    val sas = typ.colType
-    val ec = typ.colEC
-	//
-	// Initialize a region containing the globals
-	//
-	val colRegion = Region()
-	val rvb = new RegionValueBuilder(colRegion)
-	rvb.start(typ.globalType)
-	rvb.addAnnotation(typ.globalType, localGlobals)
-	val vaStartOffset = colRegion.size
-
-    info("FilterColsIR() compiling predicate ...")
-
-    val predCompiledFunc = ir.Compile(
-      "global", ir.RegionValueRep[Long](typ.globalType),
-      "sa",     ir.RegionValueRep[Long](typ.colType),
-      ir.RegionValueRep[Boolean](TBoolean()),
-      pred
-    )
-	//
-	// Hmm ... is this going to do a separate reduction for each column/sample ?
-	// Won't that be slow in the distributed case ?
-	//
-    val colAggregationOption = Aggregators.buildColAggregations(hc, prev, ec)
-
-    val p = (sa: Annotation, i: Int) => {
-      colAggregationOption.foreach(f => f.apply(i))
-      ec.setAll(localGlobals, sa)
-      colRegion.truncate(vaStartOffset)
-      val colRVb = new RegionValueBuilder(colRegion)
-      colRVb.start = vaStartOffset
-      colRVb.start(typ.colType)
-      colRVb.addAnnotation(typ.colType, sa)
-      predCompiledFunc()(colRegion, 0, false, vaStartOffset, false) == true
-    }
-    prev.filterCols(p)
-  }
-}
-
-/*
- * FilterRows is only used for a predicate which fails toIR()
- * This should go away when everything is IR-compatible
- */
 case class FilterRows(
   child: MatrixIR,
   pred: AST) extends MatrixIR {
@@ -440,7 +350,6 @@ case class FilterRows(
   def execute(hc: HailContext): MatrixValue = {
     val prev = child.execute(hc)
 
-    val localGlobals = prev.globals
     val ec = prev.typ.rowEC
 
     val f: () => java.lang.Boolean = Parser.evalTypedExpr[java.lang.Boolean](pred, ec)
@@ -452,13 +361,14 @@ case class FilterRows(
     val localRowType = prev.typ.rowType
     val localEntriesIndex = prev.typ.entriesIdx
 
-    ec.set(0, prev.globals)
+    val localGlobals = prev.globals.broadcast
 
     val filteredRDD = prev.rvd.mapPartitionsPreservesPartitioning(prev.typ.orvdType) { it =>
       val fullRow = new UnsafeRow(fullRowType)
       val row = fullRow.deleteField(localEntriesIndex)
       it.filter { rv =>
         fullRow.set(rv)
+        ec.set(0, localGlobals.value)
         ec.set(1, row)
         aggregatorOption.foreach(_ (rv))
         f() == true
@@ -469,69 +379,7 @@ case class FilterRows(
   }
 }
 
-case class FilterRowsIR(
-  child: MatrixIR,
-  pred: IR) extends MatrixIR {
-
-  def children: IndexedSeq[BaseIR] = Array(child, pred)
-
-  def copy(newChildren: IndexedSeq[BaseIR]): FilterRowsIR = {
-    assert(newChildren.length == 2)
-    FilterRowsIR(newChildren(0).asInstanceOf[MatrixIR], newChildren(1).asInstanceOf[IR])
-  }
-
-  def typ: MatrixType = child.typ
-
-  def execute(hc: HailContext): MatrixValue = {
-    val prev = child.execute(hc)
-
-    val localGlobals = prev.globals
-    val ec = prev.typ.rowEC
-
-    info("FilterRowsIR.execute() compiling predicate ...")
-    
-    val predCompiledFunc = ir.Compile(
-      "va",     ir.RegionValueRep[Long](child.typ.rowType),
-      "global", ir.RegionValueRep[Long](child.typ.globalType),
-      ir.RegionValueRep[Boolean](TBoolean()),
-      pred
-    )
-
-    val aggregatorOption = Aggregators.buildRowAggregations(
-      prev.rvd.sparkContext, prev.typ, prev.globals, prev.colValues, ec)
-
-    val fullRowType = prev.typ.rvRowType
-    val localRowType = prev.typ.rowType
-    val localEntriesIndex = prev.typ.entriesIdx
-
-    ec.set(0, prev.globals)
-
-    val filteredRDD = prev.rvd.mapPartitionsPreservesPartitioning(prev.typ.orvdType) { it =>
-      val fullRow = new UnsafeRow(fullRowType)
-      val row = fullRow.deleteField(localEntriesIndex)
-      val globalRVb = new RegionValueBuilder()
-      it.filter { rv =>
-        fullRow.set(rv)
-        ec.set(1, row)
-        aggregatorOption.foreach(_ (rv))
-        //
-        // Hmm ... I think this is copying all the globals for each row,
-        // which seems a big waste of time.  Is that right ?  We ought
-        // to be able to do read-only accesses from multiple regions,
-        // though only modifying one region.
-        //
-        globalRVb.set(rv.region)
-        globalRVb.start(child.typ.globalType)
-        globalRVb.addAnnotation(child.typ.globalType, localGlobals)
-        predCompiledFunc()(rv.region, rv.offset, false, globalRVb.end(), false) == true
-      }
-    }
-
-    prev.copy(rvd = filteredRDD)
-  }
-}
-
-case class TableValue(typ: TableType, globals: Row, rvd: RVD) {
+case class TableValue(typ: TableType, globals: BroadcastValue, rvd: RVD) {
   def rdd: RDD[Row] = {
     val localRowType = typ.rowType
     rvd.rdd.map { rv => new UnsafeRow(localRowType, rv.region.copy(), rv.offset) }
@@ -539,14 +387,14 @@ case class TableValue(typ: TableType, globals: Row, rvd: RVD) {
 
   def filter(p: (RegionValue, RegionValue) => Boolean): TableValue = {
     val globalType = typ.globalType
-    val localGlobals = globals
+    val localGlobals = globals.broadcast
     copy(rvd = rvd.mapPartitions(typ.rowType) { it =>
       val globalRV = RegionValue()
       val globalRVb = new RegionValueBuilder()
       it.filter { rv =>
         globalRVb.set(rv.region)
         globalRVb.start(globalType)
-        globalRVb.addAnnotation(globalType, localGlobals)
+        globalRVb.addAnnotation(globalType, localGlobals.value)
         globalRV.set(rv.region, globalRVb.end())
         p(rv, globalRV)
       }
@@ -571,7 +419,7 @@ abstract sealed class TableIR extends BaseIR {
   def typ: TableType
 
   def partitionCounts: Option[Array[Long]] = None
-  
+
   def execute(hc: HailContext): TableValue
 }
 
@@ -603,11 +451,28 @@ case class TableRead(path: String, spec: TableSpec, dropRows: Boolean) extends T
   def execute(hc: HailContext): TableValue = {
     val globals = spec.globalsComponent.readLocal(hc, path)(0)
     TableValue(typ,
-      globals,
+      BroadcastValue(globals, typ.globalType, hc.sc),
       if (dropRows)
         UnpartitionedRVD.empty(hc.sc, typ.rowType)
       else
         spec.rowsComponent.read(hc, path))
+  }
+}
+
+case class TableParallelize(typ: TableType, rows: IndexedSeq[Row], nPartitions: Option[Int] = None) extends TableIR {
+  assert(typ.globalType.size == 0)
+  val children: IndexedSeq[BaseIR] = Array.empty[BaseIR]
+
+  def copy(newChildren: IndexedSeq[BaseIR]): TableParallelize = {
+    assert(newChildren.isEmpty)
+    this
+  }
+
+  def execute(hc: HailContext): TableValue = {
+    val rowTyp = typ.rowType
+    val rvd = hc.sc.parallelize(rows, nPartitions.getOrElse(hc.sc.defaultParallelism))
+      .mapPartitions(_.toRegionValueIterator(rowTyp))
+    TableValue(typ, BroadcastValue(Annotation.empty, typ.globalType, hc.sc), new UnpartitionedRVD(rowTyp, rvd))
   }
 }
 
@@ -623,11 +488,11 @@ case class TableFilter(child: TableIR, pred: IR) extends TableIR {
 
   def execute(hc: HailContext): TableValue = {
     val ktv = child.execute(hc)
-    val f = ir.Compile(
-      "row", ir.RegionValueRep[Long](child.typ.rowType),
-      "global", ir.RegionValueRep[Long](child.typ.globalType),
-      ir.RegionValueRep[Boolean](TBoolean()),
+    val (rTyp, f) = ir.Compile[Long, Long, Boolean](
+      "row", child.typ.rowType,
+      "global", child.typ.globalType,
       pred)
+    assert(rTyp == TBoolean())
     ktv.filter((rv, globalRV) => f()(rv.region, rv.offset, false, globalRV.offset, false))
   }
 }
@@ -649,12 +514,12 @@ case class TableAnnotate(child: TableIR, paths: IndexedSeq[String], preds: Index
 
   def execute(hc: HailContext): TableValue = {
     val tv = child.execute(hc)
-    val f = ir.Compile(
-      "row", ir.RegionValueRep[Long](child.typ.rowType),
-      "global", ir.RegionValueRep[Long](child.typ.globalType),
-      ir.RegionValueRep[Long](typ.rowType),
+    val (rTyp, f) = ir.Compile[Long, Long, Long](
+      "row", child.typ.rowType,
+      "global", child.typ.globalType,
       newIR)
-    val localGlobals = tv.globals
+    assert(rTyp == typ.rowType)
+    val globalsBc = tv.globals.broadcast
     val gType = typ.globalType
     TableValue(typ,
       tv.globals,
@@ -666,7 +531,7 @@ case class TableAnnotate(child: TableIR, paths: IndexedSeq[String], preds: Index
         it.map { rv =>
           globalRVb.set(rv.region)
           globalRVb.start(gType)
-          globalRVb.addAnnotation(gType, localGlobals)
+          globalRVb.addAnnotation(gType, globalsBc.value)
           globalRV.set(rv.region, globalRVb.end())
           rv2.set(rv.region, newRow(rv.region, rv.offset, false, globalRV.offset, false))
           rv2

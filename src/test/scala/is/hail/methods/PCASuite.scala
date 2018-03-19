@@ -5,6 +5,7 @@ import is.hail.SparkSuite
 import is.hail.annotations.Annotation
 import is.hail.expr.types._
 import is.hail.table.Table
+import is.hail.testUtils._
 import is.hail.variant.{ReferenceGenome, Locus, MatrixTable}
 import org.apache.spark.sql.Row
 import org.testng.annotations.Test
@@ -13,10 +14,11 @@ object PCASuite {
   def samplePCA(vsm: MatrixTable, k: Int = 10, computeLoadings: Boolean = false,
     asArray: Boolean = false): (IndexedSeq[Double], DenseMatrix[Double], Option[Table]) = {
 
-    val prePCA = vsm.annotateRowsExpr("AC = AGG.map(g => g.GT.nNonRefAlleles()).sum(), nCalled = AGG.filter(g => isDefined(g.GT)).count()")
-      .filterRowsExpr("va.AC > 0 && va.AC < 2 * va.nCalled").persist()
+    val prePCA = vsm.annotateRowsExpr(
+      "AC = AGG.map(g => g.GT.nNonRefAlleles()).sum(), nCalled = AGG.filter(g => isDefined(g.GT)).count()")
+      .filterRowsExpr("va.AC > 0 && va.AC.toInt64 < 2L * va.nCalled").persist()
     val nVariants = prePCA.countRows()
-    val expr = s"let mean = va.AC / va.nCalled in if (isDefined(g.GT)) (g.GT.nNonRefAlleles() - mean) / sqrt(mean * (2 - mean) * $nVariants / 2) else 0"
+    val expr = s"let mean = va.AC.toFloat64 / va.nCalled.toFloat64 in if (isDefined(g.GT)) (g.GT.nNonRefAlleles().toFloat64 - mean) / sqrt(mean * (2d - mean) * ${ nVariants }d / 2d) else 0d"
     
     PCA(prePCA, expr, k, computeLoadings, asArray)
   }
@@ -76,6 +78,7 @@ class PCASuite extends SparkSuite {
   @Test def testExpr() {
     val vds = hc.importVCF("src/test/resources/tiny_m.vcf")
         .filterRowsExpr("va.alleles.length() == 2")
-    val (eigenvalues, scores, loadings) = PCA(vds, "if (isDefined(g.GT)) g.GT.nNonRefAlleles() else 0", 3, true, true)
+    val (eigenvalues, scores, loadings) =
+      PCA(vds, "if (isDefined(g.GT)) g.GT.nNonRefAlleles().toFloat64 else 0.0", 3, true, true)
   }
 }
