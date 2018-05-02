@@ -54,7 +54,7 @@ public:
   char* buf_;
   char* bufPos_;
   char* bufLim_;
-  long  wantSize_;
+  
   
   NativeDecoder() :
     buf_(malloc(kBufSize)) {
@@ -63,15 +63,18 @@ public:
   ~NativeDecoder() {
     free(buf);
   }
-  
-  
-  long decodeUntilDoneOrNeedPush();
+    
+  long decodeUntilDoneOrNeedPush(long pushSize);
 };
 
 //
-// Return 0 if we have a complete RegionValue, N > 0 to request push of N bytes
+// Return 0 for a complete RegionValue, N > 0 if need push of N bytes
 //
-long NativeDecoder::decodeUntilDoneOrNeedPush() {
+long NativeDecoder::decodeUntilDoneOrNeedPush(long pushSize) {
+  // The caller has pushed new data after pushLim_
+  pushLim_ += pushSize;
+  
+  
 }
 
 NativeObjPtr makeNativeDecoder() {
@@ -82,15 +85,13 @@ long getPushAddr(long objAddr) {
   return (long)((NativeDecoder*)objAddr)->bufLim_);
 }
 
-long getPushSize(long objAddr) {
-  return ((NativeDecoder*)objAddr)->wantSize_;
-}
-
-long decodeUntilDoneOrNeedPush() {
-  return ((NativeDecoder*)objAddr)->decodeUntilDoneOrNeedPush();
+long decodeUntilDoneOrNeedPush(long pushSize) {
+  return ((NativeDecoder*)objAddr)->decodeUntilDoneOrNeedPush(pushSize);
 }
 
 NAMESPACE_HAIL_MODULE_END
 """)
+    NativeModule mod("", sb.toString(), false)
+    
   }
 }
