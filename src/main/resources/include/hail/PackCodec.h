@@ -123,9 +123,37 @@ public:
     return val;
   }
   
+  inline int8_t readByteNoCheck() {
+    return (int8_t)(*rpos_++);
+  }
+
+  inline int32_t readIntNoCheck() {
+    int32_t val = 0;
+    auto pos = rpos_;
+    for (int shift = 0;; shift += 7) {
+      uint8_t b = *pos++;
+      val |= (((int32_t)b & 0x7f) << shift);
+      if (b & 0x80) break;
+    }
+    rpos_ = pos;
+    return val;
+  }
+  
+  inline int64_t readLongNoCheck() {
+    int32_t val = 0;
+    auto pos = rpos_;
+    for (int shift = 0;; shift += 7) {
+      uint8_t b = *pos++;
+      val |= (((int64_t)b & 0x7f) << shift);
+      if (b & 0x80) break;
+    }
+    rpos_ = pos;
+    return val;
+  }
+    
   //
   // The arbitrary-size readXX routines return the number of elements
-  // read before hitting needPush.
+  // read before raising needPush.
   //
   
   long readBytes(void* dstBuf, long n) {
@@ -161,9 +189,6 @@ public:
   }
   
 };
-
-
-
 
 NAMESPACE_END(hail)
 
