@@ -644,6 +644,69 @@ final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, I
   }
 }
 
+//
+// Generate the Type-specific C++ code for a PackDecoder
+//
+object NativeDecode {
+
+  def appendCode(sb: StringBuilder, rowType: Type) {
+    val defs = new StringBuilder()
+    val code = new StringBuilder()
+
+    defs.append("int state_;\n")
+
+    code.append("public:\n")
+    code.append("")
+
+    var numStates = 0
+    def allocState(): Int = {
+      val s = numStates
+      numStates += 1
+      s
+    }
+    var maxDepth = 0;
+
+    def traverse(depth: Int, state: Int, name: String, t: Type): Int {
+      code.append("case ${state}:\n")
+      t match {
+        case TBinary =>
+          code.append("\n")
+
+        case TBoolean =>
+          code.append("tBool = readBoolean();\n")
+          code.append("if (needPush_) return;\n")
+        case TInt32 =>
+          code.
+        case TFloat32 =>
+        case TFloat64 =>
+
+        case TArray =>
+          while (maxDepth < depth) {
+            defs.append(s"  long idx${maxDepth};\n")
+            maxDepth += 1
+          }
+
+        case TBaseStruct =>
+
+
+      }
+    }
+
+    code.append("bool    tBool;\n")
+    code.append("int32_t tInt;\n")
+    code.append("int64_t tLong;\n")
+    code.append("float   tFloat;\n")
+    code.append("double  tDouble;\n")
+    code.append("switch (state_) {\n")
+    traverse(0, allocState(), "", rowType)
+    code.append("}\n")
+    code.append("finish:")
+
+
+
+  }
+}
+
 final class PackDecoder(rowType: Type, in: InputBuffer) extends Decoder {
   def close() {
     in.close()
