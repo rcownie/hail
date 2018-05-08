@@ -650,13 +650,25 @@ final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, I
 object NativeDecode {
 
   def appendCode(sb: StringBuilder, rowType: Type) {
-    val defs = new StringBuilder()
-    val code = new StringBuilder()
+    val head = new StringBuilder()
+    val foot = new StringBuilder()
+    val fieldDefs = new StringBuilder()
+    val methodHead = new StringBuilder()
+    val localDefs = new StringBuilder()
+    val codeA = new StringBuilder()
+    val codeB = new StringBuilder()
+    val methodFoot = new StringBuilder()
 
-    defs.append("int state_;\n")
-
-    code.append("public:\n")
-    code.append("")
+    head.append("#include \"hail/hail.h\"\n")
+    head.append("#include \"hail/PackCodec.h\"\n")
+    head.append("\n")
+    head.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
+    head.append("class Decoder : public PackDecoderBase {\n")
+    head.append("public:\n")
+    methodHead.append("virtual long decodeUntilDoneOrNeedPush(RegionObj* region, long pushSize) {\n")
+    methodFoot.append("}\n")
+    foot.append("};\n")
+    foot.append("NAMESPACE_HAIL_MODULE_END\n")
 
     var numStates = 0
     def allocState(): Int = {
@@ -664,6 +676,7 @@ object NativeDecode {
       numStates += 1
       s
     }
+
     var maxDepth = 0;
 
     def traverse(depth: Int, state: Int, name: String, t: Type): Int {
@@ -691,19 +704,14 @@ object NativeDecode {
 
       }
     }
-
-    code.append("bool    tBool;\n")
-    code.append("int32_t tInt;\n")
-    code.append("int64_t tLong;\n")
-    code.append("float   tFloat;\n")
-    code.append("double  tDouble;\n")
-    code.append("switch (state_) {\n")
-    traverse(0, allocState(), "", rowType)
-    code.append("}\n")
-    code.append("finish:")
-
-
-
+    sb.append(head)
+    sb.append(fieldDefs)
+    sb.append(methodHead)
+    sb.append(localDefs)
+    sb.append(codeA)
+    sb.append(codeB)
+    sb.append(methodFoot)
+    sb.append(foot)
   }
 }
 
