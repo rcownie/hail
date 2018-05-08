@@ -658,9 +658,9 @@ object NativeDecode {
     val mainCode = new StringBuilder()
 
     def stateVar(name: String, depth: Int): String = {
-      var d = if name.equals("state") 0 else depth
+      var d = if name.equals("s") 0 else depth
       val bit = name match {
-        case "state" => 0x1
+        case "s" => 0x1
         case "len" => 0x2
         case "idx" => 0x4
         case "off" => 0x8
@@ -698,12 +698,17 @@ object NativeDecode {
       }
       typ match {
         case t: TBoolean =>
-          mainCode.append(s"   if (!decodeByte(${stateVar("off", depth)}")
+          mainCode.append(s"   if (!decodeByte(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
         case t: TInt32 =>
+          mainCode.append(s"   if (!decodeInt(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
         case t: TInt64 =>
+          mainCode.append(s"   if (!decodeLong(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
         case t: TFloat32 =>
+          mainCode.append(s"   if (!decodeFloat(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
         case t: TFloat64 =>
+          mainCode.append(s"   if (!decodeDouble(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
         case t: TArray =>
+
         case t: TBaseStruct =>
       }
     }
