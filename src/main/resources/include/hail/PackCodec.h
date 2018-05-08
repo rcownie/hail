@@ -1,196 +1,135 @@
 #ifndef HAIL_PACKCODEC_H
 #define HAIL_PACKCODEC_H 1
 //
-// include/hail/PackCodec.h - C++ variable-size packed data
+// include/hail/PackCodec.h - packed file format funcs
 //
-// Richard Cownie, Hail Team, 2018-05-04
+// Richard Cownie, 
 //
 #include "hail/CommonDefs.h"
 #include "hail/NativeObj.h"
-#include <vector>
-#include <stdint.h>
-#include <string.h>
+#include "hail/Region.h"
 
 NAMESPACE_BEGIN(hail)
 
-//
-// The C++ decoder looks a little different because we want to do most of
-// the decode using methods which don't need to check the data-limit on
-// every byte access.
-//
-
-class PackDecoderBase {
+class PackDecoderBase : public NativeObj {
 private:
-  static const size_t kBufCapacity = 64*1024;
-  // The worst-case byte size of each encoded type
-  static const size_t kMaxSizeBoolean = 1;
-  static const size_t kMaxSizeByte = 1;
-  static const size_t kMaxSizeInt = 5;
-  static const size_t kMaxSizeLong = 10;
-  static const size_t kMaxSizeFloat = 4;
-  static const size_t kMaxSizeDouble = 8;
-  
-private:
-  size_t   capacity_;
-  uint8_t* buf_;
-  uint8_t* rpos_;
-  uint8_t* lim_;
-  bool needPush_;
+  static const long kDefaultCapacity = (64*1024);
+public:
+  long  capacity_;
+  char* buf_;
+  long  pos_;
+  long  size_;
+  RegionObj* region_;
   
 public:
-  PackDecoderBase() :
-    capacity_(kBufCapacity),
-    buf_((uint8_t*)malloc(capacity_),
-    rpos_(buf_),
-    lim_(buf_),
-    needPush_(false) {
+  PackDecoderBase(long bufCapacity) :
+    capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
+    buf_(malloc(capacity_)),
+    pos_(0),
+    size_(0) {
   }
   
   virtual ~PackDecoderBase() {
     if (buf_) free(buf_);
+    buf_ = nullptr;
+  }
+  
+  virtual long getFieldOffset(const char* s) {
+    auto zeroObj = reinterpret_cast<PackDecoderBase*>(0L);
+    if (!strcmp(s, "capacity_")) return (long)&zeroObj->capacity_;
+    if (!strcmp(s, "buf_"))      return (long)&zeroObj->buf_;
+    if (!strcmp(s, "pos_"))      return (long)&zeroObj->pos_;
+    if (!strcmp(s, "size_"))     return (long)&zeroObj->size_;
   }
   
   //
-  // Return maximum space available for push
+  // Return values:
+  //   0  => have a complete RegionValue
+  //   >0 => need push of more data
+  //   -1 => no more RegionValue's and no more data
   //
-  long prepareForPush() {
-    size_t remnantSize = (lim_ - rpos_);
-    memcpy(buf_, rpos_, remnantSize);
-    lim_ = (buf_ + remnantSize);
-    rpos_ = buf_;
-    return(capacity_ - remnantSize);
-  }
-  
-  long getPushAddr() {
-    return reinterpret_cast<long>(lim_);
-  }
-  
-  void acceptPush(long pushSize) {
-    lim_ += pushSize;
-  }
+  virtual long decodeUntilDoneOrNeedPush(RegionObj* region, long pushSize) = 0;
   
   //
-  // A readXXX method may run out of data, and in that case it
-  // sets needPush_ = true, and leaves rpos_ unchanged.
+  // Decode methods for primitive types
   //
-  inline int8_t readByte() {
-    auto pos = rpos_;
-    if (pos >= lim_) { needPush_ = true; return(0); }
-    auto val = *(int8_t*)pos++;
-    rpos_ = (uint8_t*)pos;
-    return val;
+  inline bool decodeByte(long off) {
+    long pos = pos_;
+    if (pos > size_) return false;
+    region->asByte(off) = *(int8_t*)(buf_+pos);
+    pos_ = ++pos
+    return true;
   }
   
-  inline int32_t readInt() {
-    int32_t val = 0;
-    auto pos = rpos_;
+  inline bool decodeLength(int* len) {
+    long pos = pos_;
+    int val = 0;
     for (int shift = 0;; shift += 7) {
-      if (pos >= lim_) { needPush_ = true; return(0); }
-      uint8_t b = *pos++;
-      val |= (((int32_t)b & 0x7f) << shift);
-      if (b & 0x80) break;
+      if (pos >= size_) return false;
+      int8_t b = mem_[pos++];
+      val |= ((b & 0x7f) << shift);
+      if ((b & 0x80) == 0) break;
     }
-    rpos_ = pos;
-    return val;
+    *len = val;
+    pos_ = pos;
+    return true;
   }
   
-  inline int64_t readLong() {
-    int32_t val = 0;
-    auto pos = rpos_;
+  inline bool decodeInt(long off) {
+    long pos = pos_;
+    int val = 0;
     for (int shift = 0;; shift += 7) {
-      if (pos >= lim_) { needPush_ = true; return(0); }
-      uint8_t b = *pos++;
-      val |= (((int64_t)b & 0x7f) << shift);
-      if (b & 0x80) break;
+      if (pos >= size_) return false;
+      int b = mem_[pos++];
+      val |= ((b & 0x7f) << shift);
+      if ((b & 0x80) == 0) break;
     }
-    rpos_ = pos;
-    return val;
+    region_->asInt(off) = val;
+    pos_ = pos;
+    return true;
   }
   
-  inline float readFloat() {
-    auto pos = rpos_;
-    if (pos+4 > lim_) { needPush_ = true; return(0); }
-    float val = *(float*)pos;
-    rpos_ = pos+4;
-    return val;
-  }
-
-  inline float readDouble() {
-    auto pos = rpos_;
-    if (pos+8 > lim_) { needPush_ = true; return(0); }
-    double val = *(double*)pos;
-    rpos_ = pos+8;
-    return val;
-  }
-  
-  inline int8_t readByteNoCheck() {
-    return (int8_t)(*rpos_++);
-  }
-
-  inline int32_t readIntNoCheck() {
-    int32_t val = 0;
-    auto pos = rpos_;
+  inline bool decodeLong(long off) {
+    long pos = pos_;
+    long val = 0;
     for (int shift = 0;; shift += 7) {
-      uint8_t b = *pos++;
-      val |= (((int32_t)b & 0x7f) << shift);
-      if (b & 0x80) break;
+      if (pos >= size_) return false;
+      long b = mem_[pos++];
+      val |= ((b & 0x7f) << shift);
+      if ((b & 0x80) == 0) break;
     }
-    rpos_ = pos;
-    return val;
+    region_->asLong(off) = val;
+    pos_ = pos;
+    return true;
   }
   
-  inline int64_t readLongNoCheck() {
-    int32_t val = 0;
-    auto pos = rpos_;
-    for (int shift = 0;; shift += 7) {
-      uint8_t b = *pos++;
-      val |= (((int64_t)b & 0x7f) << shift);
-      if (b & 0x80) break;
-    }
-    rpos_ = pos;
-    return val;
+  inline bool decodeFloat(long off) {
+    long pos = pos_;
+    if (pos+4 > size_) return false;
+    region_->asFloat(off) = *(float*)(buf_+pos);
+    pos_ = (pos+4);
+    return true;
   }
-    
-  //
-  // The arbitrary-size readXX routines return the number of elements
-  // read before raising needPush.
-  //
   
-  long readBytes(void* dstBuf, long n) {
-    long avail = (lim_ - rpos_);
-    if (n > avail) {
-      n = avail;
-      needPush_ = true;
-    } 
-    memcpy(dstBuf, rpos_, n);
-    rpos_ += n;
+  inline bool decodeDouble(long off) {
+    long pos = pos_;
+    if (pos+8 > size_) return false;
+    region_->asDouble(off) = *(double*)(buf_+pos);
+    pos_ = (pos+8);
+    return true;
+  }
+  
+  inline long decodeBytes(long off, long n) {
+    long pos = pos_;
+    if (n > size_-pos) n = size_-pos;
+    if (n > 0) {
+      memcpy(region->asCharStar(off), buf_+pos, n);
+      pos_ = (pos + n);
+    }
     return n;
   }
-  
-  long skipBytes(long n) {
-    long avail = (lim_ - rpos_);
-    if (n > avail) {
-      n = avail;
-      needPush_ = true;
-    } 
-    rpos_ += n;
-    return n;
-  }
-  
-  long readDoubles(double* dstBuf, long n) {
-    long avail = (lim_ - rpos_) / 8;
-    if (n > avail) {
-      n = avail;
-      needPush_ = true;
-    } 
-    memcpy(dstBuf, rpos_, n*8);
-    rpos_ += n*8;
-    return n;
-  }
-  
 };
 
 NAMESPACE_END(hail)
 
 #endif
-

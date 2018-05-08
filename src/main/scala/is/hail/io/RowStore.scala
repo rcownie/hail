@@ -650,68 +650,87 @@ final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, I
 object NativeDecode {
 
   def appendCode(sb: StringBuilder, rowType: Type) {
-    val head = new StringBuilder()
-    val foot = new StringBuilder()
-    val fieldDefs = new StringBuilder()
-    val methodHead = new StringBuilder()
+    var seen = new ArrayBuffer[Int]()
+    val stateDefs = new StringBuilder()
     val localDefs = new StringBuilder()
-    val codeA = new StringBuilder()
-    val codeB = new StringBuilder()
-    val methodFoot = new StringBuilder()
+    val flushCode = new StringBuilder()
+    val entryCode = new StringBuilder()
+    val mainCode = new StringBuilder()
 
-    head.append("#include \"hail/hail.h\"\n")
-    head.append("#include \"hail/PackCodec.h\"\n")
-    head.append("\n")
-    head.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
-    head.append("class Decoder : public PackDecoderBase {\n")
-    head.append("public:\n")
-    methodHead.append("virtual long decodeUntilDoneOrNeedPush(RegionObj* region, long pushSize) {\n")
-    methodFoot.append("}\n")
-    foot.append("};\n")
-    foot.append("NAMESPACE_HAIL_MODULE_END\n")
+    def stateVar(name: String, depth: Int): String = {
+      var d = if name.equals("state") 0 else depth
+      val bit = name match {
+        case "state" => 0x1
+        case "len" => 0x2
+        case "idx" => 0x4
+        case "off" => 0x8
+      }
+      if (seen.length <= d) seen = seen.padTo(d, 0)
+      if ((seen[d] & bit) == 0) {
+        seen[d] = (seen[d] | bit)
+        stateDefs.append(s"  long ${name}_ = 0;\n")
+        localDefs.append(s"    long ${name} = ${name}_;\n")
+        flushCode.append(s"    ${name}_ = ${name};\n")
+      }
+    }
 
     var numStates = 0
     def allocState(): Int = {
       val s = numStates
       numStates += 1
+      sb.append(entryCode, s"    case ${s}: goto resume${s};\n")
       s
     }
 
-    var maxDepth = 0;
-
-    def traverse(depth: Int, state: Int, name: String, t: Type): Int {
-      code.append("case ${state}:\n")
+    def isResumePoint(t: Type): Boolean = {
       t match {
-        case TBinary =>
-          code.append("\n")
-
-        case TBoolean =>
-          code.append("tBool = readBoolean();\n")
-          code.append("if (needPush_) return;\n")
-        case TInt32 =>
-          code.
-        case TFloat32 =>
-        case TFloat64 =>
-
-        case TArray =>
-          while (maxDepth < depth) {
-            defs.append(s"  long idx${maxDepth};\n")
-            maxDepth += 1
-          }
-
-        case TBaseStruct =>
-
-
+        case s: TBaseStruct => (s.nMissingBytes > 0)
+        case a: TArray => !a.required
+        case _ => true
       }
     }
-    sb.append(head)
-    sb.append(fieldDefs)
-    sb.append(methodHead)
+
+    def scan(depth: Int, name: String, typ: Type) {
+      var here = -1
+      if isResumePoint(typ) {
+        here = allocState()
+        mainCode.append(s"    resume${here}: // ${name}\n")
+      }
+      typ match {
+        case t: TBoolean =>
+          mainCode.append(s"   if (!decodeByte(${stateVar("off", depth)}")
+        case t: TInt32 =>
+        case t: TInt64 =>
+        case t: TFloat32 =>
+        case t: TFloat64 =>
+        case t: TArray =>
+        case t: TBaseStruct =>
+      }
+    }
+
+    scan(0, "root", rowType)
+
+    sb.append("#include \"hail/hail.h\"\n")
+    sb.append("#include \"hail/PackCodec.h\"\n")
+    sb.append("\n")
+    sb.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
+    sb.append("class Decoder : public PackDecoderBase {\n")
+    sb.append("public:\n")
+    sb.append(stateDefs)
+    sb.append("\n")
+    sb.append("virtual long decodeUntilDoneOrNeedPush(RegionObj* region, long pushSize) {\n")
     sb.append(localDefs)
-    sb.append(codeA)
-    sb.append(codeB)
-    sb.append(methodFoot)
-    sb.append(foot)
+    sb.append("  switch (state) {\n")
+    sb.append(entryCode)
+    sb.append("  }\n")
+    sb.append(mainCode)
+    sb.append("  return(0);\n")
+    sb.append("needpush:\n")
+    sb.append(flushCode)
+    sb.append("  return prepareForPush();\n")
+    sb.append("}\n")
+    sb.append("};\n")
+    sb.append("NAMESPACE_HAIL_MODULE_END\n")
   }
 }
 
