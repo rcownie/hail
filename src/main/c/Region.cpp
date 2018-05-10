@@ -5,7 +5,11 @@
 
 namespace hail {
 
-NATIVEMETHOD(void, Region, nativeCtor)(
+#define REGIONMETHOD(rtype, scala_class, scala_method) \
+  extern "C" __attribute__((visibility("default"))) \
+    rtype Java_is_hail_annotations_##scala_class##_##scala_method
+
+REGIONMETHOD(void, Region, nativeCtor)(
   JNIEnv* env,
   jobject thisJ
 ) {
@@ -13,7 +17,7 @@ NATIVEMETHOD(void, Region, nativeCtor)(
   init_NativePtr(env, thisJ, &ptr);
 }
 
-NATIVEMETHOD(void, Region, clearButKeepMem)(
+REGIONMETHOD(void, Region, clearButKeepMem)(
   JNIEnv* env,
   jobject thisJ
 ) {
@@ -21,7 +25,7 @@ NATIVEMETHOD(void, Region, clearButKeepMem)(
   r->clear_but_keep_mem();
 }
 
-NATIVEMETHOD(void, Region, nativeAlign)(
+REGIONMETHOD(void, Region, nativeAlign)(
   JNIEnv* env,
   jobject thisJ,
   jlong a
@@ -30,7 +34,7 @@ NATIVEMETHOD(void, Region, nativeAlign)(
   r->align(a);
 }
 
-NATIVEMETHOD(long, Region, nativeAlignAllocate)(
+REGIONMETHOD(long, Region, nativeAlignAllocate)(
   JNIEnv* env,
   jobject thisJ,
   jlong a,
@@ -40,7 +44,7 @@ NATIVEMETHOD(long, Region, nativeAlignAllocate)(
   return reinterpret_cast<long>(r->allocate(a, n));
 }
 
-NATIVEMETHOD(long, Region, nativeAllocate)(
+REGIONMETHOD(long, Region, nativeAllocate)(
   JNIEnv* env,
   jobject thisJ,
   jlong n

@@ -7,6 +7,7 @@ import com.esotericsoftware.kryo.io.{Input, Output}
 import com.esotericsoftware.kryo.{Kryo, KryoSerializable}
 import is.hail.expr.types._
 import is.hail.utils._
+import is.hail.nativecode._
 
 object Region {
   def apply(sizeHint: Long = 128): Region = {
@@ -17,7 +18,80 @@ object Region {
     using(Region())(f)
 }
 
-final class Region(
+final class Region() extends NativePtrBase {
+  @native def nativeCtor(): Unit
+  nativeCtor()
+  
+  def this(b: Region) {
+    this()
+    copyAssign(b)
+  }  
+  
+  def this(b: Array[Byte], size: Long) {
+    this()
+    // FIXME
+  }
+  
+  
+  final def copyAssign(b: Region) = super.copyAssign(b)
+  final def moveAssign(b: Region) = super.moveAssign(b)
+  
+  @native def clearButKeepMem(): Unit
+  final def clear(): Unit = clearButKeepMem()
+  
+  @native def nativeAlign(alignment: Long): Unit
+  @native def nativeAlignAllocate(alignment: Long, n: Long): Long
+  @native def nativeAllocate(n: Long): Long
+  
+  final def align(a: Long) = nativeAlign(a)
+  final def allocate(a: Long, n: Long) = nativeAlignAllocate(a, n)
+  final def allocate(n: Long) = nativeAllocate(n)
+  
+  final def loadInt(addr: Long): Int = Memory.loadInt(addr)
+  final def loadLong(addr: Long): Long = Memory.loadLong(addr)
+  final def loadFloat(addr: Long): Float = Memory.loadFloat(addr)
+  final def loadDouble(addr: Long): Double = Memory.loadDouble(addr)
+  final def loadAddress(addr: Long): Long = Memory.loadLong(addr)
+  final def loadByte(addr: Long): Byte = Memory.loadByte(addr)
+  
+  final def storeInt(addr: Long, v: Int) = Memory.storeInt(addr, v)
+  final def storeLong(addr: Long, v: Long) = Memory.storeLong(addr, v)
+  final def storeFloat(addr: Long, v: Float) = Memory.storeFloat(addr, v)
+  final def storeDouble(addr: Long, v: Double) = Memory.storeDouble(addr, v)
+  final def storeAddress(addr: Long, v: Address) = Memory.storeAddress(addr, v)
+  final def storeByte(addr: Long, v: Byte) = Memory.storeByte(addr, v)
+  
+  final def loadBoolean(addr: Long): Boolean = if (Memory.loadByte(addr) == 0) false else true
+  final def storeBoolean(addr: Long, v: Boolean) = Memory.storeByte(addr, if (v) 1 else 0)
+  
+  final def loadBit(byteOff: Long, bitOff: Long): Boolean = {
+    val b = byteOff + (bitOff >> 3)
+    (loadByte(b) & (1 << (bitOff & 7))) != 0
+  }
+
+  final def setBit(byteOff: Long, bitOff: Long) {
+    val b = byteOff + (bitOff >> 3)
+    storeByte(b,
+      (loadByte(b) | (1 << (bitOff & 7))).toByte)
+  }
+
+  final def clearBit(byteOff: Long, bitOff: Long) {
+    val b = byteOff + (bitOff >> 3)
+    storeByte(b,
+      (loadByte(b) & ~(1 << (bitOff & 7))).toByte)
+  }
+
+  final def storeBit(byteOff: Long, bitOff: Long, b: Boolean) {
+    if (b)
+      setBit(byteOff, bitOff)
+    else
+      clearBit(byteOff, bitOff)
+  }
+
+  
+}
+
+final class OldRegion(
   private var mem: Array[Byte],
   private var end: Long = 0
 ) extends KryoSerializable with Serializable with AutoCloseable {
