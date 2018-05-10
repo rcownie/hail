@@ -5,7 +5,7 @@
 OBJECTS := \
   ibs.o davies.o \
   NativeModule.o NativePtr.o \
-  NativeStatus.o NativeLongFunc.o NativeCodeSuite.o
+  NativeStatus.o NativeLongFunc.o NativeCodeSuite.o Region.o
 
 UNAME_S := $(shell uname -s)
 UNAME_P := $(shell uname -p)

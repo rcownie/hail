@@ -8,13 +8,13 @@
 
 namespace hail {
 
-typedef long LongFuncN(...);
-typedef NativeObjPtr PtrFuncN(...);
+using LongFuncN = long(...);
+using PtrFuncN = NativeObjPtr(...);
 
 template<typename ReturnT>
 class NativeFuncObj : public NativeObj {
 public:
-  typedef ReturnT FuncType(...);
+  using FuncType = ReturnT(...);
 public:
   NativeObjPtr module_; // keep-alive for the loaded module
   FuncType *func_;
