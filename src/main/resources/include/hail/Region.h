@@ -15,15 +15,15 @@ using RegionPtr = std::shared_ptr<Region>;
 
 class Region : public NativeObj {
 private:
-  static const long kChunkCap = (16*1024);
-  static const long kMaxSmall = 256;
+  static const long kChunkCap = 64*1024;
+  static const long kMaxSmall = 1024;
 public:
   char* chunk_;
   long  pos_;
   std::vector<char*> free_chunks_;
   std::vector<char*> full_chunks_;
   std::vector<char*> big_allocs_;
-  std::vector<RegionPtr> ancestors_;
+  std::vector<RegionPtr> required_regions_;
 
 public:  
   Region() :

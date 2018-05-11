@@ -18,7 +18,17 @@ object Region {
     using(Region())(f)
 }
 
-final class Region() extends NativeBase() with Serializable {
+// Off-heap implementation of Region refquires some interface changes
+//
+//  - it now has multiple memory chunks rather than one contiguous buffer
+//
+//  - references are now absolute addresses rather than buffer-offsets
+//
+//  - consequently, Region is not copy'able or Serializable, because
+//    those operations have to know the RegionValue's Type to convert
+//    within-Region references to/from absolute addresses.
+
+final class Region() extends NativeBase() {
   @native def nativeCtor(): Unit
   nativeCtor()
   
@@ -27,8 +37,8 @@ final class Region() extends NativeBase() with Serializable {
     copyAssign(b)
   }  
 
-   // FIXME: not sure what this should mean ...
-  def setFrom(b: Region) { }
+  // FIXME: not sure what this should mean ...
+  // def setFrom(b: Region) { }
 
   final def copyAssign(b: Region) = super.copyAssign(b)
   final def moveAssign(b: Region) = super.moveAssign(b)
@@ -41,8 +51,8 @@ final class Region() extends NativeBase() with Serializable {
   @native def nativeAllocate(n: Long): Long
   
   final def align(a: Long) = nativeAlign(a)
-  final def allocate(a: Long, n: Long) = nativeAlignAllocate(a, n)
-  final def allocate(n: Long) = nativeAllocate(n)
+  final def allocate(a: Long, n: Long): Long = nativeAlignAllocate(a, n)
+  final def allocate(n: Long): Long = nativeAllocate(n)
   
   final def loadInt(addr: Long): Int = Memory.loadInt(addr)
   final def loadLong(addr: Long): Long = Memory.loadLong(addr)
@@ -108,11 +118,14 @@ final class Region() extends NativeBase() with Serializable {
   }
 
   final def appendBinary(v: Array[Byte]): Long = {
-    var grain = TBinary.contentAlignment
-    if (grain < 4) grain = 4
-    val addr = allocate(grain, 4+v.length)
-    storeInt(addr, v.length)
-    storeBytes(addr, v)
+    val len: Int = v.length
+    val grain = TBinary.contentAlignment
+    val addr = if (grain <= 4)
+      allocate(4, 4*(1+len))
+    else
+      allocate(grain, grain*(1+len)) + grain-4
+    storeInt(addr, len)
+    storeBytes(addr+4, v)
     addr
   }
 

@@ -33,7 +33,11 @@ final class RegionValue(var region: Region,
 
   def pretty(t: Type): String = region.pretty(t, offset)
 
-  //def copy(): RegionValue = RegionValue(region.copy(), offset)
+  // We need to know the Type to be able to
+  def copy(t: Type): RegionValue = {
+    // FIXME: write this func
+    new RegionValue(new Region(), 0)
+  }
 
 
   private def writeObject(s: ObjectOutputStream): Unit = {
