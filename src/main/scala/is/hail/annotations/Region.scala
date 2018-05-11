@@ -11,14 +11,14 @@ import is.hail.nativecode._
 
 object Region {
   def apply(sizeHint: Long = 128): Region = {
-    new Region(new Array[Byte](sizeHint.toInt))
+    new Region()
   }
 
   def scoped[T](f: Region => T): T =
     using(Region())(f)
 }
 
-final class Region() extends NativePtrBase {
+final class Region() extends NativeBase() with Serializable {
   @native def nativeCtor(): Unit
   nativeCtor()
   
@@ -26,13 +26,16 @@ final class Region() extends NativePtrBase {
     this()
     copyAssign(b)
   }  
-  
+
+  /*
   def this(b: Array[Byte], size: Long) {
     this()
-    // FIXME
   }
-  
-  
+  */
+
+  // FIXME: not sure what this should mean ...
+  def setFrom(b: Region) { }
+
   final def copyAssign(b: Region) = super.copyAssign(b)
   final def moveAssign(b: Region) = super.moveAssign(b)
   
@@ -58,12 +61,34 @@ final class Region() extends NativePtrBase {
   final def storeLong(addr: Long, v: Long) = Memory.storeLong(addr, v)
   final def storeFloat(addr: Long, v: Float) = Memory.storeFloat(addr, v)
   final def storeDouble(addr: Long, v: Double) = Memory.storeDouble(addr, v)
-  final def storeAddress(addr: Long, v: Address) = Memory.storeAddress(addr, v)
+  final def storeAddress(addr: Long, v: Long) = Memory.storeAddress(addr, v)
   final def storeByte(addr: Long, v: Byte) = Memory.storeByte(addr, v)
   
   final def loadBoolean(addr: Long): Boolean = if (Memory.loadByte(addr) == 0) false else true
   final def storeBoolean(addr: Long, v: Boolean) = Memory.storeByte(addr, if (v) 1 else 0)
-  
+
+  final def loadBytes(addr: Long, n: Int): Array[Byte] = {
+    val a = new Array[Byte](n)
+    Memory.copyToArray(a, 0, addr, n)
+    a
+  }
+
+  final def loadBytes(addr: Long, dst: Array[Byte], dstOff: Long, n: Long): Unit = {
+    Memory.copyToArray(dst, dstOff, addr, n)
+  }
+
+  final def storeBytes(addr: Long, src: Array[Byte]) {
+    Memory.copyFromArray(addr, src, 0, src.length)
+  }
+
+  final def storeBytes(addr: Long, src: Array[Byte], srcOff: Long, n: Long) {
+    Memory.copyFromArray(addr, src, srcOff, n)
+  }
+
+  final def copyFrom(src: Region, srcOff: Long, dstOff: Long, n: Long) {
+    Memory.memcpy(dstOff, srcOff, n)
+  }
+
   final def loadBit(byteOff: Long, bitOff: Long): Boolean = {
     val b = byteOff + (bitOff >> 3)
     (loadByte(b) & (1 << (bitOff & 7))) != 0
@@ -88,7 +113,100 @@ final class Region() extends NativePtrBase {
       clearBit(byteOff, bitOff)
   }
 
-  
+  /*
+  final def appendInt(v: Int): Long = {
+    val addr = allocate(4, 4)
+    storeInt(addr, v)
+    addr
+  }
+  */
+
+  def appendBinary(v: Array[Byte]): Long = {
+    var grain = TBinary.contentAlignment
+    if (grain < 4) grain = 4
+    val addr = allocate(grain, 4+v.length)
+    storeInt(addr, v.length)
+    storeBytes(addr, v)
+    addr
+  }
+
+  final def appendArrayInt(v: Array[Int]): Long = {
+    val len: Int = v.length
+    val addr = allocate(4, 4*(1+len))
+    storeInt(addr, len)
+    val data = addr+4
+    for (idx <- 0 to len-1)
+      storeInt(data+4*idx, v(idx))
+    addr
+  }
+
+  def visit(t: Type, off: Long, v: ValueVisitor) {
+    t match {
+      case _: TBoolean => v.visitBoolean(loadBoolean(off))
+      case _: TInt32 => v.visitInt32(loadInt(off))
+      case _: TInt64 => v.visitInt64(loadLong(off))
+      case _: TFloat32 => v.visitFloat32(loadFloat(off))
+      case _: TFloat64 => v.visitFloat64(loadDouble(off))
+      case _: TString =>
+        val boff = off
+        v.visitString(TString.loadString(this, boff))
+      case _: TBinary =>
+        val boff = off
+        val length = TBinary.loadLength(this, boff)
+        val b = loadBytes(TBinary.bytesOffset(boff), length)
+        v.visitBinary(b)
+      case t: TContainer =>
+        val aoff = off
+        val length = t.loadLength(this, aoff)
+        v.enterArray(t, length)
+        var i = 0
+        while (i < length) {
+          v.enterElement(i)
+          if (t.isElementDefined(this, aoff, i))
+            visit(t.elementType, t.loadElement(this, aoff, length, i), v)
+          else
+            v.visitMissing(t.elementType)
+          i += 1
+        }
+        v.leaveArray()
+      case t: TStruct =>
+        v.enterStruct(t)
+        var i = 0
+        while (i < t.size) {
+          val f = t.fields(i)
+          v.enterField(f)
+          if (t.isFieldDefined(this, off, i))
+            visit(f.typ, t.loadField(this, off, i), v)
+          else
+            v.visitMissing(f.typ)
+          v.leaveField()
+          i += 1
+        }
+        v.leaveStruct()
+      case t: TTuple =>
+        v.enterTuple(t)
+        var i = 0
+        while (i < t.size) {
+          v.enterElement(i)
+          if (t.isFieldDefined(this, off, i))
+            visit(t.types(i), t.loadField(this, off, i), v)
+          else
+            v.visitMissing(t.types(i))
+          v.leaveElement()
+          i += 1
+        }
+        v.leaveTuple()
+      case t: ComplexType =>
+        visit(t.representation, off, v)
+    }
+  }
+
+  def pretty(t: Type, off: Long): String = {
+    val v = new PrettyVisitor()
+    visit(t, off, v)
+    v.result()
+  }
+
 }
 
 final class OldRegion(
@@ -99,7 +217,7 @@ final class OldRegion(
 
   def capacity: Long = mem.length
 
-  def copyFrom(other: Region, readStart: Long, writeStart: Long, n: Long) {
+  def copyFrom(other: OldRegion, readStart: Long, writeStart: Long, n: Long) {
     assert(size <= capacity)
     assert(other.size <= other.capacity)
     assert(n >= 0)
@@ -333,7 +451,7 @@ final class OldRegion(
     end = 0
   }
 
-  def setFrom(from: Region) {
+  def setFrom(from: OldRegion) {
     if (from.end > capacity) {
       val newLength = math.max((capacity * 3) / 2, from.end)
       mem = new Array[Byte](newLength.toInt)
@@ -342,8 +460,8 @@ final class OldRegion(
     end = from.end
   }
 
-  def copy(): Region = {
-    new Region(util.Arrays.copyOf(mem, end.toInt), end)
+  def copy(): OldRegion = {
+    new OldRegion(util.Arrays.copyOf(mem, end.toInt), end)
   }
 
   override def write(kryo: Kryo, output: Output) {
@@ -378,6 +496,7 @@ final class OldRegion(
     in.read(mem)
   }
 
+  /*
   def visit(t: Type, off: Long, v: ValueVisitor) {
     t match {
       case _: TBoolean => v.visitBoolean(loadBoolean(off))
@@ -444,6 +563,7 @@ final class OldRegion(
     visit(t, off, v)
     v.result()
   }
+  */
 
   def close(): Unit = ()
 }

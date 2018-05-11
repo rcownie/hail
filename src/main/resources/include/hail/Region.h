@@ -4,6 +4,7 @@
 #include "hail/NativeObj.h"
 #include "hail/NativePtr.h"
 #include <stdlib.h>
+#include <string.h>
 #include <memory>
 #include <vector>
 

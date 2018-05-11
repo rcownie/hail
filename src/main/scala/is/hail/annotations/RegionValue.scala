@@ -33,7 +33,7 @@ final class RegionValue(var region: Region,
 
   def pretty(t: Type): String = region.pretty(t, offset)
 
-  def copy(): RegionValue = RegionValue(region.copy(), offset)
+  //def copy(): RegionValue = RegionValue(region.copy(), offset)
 
 
   private def writeObject(s: ObjectOutputStream): Unit = {
