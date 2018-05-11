@@ -27,13 +27,7 @@ final class Region() extends NativeBase() with Serializable {
     copyAssign(b)
   }  
 
-  /*
-  def this(b: Array[Byte], size: Long) {
-    this()
-  }
-  */
-
-  // FIXME: not sure what this should mean ...
+   // FIXME: not sure what this should mean ...
   def setFrom(b: Region) { }
 
   final def copyAssign(b: Region) = super.copyAssign(b)
@@ -113,15 +107,7 @@ final class Region() extends NativeBase() with Serializable {
       clearBit(byteOff, bitOff)
   }
 
-  /*
-  final def appendInt(v: Int): Long = {
-    val addr = allocate(4, 4)
-    storeInt(addr, v)
-    addr
-  }
-  */
-
-  def appendBinary(v: Array[Byte]): Long = {
+  final def appendBinary(v: Array[Byte]): Long = {
     var grain = TBinary.contentAlignment
     if (grain < 4) grain = 4
     val addr = allocate(grain, 4+v.length)
@@ -135,8 +121,7 @@ final class Region() extends NativeBase() with Serializable {
     val addr = allocate(4, 4*(1+len))
     storeInt(addr, len)
     val data = addr+4
-    for (idx <- 0 to len-1)
-      storeInt(data+4*idx, v(idx))
+    for (idx <- 0 to len-1) storeInt(data+4*idx, v(idx))
     addr
   }
 
@@ -209,6 +194,7 @@ final class Region() extends NativeBase() with Serializable {
 
 }
 
+/*
 final class OldRegion(
   private var mem: Array[Byte],
   private var end: Long = 0
@@ -496,7 +482,6 @@ final class OldRegion(
     in.read(mem)
   }
 
-  /*
   def visit(t: Type, off: Long, v: ValueVisitor) {
     t match {
       case _: TBoolean => v.visitBoolean(loadBoolean(off))
@@ -563,7 +548,7 @@ final class OldRegion(
     visit(t, off, v)
     v.result()
   }
-  */
 
   def close(): Unit = ()
 }
+*/
