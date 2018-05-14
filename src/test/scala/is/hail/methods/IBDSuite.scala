@@ -157,4 +157,12 @@ class IBDSuite extends SparkSuite {
     val us = IBD(vds).typeCheck()
   }
 
+  // Exercise code with a computeMafExpr without checking the result
+  @Test def ibdWithMafExpr(): Unit = {
+    val vds = hc.importVCF("src/test/resources/sample.vcf")
+    val vds2 = vds.annotateRowsExpr("dummy_maf = 0.01")
+
+    val us = IBD.toRDD(IBD(vds2, computeMafExpr = Some("va.dummy_maf"))).collect().toMap
+  }
+
 }

@@ -311,6 +311,11 @@ object IBD {
       }
     }
 
+    computeMafExpr match {
+      case Some(s) => System.err.println(s"DEBUG: IBD(computeMafExpr Some(${s})")
+      case None => System.err.println(s"DEBUG: IBD(computeMafExpr None)")
+    }
+
     val computeMaf = computeMafExpr.map(generateComputeMaf(vds, _))
     val sampleIds = vds.stringSampleIds
 
