@@ -1,7 +1,7 @@
 package is.hail.methods
 
 import is.hail.HailContext
-import is.hail.expr.EvalContext
+import is.hail.expr.{EvalContext,Parser}
 import is.hail.table.Table
 import is.hail.annotations._
 import is.hail.expr.types._
@@ -350,7 +350,13 @@ object IBD {
 
     val mafSymbolTable = Map("va" -> (0, vds.rowType))
     val mafEc = EvalContext(mafSymbolTable)
-    val computeMafThunk = RegressionUtils.parseExprAsDouble(computeMafExpr, mafEc)
+    val mafAst = Parser.parseToAST(computeMafExpr, mafEc)
+    val computeMafThunk = mafAst.toIR() match {
+      case Some(ir) =>
+
+      case None =>
+        RegressionUtils.parseExprAsDouble(computeMafExpr, mafEc)
+    }
     val rowType = vds.rvRowType
 
     val rowKeysF = vds.rowKeysF
