@@ -353,12 +353,11 @@ object IBD {
     val mafEc = EvalContext(mafSymbolTable)
     val mafAst = Parser.parseToAST(computeMafExpr, mafEc)
 
-    val rowType = vds.rvRowType
+    val rvRowType = vds.rvRowType
     val rowKeysF = vds.rowKeysF
     val localRowType = vds.rowType
 
-    var computeMafFromRV = { (rv: RegionValue) => 0.0 }
-    computeMafFromRV = mafAst.toIR() match {
+    val computeMafFromRV = mafAst.toIR() match {
       case Some(ir0) =>
         System.err.println(s"DEBUG: computeMafExpr ${computeMafExpr} IR")
         // The expression may need a cast to Double
@@ -385,7 +384,7 @@ object IBD {
         }
     }
 
-    { (rv: RegionValue) =>
+    (rv: RegionValue) => {
       val maf = computeMafFromRV(rv)
 
       if (maf == null) {
