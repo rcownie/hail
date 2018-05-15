@@ -362,7 +362,7 @@ object IBD {
       case Some(ir0) =>
         System.err.println(s"DEBUG: computeMafExpr ${computeMafExpr} IR")
         // The expression may need a cast to Double
-        val ir1 = if (ir0.typ.isInstanceOf[Double]) ir0 else Cast(ir0, TFloat64())
+        val ir1 = if (ir0.typ.isInstanceOf[TFloat64]) ir0 else Cast(ir0, TFloat64())
         val irThunk = ir.Compile(
           "va", ir.RegionValueRep[Long](localRowType),
           "_dummyA", ir.RegionValueRep[Long](localRowType),
