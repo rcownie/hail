@@ -312,11 +312,6 @@ object IBD {
       }
     }
 
-    computeMafExpr match {
-      case Some(s) => System.err.println(s"DEBUG: IBD(computeMafExpr Some(${s})")
-      case None => System.err.println(s"DEBUG: IBD(computeMafExpr None)")
-    }
-
     val computeMaf = computeMafExpr.map(generateComputeMaf(vds, _))
     val sampleIds = vds.stringSampleIds
 
@@ -359,7 +354,6 @@ object IBD {
 
     val computeMafFromRV = mafAst.toIR() match {
       case Some(ir0) =>
-        System.err.println(s"DEBUG: computeMafExpr ${computeMafExpr} IR")
         // The expression may need a cast to Double
         val ir1 = if (ir0.typ.isInstanceOf[TFloat64]) ir0 else Cast(ir0, TFloat64())
         val irThunk = ir.Compile(
@@ -369,12 +363,10 @@ object IBD {
           ir1
         )
         (rv: RegionValue) => {
-          val vaStartOffset = 0
-          val result: java.lang.Double = irThunk()(rv.region, vaStartOffset, false, 0, false)
+          val result: java.lang.Double = irThunk()(rv.region, rv.offset, false, 0, true)
           result
         }
       case None =>
-        System.err.println(s"DEBUG: computeMafExpr ${computeMafExpr} non-IR")
         val computeMafFromEc = RegressionUtils.parseExprAsDouble(computeMafExpr, mafEc)
         (rv: RegionValue) => {
           val row = new UnsafeRow(localRowType, rv)
@@ -386,7 +378,6 @@ object IBD {
 
     (rv: RegionValue) => {
       val maf = computeMafFromRV(rv)
-
       if (maf == null) {
         val row = new UnsafeRow(localRowType, rv)
         fatal(s"The minor allele frequency expression evaluated to NA at ${rowKeysF(row)}.")
