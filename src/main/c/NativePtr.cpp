@@ -33,6 +33,11 @@ void init_info(JNIEnv* env) {
   addrA_id = env->GetFieldID(cl, "addrA", "J");
   addrB_id = env->GetFieldID(cl, "addrB", "J");
   is_info_ready = true;
+  // Check that std::shared_ptr matches our assumptions
+  auto ptr = std::make_shared<NativeObj>();
+  auto vec = ALIAS_AS_LONGVEC(&ptr);
+  assert(sizeof(ptr) == 2*sizeof(long));
+  assert(vec[0] = reinterpret_cast<long>(ptr.get()));
 }
 
 } // end anon
