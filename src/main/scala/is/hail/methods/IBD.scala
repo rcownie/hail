@@ -1,7 +1,8 @@
 package is.hail.methods
 
 import is.hail.HailContext
-import is.hail.expr.{EvalContext,Parser}
+import is.hail.expr._
+import is.hail.expr.ir._
 import is.hail.table.Table
 import is.hail.annotations._
 import is.hail.expr.types._
@@ -351,28 +352,50 @@ object IBD {
     val mafSymbolTable = Map("va" -> (0, vds.rowType))
     val mafEc = EvalContext(mafSymbolTable)
     val mafAst = Parser.parseToAST(computeMafExpr, mafEc)
-    val computeMafThunk = mafAst.toIR() match {
-      case Some(ir) =>
 
-      case None =>
-        RegressionUtils.parseExprAsDouble(computeMafExpr, mafEc)
-    }
     val rowType = vds.rvRowType
-
     val rowKeysF = vds.rowKeysF
     val localRowType = vds.rowType
 
+    var computeMafFromRV = { (rv: RegionValue) => 0.0 }
+    computeMafFromRV = mafAst.toIR() match {
+      case Some(ir0) =>
+        System.err.println(s"DEBUG: computeMafExpr ${computeMafExpr} IR")
+        // The expression may need a cast to Double
+        val ir1 = if (ir0.typ.isInstanceOf[Double]) ir0 else Cast(ir0, TFloat64())
+        val irThunk = ir.Compile(
+          "va", ir.RegionValueRep[Long](localRowType),
+          "_dummyA", ir.RegionValueRep[Long](localRowType),
+          ir.RegionValueRep[Double](TFloat64()),
+          ir1
+        )
+        (rv: RegionValue) => {
+          val vaStartOffset = 0
+          val result: java.lang.Double = irThunk()(rv.region, vaStartOffset, false, 0, false)
+          result
+        }
+      case None =>
+        System.err.println(s"DEBUG: computeMafExpr ${computeMafExpr} non-IR")
+        val computeMafFromEc = RegressionUtils.parseExprAsDouble(computeMafExpr, mafEc)
+        (rv: RegionValue) => {
+          val row = new UnsafeRow(localRowType, rv)
+          mafEc.setAll(row)
+          val result: java.lang.Double = computeMafFromEc()
+          result
+        }
+    }
+
     { (rv: RegionValue) =>
-      val row = new UnsafeRow(localRowType, rv)
-      mafEc.setAll(row)
-      val maf = computeMafThunk()
+      val maf = computeMafFromRV(rv)
 
-      if (maf == null)
+      if (maf == null) {
+        val row = new UnsafeRow(localRowType, rv)
         fatal(s"The minor allele frequency expression evaluated to NA at ${rowKeysF(row)}.")
-
-      if (maf < 0.0 || maf > 1.0)
+      }
+      if (maf < 0.0 || maf > 1.0) {
+        val row = new UnsafeRow(localRowType, rv)
         fatal(s"The minor allele frequency expression for ${rowKeysF(row)} evaluated to $maf which is not in [0,1].")
-
+      }
       maf
     }
   }
