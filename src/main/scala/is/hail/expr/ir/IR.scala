@@ -1,9 +1,8 @@
 package is.hail.expr.ir
 
-import is.hail.annotations.aggregators.RegionValueAggregator
 import is.hail.expr.types._
 import is.hail.expr.{BaseIR, MatrixIR, MatrixValue, TableIR}
-import is.hail.expr.ir.functions.{IRFunction, IRFunctionRegistry, IRFunctionWithMissingness, IRFunctionWithoutMissingness}
+import is.hail.expr.ir.functions.{IRFunctionRegistry, IRFunctionWithMissingness, IRFunctionWithoutMissingness}
 import is.hail.utils.ExportType
 
 import scala.language.existentials
@@ -21,6 +20,13 @@ sealed trait IR extends BaseIR {
       case x: IR => x.size
       case _ => 0
     }.sum
+
+  private[this] def _unwrap: IR => IR = {
+    case node: ApplyIR => Recur(_unwrap)(node.explicitNode)
+    case node => Recur(_unwrap)(node)
+  }
+
+  def unwrap: IR = _unwrap(this)
 }
 
 object Literal {
@@ -101,15 +107,23 @@ final case class ArrayFor(a: IR, valueName: String, body: IR) extends IR {
   val typ = TVoid
 }
 
-final case class AggIn(var typ: TAggregable) extends IR
-final case class AggMap(a: IR, name: String, body: IR) extends InferIR
-final case class AggFilter(a: IR, name: String, body: IR) extends InferIR
-final case class AggFlatMap(a: IR, name: String, body: IR) extends InferIR
-final case class ApplyAggOp(a: IR, op: AggOp, args: Seq[IR]) extends InferIR {
-  def inputType: Type = coerce[TAggregable](a.typ).elementType
+final case class ApplyAggOp(a: IR, constructorArgs: IndexedSeq[IR], initOpArgs: Option[IndexedSeq[IR]], aggSig: AggSignature) extends InferIR {
+  assert(constructorArgs.map(_.typ) == aggSig.constructorArgs)
+  assert(initOpArgs.map(_.map(_.typ)) == aggSig.initOpArgs)
+
+  def nConstructorArgs = constructorArgs.length
+
+  def hasInitOp = initOpArgs.isDefined
+
+  def op: AggOp = aggSig.op
+
+  def inputType: Type = aggSig.inputType
 }
 
-final case class SeqOp(a: IR, i: IR, agg: CodeAggregator[T] forSome { type T <: RegionValueAggregator }) extends IR {
+final case class InitOp(i: IR, args: IndexedSeq[IR], aggSig: AggSignature) extends IR {
+  val typ = TVoid
+}
+final case class SeqOp(a: IR, i: IR, aggSig: AggSignature) extends IR {
   val typ = TVoid
 }
 
@@ -132,8 +146,14 @@ final case class In(i: Int, typ: Type) extends IR
 // FIXME: should be type any
 final case class Die(message: String) extends IR { val typ = TVoid }
 
+final case class ApplyIR(function: String, args: Seq[IR], conversion: Seq[IR] => IR) extends IR {
+  val explicitNode: IR = conversion(args)
+
+  def typ: Type = explicitNode.typ
+}
+
 final case class Apply(function: String, args: Seq[IR]) extends IR {
-  val implementation: IRFunctionWithoutMissingness =
+  lazy val implementation: IRFunctionWithoutMissingness =
     IRFunctionRegistry.lookupFunction(function, args.map(_.typ)).get.asInstanceOf[IRFunctionWithoutMissingness]
 
   def typ: Type = {
@@ -147,7 +167,7 @@ final case class Apply(function: String, args: Seq[IR]) extends IR {
 }
 
 final case class ApplySpecial(function: String, args: Seq[IR]) extends IR {
-  val implementation: IRFunctionWithMissingness =
+  lazy val implementation: IRFunctionWithMissingness =
     IRFunctionRegistry.lookupFunction(function, args.map(_.typ)).get.asInstanceOf[IRFunctionWithMissingness]
 
   def typ: Type = {
@@ -155,7 +175,7 @@ final case class ApplySpecial(function: String, args: Seq[IR]) extends IR {
     implementation.unify(argTypes)
     implementation.returnType.subst()
   }
-
+  
   def isDeterministic: Boolean = implementation.isDeterministic
 }
 

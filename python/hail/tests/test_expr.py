@@ -158,6 +158,11 @@ class Tests(unittest.TestCase):
             self.assertTrue(r.sum_x == -15 and r.sum_y == 10 and r.sum_empty == 0 and
                             r.prod_x == -120 and r.prod_y == 0 and r.prod_empty == 1)
 
+    def test_aggregators_hist(self):
+        table = hl.utils.range_table(11)
+        r = table.aggregate(agg.hist(table.idx - 1, 0, 8, 4))
+        self.assertTrue(r.bin_edges == [0, 2, 4, 6, 8] and r.bin_freq == [2, 2, 2, 3] and r.n_smaller == 1 and r.n_larger == 1)
+
     def test_joins_inside_aggregators(self):
         table = hl.utils.range_table(10)
         table2 = hl.utils.range_table(10)
@@ -952,10 +957,52 @@ class Tests(unittest.TestCase):
         self.assertTrue(hl.eval_expr(hl.is_complex("A", "TATGC")))
         self.assertTrue(hl.eval_expr(hl.is_star("ATC", "*")))
         self.assertTrue(hl.eval_expr(hl.is_star("A", "*")))
-        self.assertTrue(hl.eval_expr(hl.is_star("*", "ATC")))
-        self.assertTrue(hl.eval_expr(hl.is_star("*", "A")))
         self.assertTrue(hl.eval_expr(hl.is_strand_ambiguous("A", "T")))
         self.assertFalse(hl.eval_expr(hl.is_strand_ambiguous("G", "T")))
+
+    def test_allele_type(self):
+        self.assertEqual(
+            hl.tuple((
+                hl.allele_type('A', 'C'),
+                hl.allele_type('AC', 'CT'),
+                hl.allele_type('C', 'CT'),
+                hl.allele_type('CT', 'C'),
+                hl.allele_type('CTCA', 'AAC'),
+                hl.allele_type('CTCA', '*'),
+                hl.allele_type('C', '<DEL>'),
+                hl.allele_type('C', '<SYMBOLIC>'),
+                hl.allele_type('C', 'H'),
+                hl.allele_type('C', ''),
+                hl.allele_type('', 'CCT'),
+                hl.allele_type('F', 'CCT'),
+                hl.allele_type('A', '[ASDASD[A'),
+                hl.allele_type('A', ']ASDASD]A'),
+                hl.allele_type('A', 'T<ASDASD>]ASDASD]'),
+                hl.allele_type('A', 'T<ASDASD>[ASDASD['),
+                hl.allele_type('A', '.T'),
+                hl.allele_type('A', 'T.'),
+            )).value,
+            (
+                'SNP',
+                'MNP',
+                'Insertion',
+                'Deletion',
+                'Complex',
+                'Star',
+                'Symbolic',
+                'Symbolic',
+                'Unknown',
+                'Unknown',
+                'Unknown',
+                'Unknown',
+                'Symbolic',
+                'Symbolic',
+                'Symbolic',
+                'Symbolic',
+                'Symbolic',
+                'Symbolic',
+            )
+        )
 
     def test_hamming(self):
         self.assertEqual(hl.eval_expr(hl.hamming('A', 'T')), 1)
@@ -1220,6 +1267,27 @@ class Tests(unittest.TestCase):
         self.assertFalse(hl.is_valid_locus('1', 249250622, 'GRCh37').value)
         self.assertFalse(hl.is_valid_locus('chr1', 2645, 'GRCh37').value)
 
+    def test_call_stats(self):
+        t = (hl.utils.range_table(5, 3)
+             .annotate(GT = hl.call(0, 1))
+             .annotate_globals(alleles=["A", "T"]))
+
+        self.assertTrue(t.aggregate(agg.call_stats(t.GT, t.alleles)) ==
+                        hl.Struct(AC=[5, 5], AF=[0.5, 0.5], AN=10, homozygote_count=[0, 0])) # Tests table.aggregate initOp
+
+        mt = (hl.utils.range_matrix_table(10, 5, 5)
+              .annotate_entries(GT=hl.call(0, 1))
+              .annotate_rows(alleles=["A", "T"])
+              .annotate_globals(alleles2=["G", "C"]))
+
+        row_agg = mt.annotate_rows(call_stats=agg.call_stats(mt.GT, mt.alleles)).rows() # Tests MatrixMapRows initOp
+        col_agg = mt.annotate_cols(call_stats=agg.call_stats(mt.GT, mt.alleles2)).cols() # Tests MatrixMapCols initOp
+
+        self.assertTrue(row_agg.all(row_agg.call_stats ==
+                                    hl.struct(AC=[5, 5], AF=[0.5, 0.5], AN=10, homozygote_count=[0, 0])))
+        self.assertTrue(col_agg.all(col_agg.call_stats ==
+                                    hl.struct(AC=[10, 10], AF=[0.5, 0.5], AN=20, homozygote_count=[0, 0])))
+
     def test_mendel_error_code(self):
         locus_auto = hl.Locus('2', 20000000)
         locus_x_par = hl.get_reference('default').par[0].start
@@ -1329,3 +1397,28 @@ class Tests(unittest.TestCase):
         assert_min_reps_to(['GCTAA', 'GCAAA', 'G'], ['GCTAA', 'GCAAA', 'G'])
         assert_min_reps_to(['GCTAA', 'GCAAA', 'GCCAA'], ['T', 'A', 'C'], pos_change=2)
         assert_min_reps_to(['GCTAA', 'GCAAA', 'GCCAA', '*'], ['T', 'A', 'C', '*'], pos_change=2)
+
+    def assert_evals_to(self, e, v):
+        self.assertEqual(e.value, v)
+
+    def test_set_functions(self):
+        s = hl.set([1, 3, 7])
+        t = hl.set([3, 8])
+        self.assert_evals_to(s, set([1, 3, 7]))
+
+        self.assert_evals_to(s.add(3), set([1, 3, 7]))
+        self.assert_evals_to(s.add(4), set([1, 3, 4, 7]))
+
+        self.assert_evals_to(s.remove(3), set([1, 7]))
+        self.assert_evals_to(s.remove(4), set([1, 3, 7]))
+
+        self.assert_evals_to(s.contains(3), True)
+        self.assert_evals_to(s.contains(4), False)
+
+        self.assert_evals_to(s.difference(t), set([1, 7]))
+        self.assert_evals_to(s.intersection(t), set([3]))
+
+        self.assert_evals_to(s.is_subset(hl.set([1, 3, 4, 7])), True)
+        self.assert_evals_to(s.is_subset(hl.set([1, 3])), False)
+
+        self.assert_evals_to(s.union(t), set([1, 3, 7, 8]))

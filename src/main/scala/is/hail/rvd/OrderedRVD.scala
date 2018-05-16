@@ -261,16 +261,16 @@ class OrderedRVD(
         start to end
       }
     }
-      .toSet // distinct
-      .toArray.sorted[Int]
+      .toSet[Int] // distinct
+      .toArray
+      .sorted
 
     info(s"interval filter loaded ${ newPartitionIndices.length } of $nPartitions partitions")
 
     if (newPartitionIndices.isEmpty)
       OrderedRVD.empty(sparkContext, typ)
     else {
-      val sub = subsetPartitions(newPartitionIndices)
-      filter(pred)
+      subsetPartitions(newPartitionIndices).filter(pred)
     }
   }
 
@@ -313,7 +313,11 @@ class OrderedRVD(
       val producerRegion = producerCtx.region
       val it = useCtxes.flatMap(_ (producerCtx))
 
-      val stepped = OrderedRVIterator(localType, it).staircase
+      val stepped = OrderedRVIterator(
+        localType,
+        it,
+        consumerCtx.freshContext
+      ).staircase
 
       stepped.map { stepIt =>
         buffer.clear()
@@ -341,8 +345,8 @@ class OrderedRVD(
 
   def distinctByKey(): OrderedRVD = {
     val localType = typ
-    mapPartitionsPreservesPartitioning(typ)(it =>
-      OrderedRVIterator(localType, it)
+    mapPartitionsPreservesPartitioning(typ, (ctx, it) =>
+      OrderedRVIterator(localType, it, ctx)
         .staircase
         .map(_.value)
     )
@@ -464,6 +468,7 @@ object OrderedRVD {
   def localKeySort(
     consumerRegion: Region,
     producerRegion: Region,
+    ctx: RVDContext,
     typ: OrderedRVDType,
     // it: Iterator[RegionValue[rowType]]
     it: Iterator[RegionValue]
@@ -483,14 +488,20 @@ object OrderedRVD {
         if (q.isEmpty) {
           do {
             val rv = bit.next()
-            // FIXME ugh, no good answer here
-            q.enqueue(rv.copy())
+            val r = ctx.freshRegion
+            rvb.set(r)
+            rvb.start(typ.rowType)
+            rvb.addRegionValue(typ.rowType, rv)
+            q.enqueue(RegionValue(rvb.region, rvb.end()))
             producerRegion.clear()
           } while (bit.hasNext && typ.pkInRowOrd.compare(q.head, bit.head) == 0)
         }
 
+        rvb.set(consumerRegion)
         rvb.start(typ.rowType)
-        rvb.addRegionValue(typ.rowType, q.dequeue())
+        val fromQueue = q.dequeue()
+        rvb.addRegionValue(typ.rowType, fromQueue)
+        ctx.closeChild(fromQueue.region)
         rv.set(consumerRegion, rvb.end())
         rv
       }
@@ -503,8 +514,8 @@ object OrderedRVD {
     crdd: ContextRDD[RVDContext, RegionValue]
   ): ContextRDD[RVDContext, RegionValue] = {
     val localType = typ
-    crdd.mapPartitions { it =>
-      val wrv = WritableRegionValue(localType.kType)
+    crdd.cmapPartitions { (ctx, it) =>
+      val wrv = WritableRegionValue(localType.kType, ctx.freshRegion)
       it.map { rv =>
         wrv.setSelect(localType.rowType, localType.kRowFieldIdx, rv)
         wrv.value
@@ -534,7 +545,6 @@ object OrderedRVD {
         Iterator(OrderedRVPartitionInfo(localType, samplesPerPartition, i, it, partitionSeed(i)))
       else
         Iterator()
-      ctx.region.clear()
       out
     }.collect()
 
@@ -665,7 +675,7 @@ object OrderedRVD {
             partitioner,
             adjustedRDD.cmapPartitionsAndContext { (consumerCtx, it) =>
               val producerCtx = consumerCtx.freshContext
-              localKeySort(consumerCtx.region, producerCtx.region, typ, it.flatMap(_(producerCtx)))
+              localKeySort(consumerCtx.region, producerCtx.region, consumerCtx, typ, it.flatMap(_(producerCtx)))
             })
       }
     } else {
@@ -764,18 +774,16 @@ object OrderedRVD {
       partitioner,
       crdd.cmapPartitions { (ctx, it) =>
         it.map { rv =>
-          val wkrv = WritableRegionValue(typ.kType)
-          wkrv.setSelect(localType.rowType, localType.kRowFieldIdx, rv)
-          val bytes =
-            RVD.regionValueToBytes(enc, ctx)(rv)
-          (wkrv.value, bytes)
+          val keys: Any = SafeRow.selectFields(localType.rowType, rv)(localType.kRowFieldIdx)
+          val bytes = RVD.regionValueToBytes(enc, ctx)(rv)
+          (keys, bytes)
         }
-      }.shuffle(partitioner.sparkPartitioner(crdd.sparkContext), typ.kOrd)
+      }.shuffle(partitioner.sparkPartitioner(crdd.sparkContext), typ.kType.ordering.toOrdering)
         .cmapPartitionsWithIndex { case (i, ctx, it) =>
           val region = ctx.region
           val rv = RegionValue(region)
           it.map { case (k, bytes) =>
-            assert(partBc.value.getPartition(k) == i)
+            assert(partBc.value.getSafePartition(k) == i)
             RVD.bytesToRegionValue(dec, region, rv)(bytes)
           }
       })
@@ -900,9 +908,9 @@ object OrderedRVD {
     new OrderedRVD(
       typ,
       partitioner,
-      crdd.mapPartitionsWithIndex { case (i, it) =>
-          val prevK = WritableRegionValue(typ.kType)
-          val prevPK = WritableRegionValue(typ.pkType)
+      crdd.cmapPartitionsWithIndex { case (i, ctx, it) =>
+          val prevK = WritableRegionValue(typ.kType, ctx.freshRegion)
+          val prevPK = WritableRegionValue(typ.pkType, ctx.freshRegion)
           val pkUR = new UnsafeRow(typ.pkType)
 
           new Iterator[RegionValue] {

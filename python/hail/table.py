@@ -1,5 +1,6 @@
 import pandas
 import pyspark
+import warnings
 
 import hail as hl
 from hail.expr.expr_ast import *
@@ -8,7 +9,7 @@ from hail.expr.types import *
 from hail.typecheck import *
 from hail.utils import wrap_to_list, storage_level, LinkedList, Struct
 from hail.utils.java import *
-from hail.utils.misc import get_nice_field_error, get_nice_attr_error, check_collisions, check_keys, check_field_uniqueness, get_select_exprs, get_annotate_exprs
+from hail.utils.misc import *
 
 from collections import OrderedDict
 import itertools
@@ -320,6 +321,9 @@ class Table(ExprContainer):
                     )
                 )
 
+            warnings.warn('The ht[:] syntax is deprecated, and will be removed before 0.2 release.\n'
+                          '  Use the following instead:\n'
+                          '    ht.index_globals()\n', stacklevel=2)
             return self.index_globals()
         else:
             exprs = item if isinstance(item, tuple) else (item,)
@@ -380,14 +384,15 @@ class Table(ExprContainer):
     def _select(self, caller, key_struct=None, value_struct=None):
         if key_struct is None:
             assert value_struct is not None
-            key_struct = self.key
             new_key = None
+            row = hl.bind(lambda v: self.key.annotate(**v), value_struct) if self.key else value_struct
         else:
             new_key = list(key_struct.keys())
             if value_struct is None:
-                value_struct = self.row.drop(*[f for f in new_key if f in list(self.row)])
+                row = hl.bind(lambda k: self.row.annotate(**k), key_struct)
+            else:
+                row = hl.bind(lambda k, v: hl.struct(**k, **v), key_struct, value_struct)
 
-        row = hl.bind(lambda k, v: hl.struct(**k, **v), key_struct, value_struct) if key_struct else value_struct
         base, cleanup = self._process_joins(row)
         analyze(caller, row, self._row_indices)
 
@@ -1158,6 +1163,74 @@ class Table(ExprContainer):
         return self._jt.showString(n, joption(truncate), types, width)
 
     def index(self, *exprs):
+        """Expose the row values as if looked up in a dictionary, indexing
+        with `exprs`.
+
+        Examples
+        --------
+        In the example below, both `table1` and `table2` are keyed by one
+        field `ID` of type ``int``.
+
+        >>> table_result = table1.select(B = table2.index(table1.ID).B)
+        >>> table_result.B.show()
+        +-------+--------+
+        |    ID | B      |
+        +-------+--------+
+        | int32 | str    |
+        +-------+--------+
+        |     1 | cat    |
+        |     2 | dog    |
+        |     3 | mouse  |
+        |     4 | rabbit |
+        +-------+--------+
+
+        Using `key` as the sole index expression is equivalent to passing all
+        key fields individually:
+        >>> table_result = table1.select(B = table2.index(table1.key).B)
+
+        It is also possible to use non-key fields or expressions as the index
+        expressions:
+        >>> table_result = table1.select(B = table2.index(table1.C1 % 4).B)
+        >>> table_result.show()
+        +-------+-------+
+        |    ID | B     |
+        +-------+-------+
+        | int32 | str   |
+        +-------+-------+
+        |     1 | dog   |
+        |     2 | dog   |
+        |     3 | dog   |
+        |     4 | mouse |
+        +-------+-------+
+
+        Notes
+        -----
+        :meth:`.Table.index` is used to expose one table's fields for use in
+        expressions involving the another table or matrix table's fields. The
+        result of the method call is a struct expression that is usable in the
+        same scope as `exprs`, just as if `exprs` were used to look up values of
+        the table in a dictionary.
+
+        The type of the struct expression is the same as the indexed table's
+        :meth:`.row_value` (the key fields are removed, as they are available
+        in the form of the index expressions).
+
+        Note
+        ----
+        There is a shorthand syntax for :meth:`.Table.index` using square
+        brackets (the Python ``__getitem__`` syntax). This syntax is preferred.
+
+        >>> table_result = table1.select(B = table2[table1.ID].B)
+
+        Parameters
+        ----------
+        exprs : variable-length args of :class:`.Expression`
+            Index expressions.
+
+        Returns
+        -------
+        :class:`.StructExpression`
+        """
         exprs = tuple(exprs)
         hail.methods.misc.require_key(self, 'index')
         if not len(exprs) > 0:
@@ -1167,7 +1240,7 @@ class Table(ExprContainer):
             raise TypeError(f"'Table.index': arguments must be expressions, found {non_exprs}")
 
         from hail.matrixtable import MatrixTable
-        indices, aggregations, joins = unify_all(*exprs)
+        indices, aggregations = unify_all(*exprs)
         src = indices.source
 
         if src is None or len(indices.axes) == 0:
@@ -1222,8 +1295,11 @@ class Table(ExprContainer):
 
             all_uids = uids[:]
             all_uids.append(uid)
-            return construct_expr(Select(TopLevelReference('row', src._row_indices), uid), new_schema, indices, aggregations,
-                                  joins.push(Join(joiner, all_uids, uid, exprs)))
+            ast = Join(Select(TopLevelReference('row', src._row_indices), uid),
+                       all_uids,
+                       exprs,
+                       joiner)
+            return construct_expr(ast, new_schema, indices, aggregations)
         elif isinstance(src, MatrixTable):
             for e in exprs:
                 analyze('Table.index', e, src._entry_indices)
@@ -1245,8 +1321,11 @@ class Table(ExprContainer):
                         return MatrixTable(left._jvds.annotateRowsTable(
                             right._jt, uid, False))
 
-                    return construct_expr(Select(TopLevelReference('va', src._row_indices), uid), new_schema,
-                                          indices, aggregations, joins.push(Join(joiner, [uid], uid, exprs)))
+                    ast = Join(Select(TopLevelReference('va', src._row_indices), uid),
+                               [uid],
+                               exprs,
+                               joiner)
+                    return construct_expr(ast, new_schema, indices, aggregations)
                 else:
                     # use vds_key
                     uids = [Env.get_uid() for _ in range(len(exprs))]
@@ -1280,8 +1359,11 @@ class Table(ExprContainer):
                         jl = jl.selectRows('annotate('+left._row._ast.to_hql()+', {'+key_expr+"})", None)
                         return MatrixTable(jl)
 
-                    return construct_expr(Select(TopLevelReference('va', src._row_indices), uid),
-                                          new_schema, indices, aggregations, joins.push(Join(joiner, [uid], uid, exprs)))
+                    ast = Join(Select(TopLevelReference('va', src._row_indices), uid),
+                               [uid],
+                               exprs,
+                               joiner)
+                    return construct_expr(ast, new_schema, indices, aggregations)
 
             elif indices == src._col_indices:
                 all_uids = [uid]
@@ -1311,14 +1393,28 @@ class Table(ExprContainer):
                                            .key_cols_by(index_uid)
                                            ._jvds
                                            .annotateColsTable(joined._jt, uid)).key_cols_by(*prev_key)
-                return construct_expr(Select(TopLevelReference('sa', src._col_indices), uid), new_schema,
-                                      indices, aggregations, joins.push(Join(joiner, all_uids, uid, exprs)))
+                ast = Join(Select(TopLevelReference('sa', src._col_indices), uid),
+                           all_uids,
+                           exprs,
+                           joiner)
+                return construct_expr(ast, new_schema, indices, aggregations)
             else:
                 raise NotImplementedError()
         else:
             raise TypeError("Cannot join with expressions derived from '{}'".format(src.__class__))
 
     def index_globals(self):
+        """Return this table's global variables for use in another
+        expression context.
+
+        Examples
+        --------
+        >>> table_result = table2.annotate(C = table2.A * table1.index_globals().global_field_1)
+
+        Returns
+        -------
+        :class:`.StructExpression`
+        """
         uid = Env.get_uid()
 
         def joiner(obj):
@@ -1329,33 +1425,24 @@ class Table(ExprContainer):
                 assert isinstance(obj, Table)
                 return Table(Env.jutils().joinGlobals(obj._jt, self._jt, uid))
 
-        return construct_expr(Select(TopLevelReference('global', indices=Indices()), uid), self.globals.dtype,
-                              joins=LinkedList(Join).push(Join(joiner, [uid], uid, [])))
+        ast = Join(Select(TopLevelReference('global', Indices()), uid),
+                   [uid],
+                   [],
+                   joiner)
+        return construct_expr(ast, self.globals.dtype)
 
     def _process_joins(self, *exprs):
         # ordered to support nested joins
-        original_key = list(self.key) if self.key else None
-
-        all_uids = []
-        left = self
-        used_uids = set()
-
-        for e in exprs:
-            for j in sorted(list(e._joins), key = lambda j: j.idx): # Make sure joins happen in order
-                if j.uid not in used_uids:
-                    left = j.join_function(left)
-                    all_uids.extend(j.temp_vars)
-                    used_uids.add(j.uid)
+        original_key = list(self.key) if self.key is not None else None
+        broadcast_f = lambda left, data, jt: Table(left._jt.annotateGlobalJSON(data, jt))
+        left, cleanup = process_joins(self, exprs, broadcast_f)
 
         if left is not self:
             if original_key is not None:
-                left = left.key_by(*original_key)
+                if original_key != list(left.key):
+                    left = left.key_by(*original_key)
             else:
                 left = left.key_by(None)
-
-        def cleanup(table):
-            remaining_uids = [uid for uid in all_uids if uid in table._fields]
-            return table.drop(*remaining_uids)
 
         return left, cleanup
 

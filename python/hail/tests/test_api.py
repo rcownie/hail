@@ -266,7 +266,7 @@ class TableTests(unittest.TestCase):
         expected = {u'status': 0,
                     u'x13': {u'n_called': 2, u'expected_homs': 1.64, u'f_stat': -1.777777777777777,
                              u'observed_homs': 1},
-                    u'x14': {u'AC': [3, 1], u'AF': [0.75, 0.25], u'AN': 4},
+                    u'x14': {u'AC': [3, 1], u'AF': [0.75, 0.25], u'AN': 4, u'homozygote_count': [1, 0]},
                     u'x15': {u'a': 5, u'c': {u'banana': u'apple'}, u'b': u'foo'},
                     u'x10': {u'min': 3.0, u'max': 13.0, u'sum': 16.0, u'stdev': 5.0, u'n': 2, u'mean': 8.0},
                     u'x8': 1, u'x9': 0.0, u'x16': u'apple',
@@ -396,13 +396,13 @@ class TableTests(unittest.TestCase):
         m = hl.import_vcf(resource('sample.vcf'))
         vkt = m.rows()
         vkt = vkt.select(vkt.qual)
-        vkt = vkt.annotate(qual2=m[(vkt.locus, vkt.alleles), :].qual)
+        vkt = vkt.annotate(qual2=m.index_rows(vkt.key).qual)
         self.assertTrue(vkt.filter(vkt.qual != vkt.qual2).count() == 0)
 
-        m2 = m.annotate_rows(qual2=vkt[m.locus, m.alleles].qual)
+        m2 = m.annotate_rows(qual2=vkt.index(m.row_key).qual)
         self.assertTrue(m2.filter_rows(m2.qual != m2.qual2).count_rows() == 0)
 
-        m3 = m.annotate_rows(qual2=m[(m.locus, m.alleles), :].qual)
+        m3 = m.annotate_rows(qual2=m.index_rows(m.row_key).qual)
         self.assertTrue(m3.filter_rows(m3.qual != m3.qual2).count_rows() == 0)
 
         kt = hl.utils.range_table(1)
@@ -411,7 +411,7 @@ class TableTests(unittest.TestCase):
 
         kt2 = hl.utils.range_table(1)
 
-        kt2 = kt2.annotate_globals(kt_foo=kt[:].foo)
+        kt2 = kt2.annotate_globals(kt_foo=kt.index_globals().foo)
         self.assertEqual(kt2.globals.kt_foo.value, 5)
 
     def test_join_with_empty(self):
@@ -801,10 +801,10 @@ class MatrixTests(unittest.TestCase):
         vds2 = vds.select_rows(x2=1, y2=2)
         vds2 = vds2.select_cols(c1=1, c2=2)
 
-        vds = vds.annotate_rows(y2=vds2[(vds.locus, vds.alleles), :].y2)
-        vds = vds.annotate_cols(c2=vds2[:, vds.s].c2)
+        vds = vds.annotate_rows(y2=vds2.index_rows(vds.row_key).y2)
+        vds = vds.annotate_cols(c2=vds2.index_cols(vds.s).c2)
 
-        vds = vds.annotate_cols(c2=vds2[:, hl.str(vds.s)].c2)
+        vds = vds.annotate_cols(c2=vds2.index_cols(hl.str(vds.s)).c2)
 
         rt = vds.rows()
         ct = vds.cols()
@@ -823,8 +823,8 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(rows[mt.locus, mt.alleles].take(1), rows[mt.row_key].take(1))
         self.assertEqual(cols[mt.s].take(1), cols[mt.col_key].take(1))
 
-        self.assertEqual(mt[mt.row_key, :].take(1), mt[(mt.locus, mt.alleles), :].take(1))
-        self.assertEqual(mt[:, mt.col_key].take(1), mt[:, mt.s].take(1))
+        self.assertEqual(mt.index_rows(mt.row_key).take(1), mt.index_rows(mt.locus, mt.alleles).take(1))
+        self.assertEqual(mt.index_cols(mt.col_key).take(1), mt.index_cols(mt.s).take(1))
         self.assertEqual(mt[mt.row_key, mt.col_key].take(1), mt[(mt.locus, mt.alleles), mt.s].take(1))
 
     def test_table_join(self):
@@ -1202,6 +1202,36 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(mt.transmute_rows(r3 = mt.r2 + 1).row_value.dtype, hl.tstruct(r1=hl.tint, r3=hl.tint))
         self.assertEqual(mt.transmute_cols(c3 = mt.c2 + 1).col_value.dtype, hl.tstruct(c1=hl.tint, c3=hl.tint))
         self.assertEqual(mt.transmute_entries(e3 = mt.e2 + 1).entry.dtype, hl.tstruct(e1=hl.tint, e3=hl.tint))
+
+    def test_agg_explode(self):
+        t = hl.Table.parallelize([
+            hl.struct(a=[1, 2]),
+            hl.struct(a=hl.empty_array(hl.tint32)),
+            hl.struct(a=hl.null(hl.tarray(hl.tint32))),
+            hl.struct(a=[3]),
+            hl.struct(a=[hl.null(hl.tint32)])
+        ])
+        self.assertCountEqual(t.aggregate(hl.agg.collect(hl.agg.explode(t.a))),
+                              [1, 2, None, 3])
+
+    def test_agg_call_stats(self):
+        t = hl.Table.parallelize([
+            hl.struct(c=hl.call(0, 0)),
+            hl.struct(c=hl.call(0, 1)),
+            hl.struct(c=hl.call(0, 2, phased=True)),
+            hl.struct(c=hl.call(1)),
+            hl.struct(c=hl.call(0)),
+            hl.struct(c=hl.call())
+        ])
+        actual = t.aggregate(hl.agg.call_stats(t.c, ['A', 'T', 'G']))
+        expected = hl.struct(AC=[5, 2, 1],
+                             AF=[5.0 / 8.0, 2.0 / 8.0, 1.0 / 8.0],
+                             AN=8,
+                             homozygote_count=[1, 0, 0])
+
+        self.assertTrue(hl.Table.parallelize([actual]),
+                        hl.Table.parallelize([expected]))
+
 
 class GroupedMatrixTests(unittest.TestCase):
 

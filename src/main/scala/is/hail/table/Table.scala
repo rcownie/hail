@@ -4,7 +4,7 @@ import is.hail.HailContext
 import is.hail.annotations._
 import is.hail.expr._
 import is.hail.expr.ir
-import is.hail.expr.ir.IR
+import is.hail.expr.ir.{IR, Pretty}
 import is.hail.expr.types._
 import is.hail.io.plink.{FamFileConfig, LoadPlink}
 import is.hail.methods.Aggregators
@@ -432,8 +432,9 @@ class Table(val hc: HailContext, val tir: TableIR) {
     val ec = aggEvalContext()
 
     val queryAST = Parser.parseToAST(expr, ec)
-    queryAST.toIR(Some("AGG")) match {
-      case Some(ir) if useIR(queryAST) => aggregate(ir)
+    queryAST.toIROpt(Some("AGG" -> "row")) match {
+      case Some(ir) if useIR(queryAST) =>
+        aggregate(ir)
       case _ =>
         val globalsBc = globals.broadcast
         val (t, f) = Parser.parseExpr(expr, ec)
@@ -461,10 +462,13 @@ class Table(val hc: HailContext, val tir: TableIR) {
       ir.InsertFields(ir.Ref("global", tir.typ.globalType), FastSeq(name -> ir.GetField(ir.Ref(s"value", at), name))), value))
   }
 
-  def annotateGlobalJSON(s: String, t: Type, name: String): Table = {
-    val ann = JSONAnnotationImpex.importAnnotation(JsonMethods.parse(s), t)
-
-    annotateGlobal(ann, t, name)
+  def annotateGlobalJSON(data: String, t: TStruct): Table = {
+    val ann = JSONAnnotationImpex.importAnnotation(JsonMethods.parse(data), t)
+    val value = BroadcastRow(ann.asInstanceOf[Row], t, hc.sc)
+    new Table(hc, TableMapGlobals(tir,
+      ir.InsertFields(ir.Ref("global", tir.typ.globalType),
+        t.fieldNames.map(name => name -> ir.GetField(ir.Ref("value", t), name))),
+      value))
   }
 
   def selectGlobal(expr: String): Table = {
@@ -473,12 +477,11 @@ class Table(val hc: HailContext, val tir: TableIR) {
     val ast = Parser.parseToAST(expr, ec)
     assert(ast.`type`.isInstanceOf[TStruct])
 
-    ast.toIR() match {
+    ast.toIROpt() match {
       case Some(ir) if useIR(ast) =>
         new Table(hc, TableMapGlobals(tir, ir, BroadcastRow(Row(), TStruct(), hc.sc)))
       case _ =>
         ec.set(0, globals.value)
-        log.warn(s"Table.select_globals found no AST to IR conversion: ${ PrettyAST(ast) }")
         val (t, f) = Parser.parseExpr(expr, ec)
         val newSignature = t.asInstanceOf[TStruct]
         val newGlobal = f().asInstanceOf[Row]
@@ -491,14 +494,13 @@ class Table(val hc: HailContext, val tir: TableIR) {
   def filter(cond: String, keep: Boolean): Table = {
     val ec = rowEvalContext()
     var filterAST = Parser.parseToAST(cond, ec)
-    val pred = filterAST.toIR()
+    val pred = filterAST.toIROpt()
     pred match {
       case Some(irPred) =>
         new Table(hc,
           TableFilter(tir, ir.filterPredicateWithKeep(irPred, keep))
         )
       case None =>
-        log.warn(s"Table.filter found no AST to IR conversion: ${ PrettyAST(filterAST) }")
         if (!keep)
           filterAST = Apply(filterAST.getPos, "!", Array(filterAST))
         val f: () => java.lang.Boolean = Parser.evalTypedExpr[java.lang.Boolean](filterAST, ec)
@@ -542,53 +544,11 @@ class Table(val hc: HailContext, val tir: TableIR) {
       case None => unkey()
     }
 
-  def keyBy(keys: Array[String], partitionKeys: Array[String], sort: Boolean = true): Table = {
-    val fields = signature.fieldNames.toSet
-    assert(keys.forall(fields.contains), s"${ keys.filter(k => !fields.contains(k)).mkString(", ") }")
-    assert(partitionKeys.length <= keys.length)
-    assert(keys.zip(partitionKeys).forall{ case (k, pk) => k == pk })
+  def keyBy(keys: Array[String], partitionKeys: Array[String], sort: Boolean = true): Table =
+    new Table(hc, TableKeyBy(tir, keys, partitionKeys.length, sort))
 
-    if (sort) {
-      val keyed = copy2(key = Some(keys))
-      def resort = keyed.toOrderedRVD(None, partitionKeys.length)
-      val orvd = rvd match {
-        case ordered: OrderedRVD =>
-          if (keys.zip(ordered.typ.key).forall{ case (l, r) => l == r } &&
-              ordered.typ.partitionKey.length == partitionKeys.length) {
-            if (keys.length <= ordered.typ.key.length)
-              ordered.copy(typ = ordered.typ.copy(key = keys))
-            else if (ordered.typ.key.length <= keys.length) {
-              val localSortType = new OrderedRVDType(ordered.typ.key, keys, signature)
-              val newType = new OrderedRVDType(ordered.typ.partitionKey, keys, signature)
-              OrderedRVD(
-                newType,
-                ordered.partitioner,
-                ordered.crdd.cmapPartitionsAndContext { (consumerCtx, it) =>
-                  val producerCtx = consumerCtx.freshContext
-                  OrderedRVD.localKeySort(
-                    consumerCtx.region,
-                    producerCtx.region,
-                    localSortType,
-                    it.flatMap(_(producerCtx)))
-                })
-            } else resort
-          } else resort
-        case _: UnpartitionedRVD =>
-          resort
-      }
-      keyed.copy2(rvd = orvd)
-    } else {
-      unkey().copy2(key = Some(keys))
-    }
-  }
-
-  def unkey(): Table = copy2(
-    key = None,
-    rvd = rvd match {
-      case orvd: OrderedRVD => orvd.toUnpartitionedRVD
-      case _: UnpartitionedRVD => rvd
-    }
-  )
+  def unkey(): Table =
+    new Table(hc, TableUnkey(tir))
 
   def select(expr: String, newKey: java.util.ArrayList[String]): Table =
     select(expr, Option(newKey).map(_.asScala.toFastIndexedSeq))
@@ -598,11 +558,10 @@ class Table(val hc: HailContext, val tir: TableIR) {
     val ast = Parser.parseToAST(expr, ec)
     assert(ast.`type`.isInstanceOf[TStruct])
 
-    ast.toIR() match {
+    ast.toIROpt() match {
       case Some(ir) if useIR(ast) =>
         new Table(hc, TableMapRows(tir, ir, newKey))
       case _ =>
-        log.warn(s"Table.select found no AST to IR conversion: ${ PrettyAST(ast) }")
         val (t, f) = Parser.parseExpr(expr, ec)
         val newSignature = t.asInstanceOf[TStruct]
         val globalsBc = globals.broadcast
@@ -682,11 +641,8 @@ class Table(val hc: HailContext, val tir: TableIR) {
     val localColData = rvd.mapPartitions { it =>
       val ur = new UnsafeRow(fullRowType)
       it.map { rv =>
-        val rvCopy = rv.copy()
-        ur.set(rvCopy)
-
-        val colKey = Row.fromSeq(colKeyIndices.map(ur.get))
-        val colValues = Row.fromSeq(colValueIndices.map(ur.get))
+        val colKey = SafeRow.selectFields(fullRowType, rv)(colKeyIndices)
+        val colValues = SafeRow.selectFields(fullRowType, rv)(colValueIndices)
         colKey -> colValues
       }
     }.reduceByKey({ case (l, _) => l }) // poor man's distinctByKey
@@ -773,7 +729,8 @@ class Table(val hc: HailContext, val tir: TableIR) {
 
       OrderedRVIterator(
         new OrderedRVDType(partitionKeys, rowKeys, rowEntryStruct),
-        it
+        it,
+        ctx
       ).staircase.map { rowIt =>
         rvb.start(newRVType)
         rvb.startStruct()

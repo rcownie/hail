@@ -1,17 +1,18 @@
 import itertools
 from typing import *
 from collections import OrderedDict
+import warnings
 
 import hail
 import hail as hl
-from hail.expr.expr_ast import Select, TopLevelReference
+from hail.expr.expr_ast import Select, TopLevelReference, Join
 from hail.expr.expressions import *
 from hail.expr.types import *
 from hail.table import Table, ExprContainer
 from hail.typecheck import *
 from hail.utils import storage_level, LinkedList
 from hail.utils.java import escape_id, warn, jiterable_to_list, Env, scala_object, joption, jnone
-from hail.utils.misc import get_nice_field_error, wrap_to_tuple, wrap_to_sequence, check_keys, check_collisions, check_field_uniqueness, get_select_exprs, get_annotate_exprs
+from hail.utils.misc import *
 
 
 class GroupedMatrixTable(ExprContainer):
@@ -168,7 +169,7 @@ class GroupedMatrixTable(ExprContainer):
     @typecheck_method(exprs=oneof(str, Expression),
                       named_exprs=expr_any)
     def group_cols_by(self, *exprs, **named_exprs) -> 'GroupedMatrixTable':
-        """Group rows, used with :meth:`.GroupedMatrixTable.aggregate`.
+        """Group columns, used with :meth:`.GroupedMatrixTable.aggregate`.
 
         Examples
         --------
@@ -507,10 +508,21 @@ class MatrixTable(ExprContainer):
             if row_key is not None and col_key is not None:
                 return self.index_entries(row_key, col_key)
             elif row_key is not None and col_key is None:
+                warnings.warn('The mt[<row keys>, :] syntax is deprecated, and will be removed before 0.2 release.\n'
+                              '  Use one of the following instead:\n'
+                              '    mt.rows()[<row keys>]\n'
+                              '    mt.index_rows(<row keys>)', stacklevel=2)
                 return self.index_rows(*row_key)
             elif row_key is None and col_key is not None:
+                warnings.warn('The mt[:, <col keys>] syntax is deprecated, and will be removed before 0.2 release.\n'
+                              '  Use one of the following instead:\n'
+                              '    mt.cols()[<col keys>]\n'
+                              '    mt.index_cols(<col keys>)', stacklevel=2)
                 return self.index_cols(*col_key)
             else:
+                warnings.warn('The mt[:, :] syntax is deprecated, and will be removed before 0.2 release.\n'
+                              '  Use the following instead:\n'
+                              '    mt.index_globals()', stacklevel=2)
                 return self.index_globals()
 
     @property
@@ -832,8 +844,8 @@ class MatrixTable(ExprContainer):
 
         Add global fields from another table and matrix table:
 
-        >>> dataset_result = dataset.annotate_globals(thing1 = dataset2[:, :].global_field,
-        ...                                           thing2 = table1[:].global_field)
+        >>> dataset_result = dataset.annotate_globals(thing1 = dataset2.index_globals().global_field,
+        ...                                           thing2 = table1.index_globals().global_field)
 
         Note
         ----
@@ -882,7 +894,7 @@ class MatrixTable(ExprContainer):
         :class:`.MatrixTable`.
 
         >>> dataset_result = dataset.annotate_rows(consequence = table1[dataset.locus, dataset.alleles].consequence,
-        ...                                        dataset2_AF = dataset2[(dataset.locus, dataset.alleles), :].info.AF)
+        ...                                        dataset2_AF = dataset2.index_rows(dataset.row_key).info.AF)
 
         Note
         ----
@@ -1909,7 +1921,7 @@ class MatrixTable(ExprContainer):
 
     @typecheck_method(exprs=oneof(str, Expression), named_exprs=expr_any)
     def group_cols_by(self, *exprs, **named_exprs) -> 'GroupedMatrixTable':
-        """Group rows, used with :meth:`.GroupedMatrixTable.aggregate`.
+        """Group columns, used with :meth:`.GroupedMatrixTable.aggregate`.
 
         Examples
         --------
@@ -2210,6 +2222,19 @@ class MatrixTable(ExprContainer):
         return Table(self._jvds.entriesTable())
 
     def index_globals(self) -> Expression:
+        """Return this matrix table's global variables for use in another
+        expression context.
+
+        Examples
+        --------
+        >>> pli_dict = dataset.index_globals().pli
+        >>> dataset_result = dataset2.annotate_rows(gene_pli = dataset2.gene.map(lambda x: pli_dict.get(x)))
+
+        Returns
+        -------
+        :class:`.StructExpression`
+        """
+
         uid = Env.get_uid()
 
         def joiner(obj):
@@ -2219,12 +2244,42 @@ class MatrixTable(ExprContainer):
                 assert isinstance(obj, Table)
                 return Table(Env.jutils().joinGlobals(obj._jt, self._jvds, uid))
 
-        return construct_expr(Select(TopLevelReference('global', Indices()), uid), self.globals.dtype,
-                              joins=LinkedList(Join).push(Join(joiner, [uid], uid, [])))
+        ast = Join(Select(TopLevelReference('global', Indices()), uid),
+                   [uid],
+                   [],
+                   joiner)
+        return construct_expr(ast, self.globals.dtype)
 
     def index_rows(self, *exprs):
+        """Expose the row values as if looked up in a dictionary, indexing
+        with `exprs`.
+
+        Examples
+        --------
+        >>> dataset_result = dataset.annotate_rows(qual = dataset2.index_rows(dataset.locus, dataset.alleles).qual)
+
+        Or equivalently:
+        >>> dataset_result = dataset.annotate_rows(qual = dataset2.index_rows(dataset.row_key).qual)
+
+        Parameters
+        ----------
+        exprs : variable-length args of :class:`.Expression`
+            Index expressions.
+
+        Notes
+        -----
+        :meth:`index_rows(exprs)` is equivalent to ``rows().index(exprs)``
+        or ``rows()[exprs]``.
+
+        The type of the resulting struct is the same as the type of
+        :meth:`.row_value`.
+
+        Returns
+        -------
+        :class:`.StructExpression`
+        """
         exprs = [to_expr(e) for e in exprs]
-        indices, aggregations, joins = unify_all(*exprs)
+        indices, aggregations = unify_all(*exprs)
         src = indices.source
 
         if aggregations:
@@ -2268,22 +2323,84 @@ class MatrixTable(ExprContainer):
                 exprs[i] is src.partition_key[i] for i in range(len(exprs)))
 
             if is_row_key or is_partition_key:
-                prefix = 'va'
                 joiner = lambda left: (
                     MatrixTable(left._jvds.annotateRowsVDS(right._jvds, uid)))
                 schema = tstruct(**{f: t for f, t in self.row.dtype.items() if f not in self.row_key})
-                return construct_expr(Select(TopLevelReference(prefix, src._row_indices), uid),
-                                      schema, indices, aggregations,
-                                      joins.push(Join(joiner, uids_to_delete, uid, exprs)))
+                ast = Join(Select(TopLevelReference('va', src._row_indices), uid),
+                           uids_to_delete,
+                           exprs,
+                           joiner)
+                return construct_expr(ast, schema, indices, aggregations)
             else:
                 return self.rows().index(*exprs)
 
     def index_cols(self, *exprs):
+        """Expose the column values as if looked up in a dictionary, indexing
+        with `exprs`.
+
+        Examples
+        --------
+        >>> dataset_result = dataset.annotate_cols(pheno = dataset2.index_cols(dataset.s).pheno)
+
+        Or equivalently:
+        >>> dataset_result = dataset.annotate_cols(pheno = dataset2.index_cols(dataset.col_key).pheno)
+
+        Parameters
+        ----------
+        exprs : variable-length args of :class:`.Expression`
+            Index expressions.
+
+        Notes
+        -----
+        :meth:`index_cols(exprs)` is equivalent to ``cols().index(exprs)``
+        or ``cols()[exprs]``.
+
+        The type of the resulting struct is the same as the type of
+        :meth:`.col_value`.
+
+        Returns
+        -------
+        :class:`.StructExpression`
+        """
         return self.cols().index(*exprs)
 
     def index_entries(self, row_exprs, col_exprs):
-        row_exprs = tuple(row_exprs)
-        col_exprs = tuple(col_exprs)
+        """Expose the entries as if looked up in a dictionary, indexing
+        with `exprs`.
+
+        Examples
+        --------
+        >>> dataset_result = dataset.annotate_entries(GQ2 = dataset2.index_entries(dataset.row_key, dataset.col_key).GQ)
+
+        Or equivalently:
+        >>> dataset_result = dataset.annotate_entries(GQ2 = dataset2[dataset.row_key, dataset.col_key].GQ)
+
+        Parameters
+        ----------
+        row_exprs : tuple of :class:`.Expression`
+            Row index expressions.
+        col_exprs : tuple of :class:`.Expression`
+            Column index expressions.
+
+        Notes
+        -----
+        The type of the resulting struct is the same as the type of
+        :meth:`.entry`.
+
+        Note
+        ----
+        There is a shorthand syntax for :meth:`.MatrixTable.index_entries` using
+        square brackets (the Python ``__getitem__`` syntax). This syntax is
+        preferred.
+
+        >>> dataset_result = dataset.annotate_entries(GQ2 = dataset2[dataset.row_key, dataset.col_key].GQ)
+
+        Returns
+        -------
+        :class:`.StructExpression`
+        """
+        row_exprs = wrap_to_tuple(row_exprs)
+        col_exprs = wrap_to_tuple(col_exprs)
         if len(row_exprs) == 0  or len(col_exprs) == 0:
             raise ValueError("'MatrixTable.index_entries:' 'row_exprs' and 'col_exprs' must not be empty")
         row_non_exprs = list(filter(lambda e: not isinstance(e, Expression), row_exprs))
@@ -2329,7 +2446,7 @@ class MatrixTable(ExprContainer):
                     f"  MatrixTable col key: {', '.join(str(t) for t in self.col_key.dtype.values())}\n"
                     f"  Index expressions:   {', '.join(str(e.dtype) for e in col_exprs)}")
 
-        indices, aggregations, joins = unify_all(*(row_exprs + col_exprs))
+        indices, aggregations = unify_all(*(row_exprs + col_exprs))
         src = indices.source
         if aggregations:
             raise ExpressionException('Cannot join using an aggregated field')
@@ -2355,9 +2472,11 @@ class MatrixTable(ExprContainer):
                                           col_exprs = {col_uid: src_cols_indexed.index(*col_exprs)[col_uid]})
                 return left.annotate_entries(**{uid: left[row_uid][left[col_uid]]})
 
-            return construct_expr(Select(TopLevelReference('g', self._entry_indices), uid),
-                                  self.entry.dtype, indices, aggregations,
-                                  joins.push(Join(joiner, uids, uid, [*row_exprs, *col_exprs])))
+            ast = Join(Select(TopLevelReference('g', src._entry_indices), uid),
+                       uids,
+                       [*row_exprs, *col_exprs],
+                       joiner)
+            return construct_expr(ast, self.entry.dtype, indices, aggregations)
 
     @typecheck_method(row_exprs=dictof(str, expr_any),
                       col_exprs=dictof(str, expr_any),
@@ -2438,23 +2557,8 @@ class MatrixTable(ExprContainer):
         return cleanup(MatrixTable(jmt))
 
     def _process_joins(self, *exprs):
-
-        all_uids = []
-        left = self
-        used_uids = set()
-
-        for e in exprs:
-            for j in sorted(list(e._joins), key = lambda j: j.idx): # Make sure joins happen in order
-                if j.uid not in used_uids:
-                    left = j.join_function(left)
-                    all_uids.extend(j.temp_vars)
-                    used_uids.add(j.uid)
-
-        def cleanup(matrix):
-            remaining_uids = [uid for uid in all_uids if uid in matrix._fields]
-            return matrix.drop(*remaining_uids)
-
-        return left, cleanup
+        broadcast_f = lambda left, data, jt: MatrixTable(left._jvds.annotateGlobalJSON(data, jt))
+        return process_joins(self, exprs, broadcast_f)
 
     def describe(self):
         """Print information about the fields in the matrix."""
@@ -2805,18 +2909,19 @@ class MatrixTable(ExprContainer):
                       pk_size=nullable(int))
     def _select_rows(self, caller, key_struct=None, value_struct=None, pk_size=None):
         if key_struct is None:
-            assert(value_struct is not None)
-            key_struct = self.row_key
+            assert value_struct is not None
             new_key = None
+            row = hl.bind(lambda v: self.row_key.annotate(**v), value_struct)
         else:
             if pk_size is None:
                 pk_size = len(key_struct)
             key_names = list(key_struct.keys())
             new_key = (key_names[:pk_size], key_names[pk_size:])
             if value_struct is None:
-                value_struct = self.row.drop(*[f for f in key_names if f in list(self.row)])
+                row = hl.bind(lambda k: self.row.annotate(**k), key_struct)
+            else:
+                row = hl.bind(lambda k, v: hl.struct(**k, **v), key_struct, value_struct)
 
-        row = hl.bind(lambda k, v: hl.struct(**k, **v), key_struct, value_struct)
         base, cleanup = self._process_joins(row)
         analyze(caller, row, self._row_indices, {self._col_axis})
 
@@ -2828,15 +2933,16 @@ class MatrixTable(ExprContainer):
                       value_struct=nullable(expr_struct()))
     def _select_cols(self, caller, key_struct=None, value_struct=None):
         if key_struct is None:
-            assert(value_struct is not None)
-            key_struct = self.col_key
+            assert value_struct is not None
             new_key = None
+            col = hl.bind(lambda v: self.col_key.annotate(**v), value_struct)
         else:
             new_key = list(key_struct.keys())
             if value_struct is None:
-                value_struct = self.col.drop(*[f for f in new_key if f in list(self.col)])
+                col = hl.bind(lambda k: self.col.annotate(**k), key_struct)
+            else:
+                col = hl.bind(lambda k, v: hl.struct(**k, **v), key_struct, value_struct)
 
-        col = hl.bind(lambda k, v: hl.struct(**k, **v), key_struct, value_struct)
         base, cleanup = self._process_joins(col)
         analyze(caller, col, self._col_indices, {self._row_axis})
 

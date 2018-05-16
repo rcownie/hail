@@ -23,6 +23,16 @@ object IRFunctionRegistry {
   def addIR(name: String, types: Seq[Type], f: Seq[IR] => IR): Unit =
     irRegistry.addBinding(name, (types, f))
 
+  def removeIRFunction(name: String, args: Seq[Type]): Unit = {
+    val functions = codeRegistry(name)
+    val toRemove = functions.filter(_.unify(args)).toArray
+    assert(toRemove.length == 1)
+    codeRegistry.removeBinding(name, toRemove.head)
+  }
+
+  def removeIRFunction(name: String): Unit =
+    codeRegistry.remove(name)
+
   private def lookupInRegistry[T](reg: mutable.MultiMap[String, T], name: String, args: Seq[Type], cond: (T, Seq[Type]) => Boolean): Option[T] = {
     reg.lift(name).map { fs => fs.filter(t => cond(t, args)).toSeq }.getOrElse(FastSeq()) match {
       case Seq() => None
@@ -43,7 +53,15 @@ object IRFunctionRegistry {
           (ts, t2s).zipped.forall(_.unify(_))
         }
     }
-    val validIR = lookupInRegistry[Conversion](irRegistry, name, args, findIR).map(_._2)
+    val validIR = lookupInRegistry[Conversion](irRegistry, name, args, findIR).map {
+      case (_, conversion) =>
+        { irs: Seq[IR] =>
+          if (args.forall(!_.isInstanceOf[TAggregable]))
+            ApplyIR(name, irs, conversion)
+          else
+            conversion(irs)
+        }
+    }
 
     val validMethods = lookupFunction(name, args).map { f => { irArgs: Seq[IR] =>
       f match {
@@ -63,6 +81,7 @@ object IRFunctionRegistry {
     }
   }
 
+  SetFunctions.registerAll()
   CallFunctions.registerAll()
   GenotypeFunctions.registerAll()
   MathFunctions.registerAll()
@@ -227,6 +246,9 @@ abstract class RegistryFunctions {
 
   def registerIR(mname: String, mt1: Type, mt2: Type, mt3: Type)(f: (IR, IR, IR) => IR): Unit =
     registerIR(mname, Array(mt1, mt2, mt3)) { case Seq(a1, a2, a3) => f(a1, a2, a3) }
+
+  def registerIR(mname: String, mt1: Type, mt2: Type, mt3: Type, mt4: Type)(f: (IR, IR, IR, IR) => IR): Unit =
+    registerIR(mname, Array(mt1, mt2, mt3, mt4)) { case Seq(a1, a2, a3, a4) => f(a1, a2, a3, a4) }
 }
 
 sealed abstract class IRFunction {

@@ -1540,7 +1540,7 @@ def pc_relate(call_expr, min_individual_maf, *, k=None, scores_expr=None,
     PC-Relate method.
 
     .. include:: ../_templates/experimental.rst
-    .. include:: ../_templates/req_unphased_diploid_gt.rst
+    .. include:: ../_templates/req_diploid_gt.rst
 
     Examples
     --------
@@ -1601,15 +1601,15 @@ def pc_relate(call_expr, min_individual_maf, *, k=None, scores_expr=None,
     situation and the related situation of admixed individuals.
 
     PC-Relate slightly modifies the usual estimator for relatedness:
-    occurences of population allele frequency are replaced with an
+    occurrences of population allele frequency are replaced with an
     "individual-specific allele frequency". This modification allows the
     method to correctly weight an allele according to an individual's unique
     ancestry profile.
 
     The "individual-specific allele frequency" at a given genetic locus is
-    modeled by PC-Relate as a linear function of their first ``k`` principal
-    component coordinates. As such, the efficacy of this method rests on two
-    assumptions:
+    modeled by PC-Relate as a linear function of a sample's first ``k``
+    principal component coordinates. As such, the efficacy of this method
+    rests on two assumptions:
 
      - an individual's first ``k`` principal component coordinates fully
        describe their allele-frequency-relevant ancestry, and
@@ -1694,6 +1694,8 @@ def pc_relate(call_expr, min_individual_maf, *, k=None, scores_expr=None,
 
       \\widehat{k^{(1)}_{ij}} :=
         1 - \\widehat{k^{(2)}_{ij}} - \\widehat{k^{(0)}_{ij}}
+
+    Note that, even if present, phase information is ignored by this method.
 
     The PC-Relate method is described in "Model-free Estimation of Recent
     Genetic Relatedness". Conomos MP, Reiner AP, Weir BS, Thornton TA. in
@@ -2898,16 +2900,18 @@ def filter_alleles_hts(mt: MatrixTable,
             GQ=hl.gq_from_pl(newPL),
             PL=newPL).drop('__old_to_new_no_na')
 
-@typecheck(ds=MatrixTable,
+
+@typecheck(mt=MatrixTable,
+           call_field=str,
            r2=numeric,
-           window=int,
-           memory_per_core=int)  
-def _local_ld_prune(ds, r2=0.2, window=1000000, memory_per_core=256):
+           bp_window_size=int,
+           memory_per_core=int)
+def _local_ld_prune(mt, call_field, r2=0.2, bp_window_size=1000000, memory_per_core=256):
     bytes_per_core = memory_per_core * 1024 * 1024
     fraction_memory_to_use = 0.25
     variant_byte_overhead = 50
     genotypes_per_pack = 32
-    n_samples = ds.count_cols()
+    n_samples = mt.count_cols()
     min_memory_per_core = math.ceil((1 / fraction_memory_to_use) * 8 * n_samples + variant_byte_overhead)
     if bytes_per_core < min_memory_per_core:
         raise ValueError("memory per core must be greater than {} MB".format(min_memory_per_core * 1024 * 1024))
@@ -2916,58 +2920,82 @@ def _local_ld_prune(ds, r2=0.2, window=1000000, memory_per_core=256):
     max_queue_size = int(max(1.0, math.ceil(memory_available_per_core / bytes_per_variant)))
 
     sites_only_table = Table(Env.hail().methods.LocalLDPrune.apply(
-        require_biallelic(ds, 'ld_prune')._jvds, float(r2), window, max_queue_size))
+        require_biallelic(mt, 'ld_prune')._jvds, call_field, float(r2), bp_window_size, max_queue_size))
 
     return sites_only_table
 
-@typecheck(ds=MatrixTable,
-           r2=numeric,
-           window=int,
-           memory_per_core=int)
-def ld_prune(ds, r2=0.2, window=1000000, memory_per_core=256):
-    """Prune variants in linkage disequilibrium.
 
-    .. include:: ../_templates/req_unphased_diploid_gt.rst
+@typecheck(call_expr=expr_call,
+           r2=numeric,
+           bp_window_size=int,
+           memory_per_core=int)
+def ld_prune(call_expr, r2=0.2, bp_window_size=1000000, memory_per_core=256):
+    """Returns a maximal subset of nearly-uncorrelated variants.
+
+    .. include:: ../_templates/req_diploid_gt.rst
+
+    .. include:: ../_templates/req_biallelic.rst
+
+    .. include:: ../_templates/req_tvariant.rst
 
     Notes
     -----
+    This method finds a maximal subset of variants such that the squared
+    Pearson correlation coefficient :math:`r^2` of any pair at most
+    `bp_window_size` base pairs apart is strictly less than `r2`. Each variant is
+    represented as a vector over samples with elements given by the
+    (mean-imputed) number of alternate alleles. In particular, even if present,
+    **phase information is ignored**.
 
-    This method prunes variants in linkage disequilibrium in two stages. The first stage
-    is a local pruning step, which prunes variants in the same partition. The parallelism
-    in this step will be affected by the number of partitions in the dataset, as well as
-    the memory per core, which is used to calculate a queue size for the local prune.
+    The method prunes variants in linkage disequilibirum in two stages.
+    
+    The first (local) stage prunes correlated variants within each partition,
+    using a local variant queue whose size is determined by `memory_per_core`.
+    A larger queue may facilitate more local pruning in this stage.
+    The parallelism is the number of partitions in the dataset.
 
-    The second stage is a global pruning step which makes use of a correlation matrix
-    across all remaining variants. In the global pruning step, correlated variants are
-    passed to a method that computes a maximal independent set of those variants.
+    The second (global) stage computes the correlation matrix across all
+    remaining variants. Correlated variants within `bp_window_size` base pairs
+    form the edges of a graph to which :func:`.maximal_independent_set` is applied.
 
     Parameters
     ----------
-    ds : :class:`.MatrixTable`
-        dataset to prune
+    call_expr : :class:`.CallExpression`
+        Entry-indexed call expression on a matrix table with row-indexed
+        variants and column-indexed samples.
     r2 : :obj:`float`
-        correlation threshold (exclusive) above which variants are removed
-    window : :obj:`int`
-        distance in kilobases; correlation between variants further apart is not considered in pruning
+        Squared correlation threshold (exclusive upper bound).
+    bp_window_size: :obj:`int`
+        Window size in base pairs (inclusive upper bound).
     memory_per_core : :obj:`int`
-        memory in MB per core for local pruning
+        Memory in MB per core for local pruning queue.
 
     Returns
     -------
     :class:`.Table`
-        Table of variants after pruning.
+        Table of a maximal independent set of variants.
     """
-    sites_only_table = _local_ld_prune(ds, r2, window, memory_per_core)
+    check_entry_indexed('ld_prune/call_expr', call_expr)
+    mt = matrix_table_source('ld_prune/call_expr', call_expr)
+
+    #  FIXME: remove once select_entries on a field is free
+    if call_expr in mt._fields_inverse:
+        field = mt._fields_inverse[call_expr]
+    else:
+        field = Env.get_uid()
+        mt = mt.select_entries(**{field: call_expr})
+
+    sites_only_table = _local_ld_prune(mt, field, r2, bp_window_size, memory_per_core)
 
     sites_path = new_temp_file()
     sites_only_table.write(sites_path, overwrite=True)
     sites_only_table = hl.read_table(sites_path)
 
-    locally_pruned_ds = ds.annotate_rows(pruned=sites_only_table[ds.row_key])
+    locally_pruned_ds = mt.annotate_rows(pruned=sites_only_table[mt.row_key])
     locally_pruned_ds = locally_pruned_ds.filter_rows(hl.is_defined(locally_pruned_ds.pruned))
 
     locally_pruned_ds = (locally_pruned_ds.annotate_rows(
-        mean=locally_pruned_ds.pruned.mean, 
+        mean=locally_pruned_ds.pruned.mean,
         centered_length_sd_reciprocal=locally_pruned_ds.pruned.centered_length_sd_reciprocal))
 
     locally_pruned_path = new_temp_file()
@@ -2977,8 +3005,8 @@ def ld_prune(ds, r2=0.2, window=1000000, memory_per_core=256):
     locally_pruned_ds = locally_pruned_ds.add_row_index('row_idx')
 
     normalized_mean_imputed_genotype_expr = (
-        hl.cond(hl.is_defined(locally_pruned_ds.GT),
-                (locally_pruned_ds.GT.n_alt_alleles() - locally_pruned_ds.mean)
+        hl.cond(hl.is_defined(locally_pruned_ds[field]),
+                (locally_pruned_ds[field].n_alt_alleles() - locally_pruned_ds.mean)
                 * locally_pruned_ds.centered_length_sd_reciprocal, 0))
 
     # BlockMatrix.from_entry_expr writes to disk
@@ -2988,7 +3016,7 @@ def ld_prune(ds, r2=0.2, window=1000000, memory_per_core=256):
     locally_pruned_rows = locally_pruned_ds.rows()
     locally_pruned_rows = locally_pruned_rows.key_by(contig=locally_pruned_rows.locus.contig)
     locally_pruned_rows = locally_pruned_rows.select(pos=locally_pruned_rows.locus.position)
-    entries = correlation_matrix._filtered_entries_table(locally_pruned_rows, window, False)
+    entries = correlation_matrix._filtered_entries_table(locally_pruned_rows, bp_window_size, False)
 
     entries = entries.filter((entries.entry ** 2 >= r2) & (entries.i != entries.j) & (entries.i < entries.j))
 
@@ -2996,7 +3024,7 @@ def ld_prune(ds, r2=0.2, window=1000000, memory_per_core=256):
     entries = entries.annotate(locus_i=index_table[entries.i].locus, locus_j=index_table[entries.j].locus)
 
     entries = entries.filter((entries.locus_i.contig == entries.locus_j.contig)
-                             & ((hl.abs(entries.locus_i.position - entries.locus_j.position)) <= window))
+                             & ((hl.abs(entries.locus_i.position - entries.locus_j.position)) <= bp_window_size))
 
     entries_path = new_temp_file()
     entries.write(entries_path, overwrite=True)

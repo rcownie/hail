@@ -16,8 +16,10 @@ object RegionValue {
   def apply(region: Region, offset: Long) = new RegionValue(region, offset)
 }
 
-final class RegionValue(var region: Region,
-  var offset: Long) {
+final class RegionValue(
+  var region: Region,
+  var offset: Long
+) extends UnKryoSerializable {
   def set(newRegion: Region, newOffset: Long) {
     region = newRegion
     offset = newOffset
@@ -32,13 +34,6 @@ final class RegionValue(var region: Region,
   }
 
   def pretty(t: Type): String = region.pretty(t, offset)
-
-  // We need to know the Type to be able to
-  def copy(t: Type): RegionValue = {
-    // FIXME: write this func
-    new RegionValue(new Region(), 0)
-  }
-
 
   private def writeObject(s: ObjectOutputStream): Unit = {
     throw new NotImplementedException()

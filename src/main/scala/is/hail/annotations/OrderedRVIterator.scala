@@ -1,30 +1,37 @@
 package is.hail.annotations
 
-import is.hail.rvd.OrderedRVDType
+import is.hail.rvd.{OrderedRVDType, RVDContext}
 import is.hail.utils._
 
 import scala.collection.generic.Growable
 
-case class OrderedRVIterator(t: OrderedRVDType, iterator: Iterator[RegionValue]) {
+case class OrderedRVIterator(
+  t: OrderedRVDType,
+  iterator: Iterator[RegionValue],
+  ctx: RVDContext
+) {
 
   def restrictToPKInterval(interval: Interval): Iterator[RegionValue] = {
     val ur = new UnsafeRow(t.rowType)
     val pk = new KeyedRow(ur, t.kRowFieldIdx)
     iterator.filter { rv => {
       ur.set(rv)
-      interval.contains(t.kType.ordering, pk)
+      val keep = interval.contains(t.kType.ordering, pk)
+      if (!keep)
+        ctx.region.clear()
+      keep
     } }
   }
 
   def staircase: StagingIterator[FlipbookIterator[RegionValue]] =
-    iterator.toFlipbookIterator.staircased(t.kRowOrdView)
+    iterator.toFlipbookIterator.staircased(t.kRowOrdView(ctx.freshRegion))
 
   def cogroup(other: OrderedRVIterator):
       FlipbookIterator[Muple[FlipbookIterator[RegionValue], FlipbookIterator[RegionValue]]] =
     this.iterator.toFlipbookIterator.cogroup(
       other.iterator.toFlipbookIterator,
-      this.t.kRowOrdView,
-      other.t.kRowOrdView,
+      this.t.kRowOrdView(ctx.freshRegion),
+      other.t.kRowOrdView(ctx.freshRegion),
       this.t.kComp(other.t).compare
     )
 
@@ -41,8 +48,8 @@ case class OrderedRVIterator(t: OrderedRVDType, iterator: Iterator[RegionValue])
   def innerJoinDistinct(other: OrderedRVIterator): Iterator[JoinedRegionValue] =
     iterator.toFlipbookIterator.innerJoinDistinct(
       other.iterator.toFlipbookIterator,
-      this.t.kRowOrdView,
-      other.t.kRowOrdView,
+      this.t.kRowOrdView(ctx.freshRegion),
+      other.t.kRowOrdView(ctx.freshRegion),
       null,
       null,
       this.t.kComp(other.t).compare
@@ -51,8 +58,8 @@ case class OrderedRVIterator(t: OrderedRVDType, iterator: Iterator[RegionValue])
   def leftJoinDistinct(other: OrderedRVIterator): Iterator[JoinedRegionValue] =
     iterator.toFlipbookIterator.leftJoinDistinct(
       other.iterator.toFlipbookIterator,
-      this.t.kRowOrdView,
-      other.t.kRowOrdView,
+      this.t.kRowOrdView(ctx.freshRegion),
+      other.t.kRowOrdView(ctx.freshRegion),
       null,
       null,
       this.t.kComp(other.t).compare
@@ -64,8 +71,8 @@ case class OrderedRVIterator(t: OrderedRVDType, iterator: Iterator[RegionValue])
   ): Iterator[JoinedRegionValue] = {
     iterator.toFlipbookIterator.innerJoin(
       other.iterator.toFlipbookIterator,
-      this.t.kRowOrdView,
-      other.t.kRowOrdView,
+      this.t.kRowOrdView(ctx.freshRegion),
+      other.t.kRowOrdView(ctx.freshRegion),
       null,
       null,
       rightBuffer,
@@ -79,8 +86,8 @@ case class OrderedRVIterator(t: OrderedRVDType, iterator: Iterator[RegionValue])
   ): Iterator[JoinedRegionValue] = {
     iterator.toFlipbookIterator.leftJoin(
       other.iterator.toFlipbookIterator,
-      this.t.kRowOrdView,
-      other.t.kRowOrdView,
+      this.t.kRowOrdView(ctx.freshRegion),
+      other.t.kRowOrdView(ctx.freshRegion),
       null,
       null,
       rightBuffer,
@@ -94,8 +101,8 @@ case class OrderedRVIterator(t: OrderedRVDType, iterator: Iterator[RegionValue])
   ): Iterator[JoinedRegionValue] = {
     iterator.toFlipbookIterator.rightJoin(
       other.iterator.toFlipbookIterator,
-      this.t.kRowOrdView,
-      other.t.kRowOrdView,
+      this.t.kRowOrdView(ctx.freshRegion),
+      other.t.kRowOrdView(ctx.freshRegion),
       null,
       null,
       rightBuffer,
@@ -109,8 +116,8 @@ case class OrderedRVIterator(t: OrderedRVDType, iterator: Iterator[RegionValue])
   ): Iterator[JoinedRegionValue] = {
     iterator.toFlipbookIterator.outerJoin(
       other.iterator.toFlipbookIterator,
-      this.t.kRowOrdView,
-      other.t.kRowOrdView,
+      this.t.kRowOrdView(ctx.freshRegion),
+      other.t.kRowOrdView(ctx.freshRegion),
       null,
       null,
       rightBuffer,

@@ -5,7 +5,7 @@ import java.util.Properties
 
 import is.hail.annotations._
 import is.hail.expr.types._
-import is.hail.expr.{EvalContext, Parser, ir}
+import is.hail.expr.{EvalContext, Parser, ir, ToIRSuccess, ToIRFailure}
 import is.hail.io.{CodecSpec, Decoder, LoadMatrix}
 import is.hail.io.bgen.LoadBgen
 import is.hail.io.gen.LoadGen
@@ -32,7 +32,6 @@ import scala.reflect.ClassTag
 case class FilePartition(index: Int, file: String) extends Partition
 
 object HailContext {
-
   val tera: Long = 1024L * 1024L * 1024L * 1024L
 
   val logFormat: String = "%d{yyyy-MM-dd HH:mm:ss} %c{1}: %p: %m%n"
@@ -244,12 +243,12 @@ object HailContext {
 
         try {
           rv.setOffset(dec.readRegionValue(region))
+          cont = dec.readByte()
           if (metrics != null) {
             ExposedMetrics.incrementRecord(metrics)
-            ExposedMetrics.setBytes(metrics, trackedIn.bytesRead)
+            ExposedMetrics.incrementBytes(metrics, trackedIn.bytesReadAndClear())
           }
 
-          cont = dec.readByte()
           if (cont == 0)
             dec.close()
 
@@ -682,7 +681,7 @@ class HailContext private(val sc: SparkContext,
   def eval(expr: String): (Annotation, Type) = {
     val ec = EvalContext()
     val ast = Parser.parseToAST(expr, ec)
-    ast.toIR() match {
+    ast.toIROpt() match {
       case Some(body) =>
         Region.scoped { region =>
           val t = ast.`type`

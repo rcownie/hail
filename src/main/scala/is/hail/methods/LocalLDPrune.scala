@@ -131,7 +131,7 @@ object LocalLDPrune {
     var i = 0
     while (i < nSamples) {
       hcView.setGenotype(i)
-      val gt = if (hcView.hasGT) Call.unphasedDiploidGtIndex(hcView.getGT) else -1
+      val gt = if (hcView.hasGT) Call.nNonRefAlleles(hcView.getGT) else -1
 
       pack = pack | ((gt & 3).toLong << packOffset)
 
@@ -226,11 +226,12 @@ object LocalLDPrune {
   private def pruneLocal(inputRDD: OrderedRVD, r2Threshold: Double, windowSize: Int, queueSize: Option[Int]): OrderedRVD = {
     val localRowType = inputRDD.typ.rowType
 
-    inputRDD.mapPartitionsPreservesPartitioning(inputRDD.typ) { it =>
+    inputRDD.mapPartitionsPreservesPartitioning(inputRDD.typ, { (ctx, it) =>
       val queue = new util.ArrayDeque[RegionValue](queueSize.getOrElse(16))
 
       val bpvv = new BitPackedVectorView(localRowType)
       val bpvvPrev = new BitPackedVectorView(localRowType)
+      val rvb = new RegionValueBuilder()
 
       it.filter { rv =>
         bpvv.setRegion(rv)
@@ -253,20 +254,24 @@ object LocalLDPrune {
         }
 
         if (keepVariant) {
-          queue.addLast(rv.copy())
+          val r = ctx.freshRegion
+          rvb.set(r)
+          rvb.start(localRowType)
+          rvb.addRegionValue(localRowType, rv)
+          queue.addLast(RegionValue(rvb.region, rvb.end()))
           queueSize.foreach { qs =>
             if (queue.size() > qs) {
-              queue.pop()
+              ctx.closeChild(queue.pop().region)
             }
           }
         }
 
         keepVariant
       }
-    }
+    })
   }
 
-  def apply(mt: MatrixTable, r2Threshold: Double = 0.2, windowSize: Int = 1000000, maxQueueSize: Int): Table = {
+  def apply(mt: MatrixTable, callField: String = "GT", r2Threshold: Double = 0.2, windowSize: Int = 1000000, maxQueueSize: Int): Table = {
 
     mt.requireRowKeyVariant("ld_prune")
 
@@ -294,7 +299,7 @@ object LocalLDPrune {
 
     val standardizedRDD = mt.rvd
       .mapPartitionsPreservesPartitioning(new OrderedRVDType(typ.partitionKey, typ.key, bpvType))({ it =>
-        val hcView = HardCallView(fullRowType)
+        val hcView = new HardCallView(fullRowType, callField)
         val region = Region()
         val rvb = new RegionValueBuilder(region)
         val newRV = RegionValue(region)

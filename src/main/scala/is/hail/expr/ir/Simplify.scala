@@ -1,7 +1,7 @@
 package is.hail.expr.ir
 
 import is.hail.utils._
-import is.hail.expr.{BaseIR, FilterColsIR, FilterRowsIR, MatrixRead, TableFilter, TableRead, TableUnion}
+import is.hail.expr.{BaseIR, FilterColsIR, FilterRowsIR, MatrixRead, TableFilter, TableMapGlobals, TableMapRows, TableRead, TableUnion}
 
 object Simplify {
   private[this] def isStrict(x: IR): Boolean = {
@@ -67,15 +67,18 @@ object Simplify {
 
       case ArrayFilter(a, _, True()) => a
 
-      case AggFilter(a, _, True()) => a
-        
       case Let(n, v, b) if !Mentions(b, n) => b
 
-      case AggFilter(AggMap(a, n1, b), n2, p) if !Mentions(p, n2) =>
-        AggMap(AggFilter(a, n2, p), n1, b)
+      case ArrayFold(ArrayMap(a, n1, b), zero, accumName, valueName, body) => ArrayFold(a, zero, accumName, n1, Let(valueName, b, body))
 
-      case AggMap(AggMap(a, n1, b1), n2, b2) =>
-        AggMap(a, n1, Let(n2, b1, b2))
+      case ArrayLen(ArrayRange(start, end, I32(1))) => ApplyBinaryPrimOp(Subtract(), end, start)
+
+      case ArrayLen(ArrayMap(a, _, _)) => ArrayLen(a)
+
+      case ArrayLen(ArrayFlatMap(a, _, MakeArray(args, _))) => ApplyBinaryPrimOp(Multiply(), I32(args.length), ArrayLen(a))
+
+      case ArrayFlatMap(ArrayMap(a, n1, b1), n2, b2) =>
+        ArrayFlatMap(a, n1, Let(n2, b1, b2))
 
       case ArrayMap(ArrayMap(a, n1, b1), n2, b2) =>
         ArrayMap(a, n1, Let(n2, b1, b2))
@@ -117,6 +120,13 @@ object Simplify {
       case TableFilter(TableFilter(t, p1), p2) =>
         TableFilter(t,
           ApplySpecial("&&", Array(p1, p2)))
+
+      case TableCount(TableMapGlobals(child, _, _)) => TableCount(child)
+
+      case TableCount(TableMapRows(child, _, _)) => TableCount(child)
+
+      case TableCount(TableUnion(children)) =>
+        children.map(TableCount).reduce[IR](ApplyBinaryPrimOp(Add(), _, _))
 
         // flatten unions
       case TableUnion(children) if children.exists(_.isInstanceOf[TableUnion]) =>

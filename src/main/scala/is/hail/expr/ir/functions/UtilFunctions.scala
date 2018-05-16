@@ -17,22 +17,6 @@ object UtilFunctions extends RegistryFunctions {
 
     registerCode("triangle", TInt32(), TInt32()) { case (_, n: Code[Int]) => (n * (n + 1)) / 2 }
 
-
-    registerIR("sum", TAggregable(TInt64()))(ApplyAggOp(_, Sum(), FastSeq()))
-    registerIR("sum", TAggregable(TFloat64()))(ApplyAggOp(_, Sum(), FastSeq()))
-
-    registerIR("product", TAggregable(TInt64()))(ApplyAggOp(_, Product(), FastSeq()))
-    registerIR("product", TAggregable(TFloat64()))(ApplyAggOp(_, Product(), FastSeq()))
-
-    registerIR("max", TAggregable(tnum("T")))(ApplyAggOp(_, Max(), FastSeq()))
-
-    registerIR("min", TAggregable(tnum("T")))(ApplyAggOp(_, Min(), FastSeq()))
-
-    registerIR("count", TAggregable(tv("T"))) { agg =>
-      val uid = genUID()
-      ApplyAggOp(AggMap(agg, uid, I32(0)), Count(), Seq())
-    }
-
     registerIR("isDefined", tv("T")) { a => ApplyUnaryPrimOp(Bang(), IsNA(a)) }
     registerIR("isMissing", tv("T")) { a => IsNA(a) }
 
