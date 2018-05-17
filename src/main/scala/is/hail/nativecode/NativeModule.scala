@@ -30,7 +30,6 @@ class NativeModule() extends NativeBase() {
   def this(options: String, source: String, forceBuild: Boolean) {
     this()
     val includeDir = NativeCode.getIncludeDir()
-    System.err.println(s"DEBUG: getIncludeDir() -> ${includeDir}")
     nativeCtorMaster(options, source, includeDir, forceBuild)
   }
 

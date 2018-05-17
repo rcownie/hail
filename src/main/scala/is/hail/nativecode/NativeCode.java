@@ -12,7 +12,6 @@ class NativeCode {
       ClassLoader loader = NativeCode.class.getClassLoader();
       InputStream s = null;
       String osName = System.getProperty("os.name");
-      System.err.println(osName);
       if (osName.equals("Linux") || osName.equals("linux")) {
         s = loader.getResourceAsStream("linux-x86-64/libhail.so");
       } else {
