@@ -130,8 +130,7 @@ class StagedRegionValueBuilder private(val mb: MethodBuilder, val typ: Type, var
   def addBinary(bytes: Code[Array[Byte]]): Code[Unit] = {
     val boff = mb.newLocal[Long]
     Code(
-      boff := region.appendInt(bytes.length()),
-      toUnit(region.appendBytes(bytes)),
+      boff := region.appendBinary(bytes),
       ftype match {
         case _: TBinary =>
           startOffset := boff
