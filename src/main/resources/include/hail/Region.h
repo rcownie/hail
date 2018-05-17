@@ -5,8 +5,8 @@
 #include "hail/NativePtr.h"
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include <memory>
-#include <utility>
 #include <vector>
 
 namespace hail {
@@ -78,7 +78,7 @@ public:
       [](const BigAlloc& a, const BigAlloc& b)->bool { return(a.size_ > b.size_); }
     );
     if (big_free_.size() > kNumBigToKeep) {
-      for (int idx = big_free_.size(); --idx >= kNumBigToKeep;) {
+      for (int idx = big_free_.size(); --idx >= (int)kNumBigToKeep;) {
         free(big_free_[idx].buf_);
       }
       big_free_.resize(kNumBigToKeep);
