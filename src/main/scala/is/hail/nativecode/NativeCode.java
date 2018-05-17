@@ -10,7 +10,14 @@ class NativeCode {
     try {
       File file = File.createTempFile("libhail", ".lib");
       ClassLoader loader = NativeCode.class.getClassLoader();
-      InputStream s = loader.getResourceAsStream("darwin/libhail.dylib");
+      InputStream s = null;
+      String osName = System.getProperty("os.name");
+      System.err.println(osName);
+      if (osName.equals("Linux") || osName.equals("linux")) {
+        s = loader.getResourceAsStream("linux-x86-64/libhail.so");
+      } else {
+        s = loader.getResourceAsStream("darwin/libhail.dylib");
+      }
       java.nio.file.Files.copy(s, file.getAbsoluteFile().toPath(),
         java.nio.file.StandardCopyOption.REPLACE_EXISTING
       );
