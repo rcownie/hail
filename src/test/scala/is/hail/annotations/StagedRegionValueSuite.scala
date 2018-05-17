@@ -82,7 +82,6 @@ class StagedRegionValueSuite extends SparkSuite {
     }
 
     assert(rv.pretty(rt) == rv2.pretty(rt))
-    assert(rv.offset == rv2.offset)
   }
 
   @Test
@@ -120,9 +119,6 @@ class StagedRegionValueSuite extends SparkSuite {
     }
 
     assert(rv.pretty(rt) == rv2.pretty(rt))
-    assert(rv.offset == rv2.offset)
-
-
   }
 
   @Test
@@ -161,7 +157,6 @@ class StagedRegionValueSuite extends SparkSuite {
     }
 
     assert(rv.pretty(rt) == rv2.pretty(rt))
-    assert(rv.offset == rv2.offset)
   }
 
   @Test
@@ -223,8 +218,6 @@ class StagedRegionValueSuite extends SparkSuite {
     }
 
     assert(rv.pretty(rt) == rv2.pretty(rt))
-    assert(rv.offset == rv2.offset)
-
   }
 
   @Test
@@ -288,7 +281,6 @@ class StagedRegionValueSuite extends SparkSuite {
     }
 
     assert(rv.pretty(rt) == rv2.pretty(rt))
-    assert(rv.offset == rv2.offset)
   }
 
   @Test
