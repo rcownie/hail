@@ -10,6 +10,7 @@ from hail.utils.java import Env, scala_object
 from hail.utils.misc import new_temp_file
 import pyspark.sql
 from .utils import resource, startTestHailContext, stopTestHailContext
+import operator
 
 setUpModule = startTestHailContext
 tearDownModule = stopTestHailContext
@@ -634,6 +635,23 @@ class MatrixTests(unittest.TestCase):
                                  z2=vds.x1 + vds.y1 + vds.foo)
         self.assertTrue(schema_eq(vds.entry.dtype, hl.tstruct(z1=hl.tint64, z2=hl.tint64)))
 
+    def test_annotate_globals(self):
+        mt = hl.utils.range_matrix_table(1, 1)
+        ht = hl.utils.range_table(1, 1)
+        data = [
+            (5, hl.tint, operator.eq),
+            (float('nan'), hl.tfloat32, lambda x, y: str(x) == str(y)),
+            (float('inf'), hl.tfloat64, lambda x, y: str(x) == str(y)),
+            (float('-inf'), hl.tfloat64, lambda x, y: str(x) == str(y)),
+            (1.111, hl.tfloat64, operator.eq),
+            ([hl.Struct(**{'a': None, 'b': 5}),
+              hl.Struct(**{'a': 'hello', 'b': 10})], hl.tarray(hl.tstruct(a=hl.tstr, b=hl.tint)), operator.eq)
+        ]
+
+        for x, t, f in data:
+            self.assertTrue(f(mt.annotate_globals(foo=hl.literal(x, t)).foo.value, x), f"{x}, {t}")
+            self.assertTrue(f(ht.annotate_globals(foo=hl.literal(x, t)).foo.value, x), f"{x}, {t}")
+
     def test_filter(self):
         vds = self.get_vds()
         vds = vds.annotate_globals(foo=5)
@@ -866,6 +884,14 @@ class MatrixTests(unittest.TestCase):
         for s, count in ds.aggregate_cols(agg.counter(ds.s)).items():
             self.assertEqual(count, 3)
 
+    def test_union_cols_example(self):
+        joined = hl.import_vcf(resource('joined.vcf'))
+
+        left = hl.import_vcf(resource('joinleft.vcf'))
+        right = hl.import_vcf(resource('joinright.vcf'))
+
+        self.assertTrue(left.union_cols(right)._same(joined))
+
     def test_index(self):
         ds = self.get_vds(min_partitions=8)
         self.assertEqual(ds.n_partitions(), 8)
@@ -894,6 +920,20 @@ class MatrixTests(unittest.TestCase):
         ds2 = ds.annotate_cols(foo = [0, 0]).explode_cols('foo').drop('foo')
 
         self.assertTrue(ds.choose_cols(sorted(list(range(ds.count_cols())) * 2))._same(ds2))
+
+    def test_distinct_by_row(self):
+        orig_mt = hl.utils.range_matrix_table(10, 10)
+        mt = orig_mt.key_rows_by(row_idx = orig_mt.row_idx // 2)
+        self.assertTrue(mt.distinct_by_row().count_rows() == 5)
+
+        self.assertTrue(orig_mt.union_rows(orig_mt).distinct_by_row()._same(orig_mt))
+
+    def test_distinct_by_col(self):
+        orig_mt = hl.utils.range_matrix_table(10, 10)
+        mt = orig_mt.key_cols_by(col_idx = orig_mt.col_idx // 2)
+        self.assertTrue(mt.distinct_by_col().count_cols() == 5)
+
+        self.assertTrue(orig_mt.union_cols(orig_mt).distinct_by_col()._same(orig_mt))
 
     def test_computed_key_join_1(self):
         ds = self.get_vds()

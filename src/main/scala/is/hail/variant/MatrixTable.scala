@@ -182,25 +182,40 @@ object MatrixTable {
           } else {
             val entriesRVD = spec.entriesComponent.read(hc, path)
             val entriesRowType = entriesRVD.rowType
-            rowsRVD.zip(typ.orvdType, entriesRVD) { (ctx, rv1, rv2) =>
+            rowsRVD.zipPartitions(typ.orvdType, rowsRVD.partitioner, entriesRVD, preservesPartitioning = true) { (ctx, it1, it2) =>
               val rvb = ctx.rvb
               val region = ctx.region
-              rvb.start(fullRowType)
-              rvb.startStruct()
-              var i = 0
-              while (i < localEntriesIndex) {
-                rvb.addField(rowType, rv1, i)
-                i += 1
+              val rv3 = RegionValue(region)
+              new Iterator[RegionValue] {
+                def hasNext = {
+                  val hn1 = it1.hasNext
+                  val hn2 = it2.hasNext
+                  assert(hn1 == hn2)
+                  hn1
+                }
+
+                def next(): RegionValue = {
+                  val rv1 = it1.next()
+                  val rv2 = it2.next()
+
+                  rvb.start(fullRowType)
+                  rvb.startStruct()
+                  var i = 0
+                  while (i < localEntriesIndex) {
+                    rvb.addField(rowType, rv1, i)
+                    i += 1
+                  }
+                  rvb.addField(entriesRowType, rv2, 0)
+                  i += 1
+                  while (i < fullRowType.size) {
+                    rvb.addField(rowType, rv1, i - 1)
+                    i += 1
+                  }
+                  rvb.endStruct()
+                  rv3.setOffset(rvb.end())
+                  rv3
+                }
               }
-              rvb.addField(entriesRowType, rv2, 0)
-              i += 1
-              while (i < fullRowType.size) {
-                rvb.addField(rowType, rv1, i - 1)
-                i += 1
-              }
-              rvb.endStruct()
-              rv2.set(region, rvb.end())
-              rv2
             }
           }
         }
@@ -511,7 +526,7 @@ case class VSMSubgen(
         hc.sc.parallelize(rows.map { case (v, (va, gs)) =>
           (vaIns(va, v), gs)
         }, nPartitions))
-        .deduplicate()
+        .distinctByRow()
     }
 }
 
@@ -703,7 +718,7 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
 
   def colKeys: IndexedSeq[Annotation] = {
     val queriers = colKey.map(colType.query(_))
-    colValues.value.map(a => Row.fromSeq(queriers.map(q => q(a)))).toArray[Annotation]
+    colValues.safeValue.map(a => Row.fromSeq(queriers.map(q => q(a)))).toArray[Annotation]
   }
 
   def rowKeysF: (Row) => Row = {
@@ -1284,9 +1299,23 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
 
   def forceCountRows(): Long = rvd.count()
 
-  def deduplicate(): MatrixTable =
+  def distinctByRow(): MatrixTable =
     copy2(rvd = rvd.boundary.mapPartitionsPreservesPartitioning(rvd.typ,
       SortedDistinctRowIterator.transformer(rvd.typ)))
+
+  def distinctByCol(): MatrixTable = {
+    val colKeys = dropRows().colKeys
+    val m = new mutable.HashSet[Any]()
+    val ab = new ArrayBuilder[Int]
+    colKeys.zipWithIndex
+      .foreach { case (ck, i) =>
+          if (!m.contains(ck)) {
+            ab += i
+            m.add(ck)
+          }
+      }
+    chooseCols(ab.result())
+  }
 
   def deleteVA(args: String*): (Type, Deleter) = deleteVA(args.toList)
 

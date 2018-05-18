@@ -414,7 +414,7 @@ class CompileSuite {
   @Test
   def testArrayFilterCutoff() {
     val t = TArray(TInt32())
-    val ir = ArrayFilter(ArrayRange(I32(0), In(0, TInt32()), I32(1)), "x", ApplyBinaryPrimOp(LT(), Ref("x", TInt32()), In(1, TInt32())))
+    val ir = ArrayFilter(ArrayRange(I32(0), In(0, TInt32()), I32(1)), "x", ApplyComparisonOp(LT(TInt32()), Ref("x", TInt32()), In(1, TInt32())))
     val region = Region()
     val fb = EmitFunctionBuilder[Region, Int, Boolean, Int, Boolean, Long]
     doit(ir, fb)
@@ -433,7 +433,7 @@ class CompileSuite {
   @Test
   def testArrayFilterElement() {
     val t = TArray(TInt32())
-    val ir = ArrayFilter(In(0, t), "x", ApplyBinaryPrimOp(EQ(), Ref("x", TInt32()), In(1, TInt32())))
+    val ir = ArrayFilter(In(0, t), "x", ApplyComparisonOp(EQ(TInt32()), Ref("x", TInt32()), In(1, TInt32())))
     val region = Region()
     val fb = EmitFunctionBuilder[Region, Long, Boolean, Int, Boolean, Long]
     doit(ir, fb)
@@ -512,7 +512,7 @@ class CompileSuite {
   def testArrayFlatMapVsFilter() {
     val tRange = TArray(TInt32())
     val inputIR = ArrayRange(I32(0), In(0, TInt32()), I32(1))
-    val filterCond = { x: IR => ApplyBinaryPrimOp(EQ(), x, I32(1)) }
+    val filterCond = { x: IR => ApplyComparisonOp(EQ(TInt32()), x, I32(1)) }
     val filterIR = ArrayFilter(inputIR, "i", filterCond(Ref("i", TInt32())))
     val flatMapIR = ArrayFlatMap(inputIR, "i", If(filterCond(Ref("i", TInt32())), MakeArray(Seq(Ref("i", TInt32())), TArray(TInt32())), MakeArray(Seq(), tRange)))
 
