@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -40,41 +41,33 @@ public:
 class NativePtrInfo {
 public:
   static const int kMagic = 0xa35e72bf;
-  int magic_;
+  int  magic_;
   jfieldID addrA_id_;
   jfieldID addrB_id_;
   
 public:
-  NativePtrInfo() :
-    magic_(1),
-    addrA_id_((jfieldID)0x2L),
-    addrB_id_((jfieldID)0x3L) {
+  NativePtrInfo(JNIEnv* env, int line) {
+    auto cl = env->FindClass("is/hail/nativecode/NativeBase");
+    addrA_id_ = env->GetFieldID(cl, "addrA", "J");
+    addrB_id_ = env->GetFieldID(cl, "addrB", "J");
     // Check that std::shared_ptr matches our assumptions
     auto ptr = std::make_shared<NativeObj>();
     AlignedBuf* buf = reinterpret_cast<AlignedBuf*>(&ptr);
     assert(sizeof(ptr) == 2*sizeof(long));
     assert(buf->get_addrA() == reinterpret_cast<long>(ptr.get()));
+    magic_ = kMagic;
   }
-  
-  inline bool need_init() {
-    return(magic_ != kMagic);
-  }
-  
-  void init(JNIEnv* env, int line);
 };
 
-void NativePtrInfo::init(JNIEnv* env, int line) {
-  fprintf(stderr, "%d: NativePtrInfo::init() magic_ %x addrA_id_ %lx\n", line, magic_, (long)addrA_id_);
-  auto cl = env->FindClass("is/hail/nativecode/NativeBase");
-  addrA_id_ = env->GetFieldID(cl, "addrA", "J");
-  addrB_id_ = env->GetFieldID(cl, "addrB", "J");
-  magic_ = kMagic;
-}
+// WARNING: I observe that when this gets loaded as a shred library on Linux,
+// we see two distinct NativePtrInfo objects at different addresses.  That is
+// extremely weird, but by putting all the initialization into the constructor
+// we make sure that both get correctly initialized.  But that behavior might
+// cause trouble in other code, so we need to watch out for it.
 
-NativePtrInfo info;
-
-inline void check_info(JNIEnv* env, int line) {
-  if (info.need_init()) info.init(env, line);
+static NativePtrInfo* get_info(JNIEnv* env, int line) {
+  static NativePtrInfo the_info(env, line);
+  return &the_info;
 }
 
 // We use non-inline methods to try to defeat over-aggressive reordering
@@ -89,38 +82,34 @@ void AlignedBuf::set_addrB(long v) { *(long*)&buf_[8] = v; }
 } // end anon
 
 NativeObj* get_from_NativePtr(JNIEnv* env, jobject obj) {
-  check_info(env, __LINE__);
-  long addrA = env->GetLongField(obj, info.addrA_id_);
+  auto info = get_info(env, __LINE__);
+  long addrA = env->GetLongField(obj, info->addrA_id_);
   return reinterpret_cast<NativeObj*>(addrA);
 }
 
 void init_NativePtr(JNIEnv* env, jobject obj, NativeObjPtr* ptr) {
-  check_info(env, __LINE__);
+  auto info = get_info(env, __LINE__);
   // Ignore previous values in NativePtr
   AlignedBuf buf;
   buf.as_NativeObjPtr() = std::move(*ptr);
-  check_info(env, __LINE__);
-  env->SetLongField(obj, info.addrA_id_, buf.get_addrA());
-  env->SetLongField(obj, info.addrB_id_, buf.get_addrB());
-  check_info(env, __LINE__);
+  env->SetLongField(obj, info->addrA_id_, buf.get_addrA());
+  env->SetLongField(obj, info->addrB_id_, buf.get_addrB());
 }
 
 void move_to_NativePtr(JNIEnv* env, jobject obj, NativeObjPtr* ptr) {
-  check_info(env, __LINE__);
-  long addrA = env->GetLongField(obj, info.addrA_id_);
+  auto info = get_info(env, __LINE__);
+  long addrA = env->GetLongField(obj, info->addrA_id_);
   if (addrA) {
     // We need to reset() the existing NativePtr
     AlignedBuf old;
     old.set_addrA(addrA);
-    old.set_addrB(env->GetLongField(obj, info.addrB_id_));
+    old.set_addrB(env->GetLongField(obj, info->addrB_id_));
     old.as_NativeObjPtr().reset();
   }
   AlignedBuf buf;
   buf.as_NativeObjPtr() = std::move(*ptr);
-  check_info(env, __LINE__);
-  env->SetLongField(obj, info.addrA_id_, buf.get_addrA());
-  env->SetLongField(obj, info.addrB_id_, buf.get_addrB());
-  check_info(env, __LINE__);
+  env->SetLongField(obj, info->addrA_id_, buf.get_addrA());
+  env->SetLongField(obj, info->addrB_id_, buf.get_addrB());
 }
 
 NATIVEMETHOD(void, NativeBase, nativeCopyCtor)(
@@ -129,13 +118,10 @@ NATIVEMETHOD(void, NativeBase, nativeCopyCtor)(
   jlong b_addrA,
   jlong b_addrB
 ) {
-  check_info(env, __LINE__);
   auto obj = reinterpret_cast<NativeObj*>(b_addrA);
   // This adds a new reference to the object
   auto ptr = (obj ? obj->shared_from_this() : NativeObjPtr());
-  check_info(env, __LINE__);
   init_NativePtr(env, thisJ, &ptr);
-  check_info(env, __LINE__);
 }
 
 NATIVEMETHOD(void, NativeBase, copyAssign)(
@@ -143,22 +129,19 @@ NATIVEMETHOD(void, NativeBase, copyAssign)(
   jobject thisJ,
   jobject srcJ
 ) {
-  check_info(env, __LINE__);
   if (thisJ == srcJ) return;
+  auto info = get_info(env, __LINE__);
   AlignedBuf bufA;
-  bufA.set_addrA(env->GetLongField(thisJ, info.addrA_id_));
-  bufA.set_addrB(env->GetLongField(thisJ, info.addrB_id_));
+  bufA.set_addrA(env->GetLongField(thisJ, info->addrA_id_));
+  bufA.set_addrB(env->GetLongField(thisJ, info->addrB_id_));
   AlignedBuf bufB;
-  bufB.set_addrA(env->GetLongField(srcJ, info.addrA_id_));
-  bufB.set_addrB(env->GetLongField(srcJ, info.addrB_id_));
+  bufB.set_addrA(env->GetLongField(srcJ, info->addrA_id_));
+  bufB.set_addrB(env->GetLongField(srcJ, info->addrB_id_));
   auto& ptrA = bufA.as_NativeObjPtr();
   auto& ptrB = bufB.as_NativeObjPtr();
-  check_info(env, __LINE__);
   ptrA = ptrB;
-  check_info(env, __LINE__);
-  env->SetLongField(thisJ, info.addrA_id_, bufA.get_addrA());
-  env->SetLongField(thisJ, info.addrB_id_, bufA.get_addrB());
-  check_info(env, __LINE__);
+  env->SetLongField(thisJ, info->addrA_id_, bufA.get_addrA());
+  env->SetLongField(thisJ, info->addrB_id_, bufA.get_addrB());
 }
 
 NATIVEMETHOD(void, NativeBase, moveAssign)(
@@ -166,22 +149,19 @@ NATIVEMETHOD(void, NativeBase, moveAssign)(
   jobject thisJ,
   jobject srcJ
 ) {
-  check_info(env, __LINE__);
+  auto info = get_info(env, __LINE__);
   if (thisJ == srcJ) return;
   AlignedBuf bufA;
-  bufA.set_addrA(env->GetLongField(thisJ, info.addrA_id_));
-  bufA.set_addrB(env->GetLongField(thisJ, info.addrB_id_));
+  bufA.set_addrA(env->GetLongField(thisJ, info->addrA_id_));
+  bufA.set_addrB(env->GetLongField(thisJ, info->addrB_id_));
   AlignedBuf bufB;
-  bufB.set_addrA(env->GetLongField(srcJ, info.addrA_id_));
-  bufB.set_addrB(env->GetLongField(srcJ, info.addrB_id_));
-  check_info(env, __LINE__);
+  bufB.set_addrA(env->GetLongField(srcJ, info->addrA_id_));
+  bufB.set_addrB(env->GetLongField(srcJ, info->addrB_id_));
   bufA.as_NativeObjPtr() = std::move(bufB.as_NativeObjPtr());
-  check_info(env, __LINE__);
-  env->SetLongField(thisJ, info.addrA_id_, bufA.get_addrA());
-  env->SetLongField(thisJ, info.addrB_id_, bufA.get_addrB());
-  env->SetLongField(srcJ, info.addrA_id_, bufB.get_addrA());
-  env->SetLongField(srcJ, info.addrB_id_, bufB.get_addrB());
-  check_info(env, __LINE__);
+  env->SetLongField(thisJ, info->addrA_id_, bufA.get_addrA());
+  env->SetLongField(thisJ, info->addrB_id_, bufA.get_addrB());
+  env->SetLongField(srcJ, info->addrA_id_, bufB.get_addrA());
+  env->SetLongField(srcJ, info->addrB_id_, bufB.get_addrB());
 }
 
 NATIVEMETHOD(void, NativeBase, nativeReset)(
@@ -190,12 +170,10 @@ NATIVEMETHOD(void, NativeBase, nativeReset)(
   jlong addrA,
   jlong addrB
 ) {
-  check_info(env, __LINE__);
   AlignedBuf bufA;
   bufA.set_addrA(addrA);
   bufA.set_addrB(addrB);
   bufA.as_NativeObjPtr().reset();
-  check_info(env, __LINE__);
   // The Scala object fields are cleared in the wrapper
 }
 
@@ -205,13 +183,10 @@ NATIVEMETHOD(long, NativeBase, nativeUseCount)(
   jlong addrA,
   jlong addrB
 ) {
-  check_info(env, __LINE__);
   AlignedBuf bufA;
   bufA.set_addrA(addrA);
   bufA.set_addrB(addrB);
-  auto count = bufA.as_NativeObjPtr().use_count();
-  check_info(env, __LINE__);
-  return count;
+  return bufA.as_NativeObjPtr().use_count();
 }
 
 // We have constructors corresponding to std::make_shared<T>(...)
