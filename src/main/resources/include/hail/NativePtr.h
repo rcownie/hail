@@ -2,7 +2,6 @@
 #define HAIL_NATIVEPTR_H 1
 
 #include "hail/NativeObj.h"
-#include "hail/NativeModule.h"
 #include <jni.h>
 #include <memory>
 

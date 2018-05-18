@@ -66,6 +66,7 @@ ifndef JAVA_HOME
 endif
 	echo "JAVA_HOME is $(JAVA_HOME)"
 	echo "CXX is $(CXX)"
+	-$(CXX) --version
 
 build/functional-tests: ibs.cpp test.cpp
 	mkdir -p build

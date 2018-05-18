@@ -14,63 +14,113 @@ namespace hail {
 #define NATIVEFUNC(typ) \
   extern "C" JNIEXPORT typ JNICALL
 
-// According to the C++ standard, pointers to different types are assuming to be
-// non-aliased, unless they go through a "char*" which can be an alias for any type
-#define ALIAS_AS_LONGVEC(p) \
-  (reinterpret_cast<long*>(reinterpret_cast<char*>(p)))
-
-#define ALIAS_AS_NATIVEOBJPTR(p) \
-  (reinterpret_cast<NativeObjPtr*>(reinterpret_cast<char*>(p)))
-
 namespace {
 
-bool is_info_ready = false;
-jfieldID addrA_id;
-jfieldID addrB_id;
+class AlignedBuf {
+public:
+  char buf_[2*sizeof(long)];
+  long force_align_;
 
-void init_info(JNIEnv* env) {
+public:
+  AlignedBuf() {
+    set_addrA(0);
+    set_addrB(0);
+  }
+
+  inline NativeObjPtr& as_NativeObjPtr() {
+    return *reinterpret_cast<NativeObjPtr*>(&buf_[0]);
+  }
+  
+  long get_addrA() const;
+  long get_addrB() const;
+  void set_addrA(long v);
+  void set_addrB(long v);
+};
+
+class NativePtrInfo {
+public:
+  static const int kMagic = 0xa35e72bf;
+  int magic_;
+  jfieldID addrA_id_;
+  jfieldID addrB_id_;
+  
+public:
+  NativePtrInfo() :
+    magic_(1),
+    addrA_id_((jfieldID)0x2L),
+    addrB_id_((jfieldID)0x3L) {
+    // Check that std::shared_ptr matches our assumptions
+    auto ptr = std::make_shared<NativeObj>();
+    AlignedBuf* buf = reinterpret_cast<AlignedBuf*>(&ptr);
+    assert(sizeof(ptr) == 2*sizeof(long));
+    assert(buf->get_addrA() == reinterpret_cast<long>(ptr.get()));
+  }
+  
+  inline bool need_init() {
+    return(magic_ != kMagic);
+  }
+  
+  void init(JNIEnv* env, int line);
+};
+
+void NativePtrInfo::init(JNIEnv* env, int line) {
+  fprintf(stderr, "%d: NativePtrInfo::init() magic_ %x addrA_id_ %lx\n", line, magic_, (long)addrA_id_);
   auto cl = env->FindClass("is/hail/nativecode/NativeBase");
-  addrA_id = env->GetFieldID(cl, "addrA", "J");
-  addrB_id = env->GetFieldID(cl, "addrB", "J");
-  is_info_ready = true;
+  addrA_id_ = env->GetFieldID(cl, "addrA", "J");
+  addrB_id_ = env->GetFieldID(cl, "addrB", "J");
+  magic_ = kMagic;
 }
+
+NativePtrInfo info;
+
+inline void check_info(JNIEnv* env, int line) {
+  if (info.need_init()) info.init(env, line);
+}
+
+// We use non-inline methods to try to defeat over-aggressive reordering
+// of aliased type-punned accesses.  The cost is probably small relative
+// to the overhead of the Scala-to-C++ JNI call.
+
+long AlignedBuf::get_addrA() const { return *(long*)(&buf_[0]); }  
+long AlignedBuf::get_addrB() const { return *(long*)(&buf_[8]); }
+void AlignedBuf::set_addrA(long v) { *(long*)&buf_[0] = v; }
+void AlignedBuf::set_addrB(long v) { *(long*)&buf_[8] = v; }
 
 } // end anon
 
 NativeObj* get_from_NativePtr(JNIEnv* env, jobject obj) {
-  if (!is_info_ready) init_info(env);
-  long addrA = env->GetLongField(obj, addrA_id);
+  check_info(env, __LINE__);
+  long addrA = env->GetLongField(obj, info.addrA_id_);
   return reinterpret_cast<NativeObj*>(addrA);
 }
 
 void init_NativePtr(JNIEnv* env, jobject obj, NativeObjPtr* ptr) {
-  if (!is_info_ready) init_info(env);
+  check_info(env, __LINE__);
   // Ignore previous values in NativePtr
-  long* vec = ALIAS_AS_LONGVEC(ptr);
-  env->SetLongField(obj, addrA_id, vec[0]);
-  env->SetLongField(obj, addrB_id, vec[1]);
-  // And clear the ptr without changing refcount
-  vec[0] = 0;
-  vec[1] = 0;
+  AlignedBuf buf;
+  buf.as_NativeObjPtr() = std::move(*ptr);
+  check_info(env, __LINE__);
+  env->SetLongField(obj, info.addrA_id_, buf.get_addrA());
+  env->SetLongField(obj, info.addrB_id_, buf.get_addrB());
+  check_info(env, __LINE__);
 }
 
 void move_to_NativePtr(JNIEnv* env, jobject obj, NativeObjPtr* ptr) {
-  if (!is_info_ready) init_info(env);
-  long addrA = env->GetLongField(obj, addrA_id);
+  check_info(env, __LINE__);
+  long addrA = env->GetLongField(obj, info.addrA_id_);
   if (addrA) {
     // We need to reset() the existing NativePtr
-    long oldVec[2];
-    oldVec[0] = addrA;
-    oldVec[1] = env->GetLongField(obj, addrB_id);
-    auto oldPtr = ALIAS_AS_NATIVEOBJPTR(&oldVec[0]);
-    oldPtr->reset();
+    AlignedBuf old;
+    old.set_addrA(addrA);
+    old.set_addrB(env->GetLongField(obj, info.addrB_id_));
+    old.as_NativeObjPtr().reset();
   }
-  long* vec = ALIAS_AS_LONGVEC(ptr);
-  env->SetLongField(obj, addrA_id, vec[0]);
-  env->SetLongField(obj, addrB_id, vec[1]);
-  // And clear the ptr without changing refcount
-  vec[0] = 0;
-  vec[1] = 0;
+  AlignedBuf buf;
+  buf.as_NativeObjPtr() = std::move(*ptr);
+  check_info(env, __LINE__);
+  env->SetLongField(obj, info.addrA_id_, buf.get_addrA());
+  env->SetLongField(obj, info.addrB_id_, buf.get_addrB());
+  check_info(env, __LINE__);
 }
 
 NATIVEMETHOD(void, NativeBase, nativeCopyCtor)(
@@ -79,11 +129,13 @@ NATIVEMETHOD(void, NativeBase, nativeCopyCtor)(
   jlong b_addrA,
   jlong b_addrB
 ) {
-  if (!is_info_ready) init_info(env);
+  check_info(env, __LINE__);
   auto obj = reinterpret_cast<NativeObj*>(b_addrA);
   // This adds a new reference to the object
   auto ptr = (obj ? obj->shared_from_this() : NativeObjPtr());
+  check_info(env, __LINE__);
   init_NativePtr(env, thisJ, &ptr);
+  check_info(env, __LINE__);
 }
 
 NATIVEMETHOD(void, NativeBase, copyAssign)(
@@ -91,20 +143,22 @@ NATIVEMETHOD(void, NativeBase, copyAssign)(
   jobject thisJ,
   jobject srcJ
 ) {
+  check_info(env, __LINE__);
   if (thisJ == srcJ) return;
-  long vecA[2];
-  vecA[0] = env->GetLongField(thisJ, addrA_id);
-  vecA[1] = env->GetLongField(thisJ, addrB_id);
-  long vecB[2];
-  vecB[0] = env->GetLongField(srcJ, addrA_id);
-  vecB[1] = env->GetLongField(srcJ, addrB_id);
-  auto ptrA = ALIAS_AS_NATIVEOBJPTR(&vecA[0]);
-  auto ptrB = ALIAS_AS_NATIVEOBJPTR(&vecB[0]);
-  if (*ptrA != *ptrB) {
-    *ptrA = *ptrB;
-    env->SetLongField(thisJ, addrA_id, vecA[0]);
-    env->SetLongField(thisJ, addrB_id, vecA[1]);
-  }
+  AlignedBuf bufA;
+  bufA.set_addrA(env->GetLongField(thisJ, info.addrA_id_));
+  bufA.set_addrB(env->GetLongField(thisJ, info.addrB_id_));
+  AlignedBuf bufB;
+  bufB.set_addrA(env->GetLongField(srcJ, info.addrA_id_));
+  bufB.set_addrB(env->GetLongField(srcJ, info.addrB_id_));
+  auto& ptrA = bufA.as_NativeObjPtr();
+  auto& ptrB = bufB.as_NativeObjPtr();
+  check_info(env, __LINE__);
+  ptrA = ptrB;
+  check_info(env, __LINE__);
+  env->SetLongField(thisJ, info.addrA_id_, bufA.get_addrA());
+  env->SetLongField(thisJ, info.addrB_id_, bufA.get_addrB());
+  check_info(env, __LINE__);
 }
 
 NATIVEMETHOD(void, NativeBase, moveAssign)(
@@ -112,20 +166,22 @@ NATIVEMETHOD(void, NativeBase, moveAssign)(
   jobject thisJ,
   jobject srcJ
 ) {
+  check_info(env, __LINE__);
   if (thisJ == srcJ) return;
-  long vecA[2];
-  vecA[0] = env->GetLongField(thisJ, addrA_id);
-  vecA[1] = env->GetLongField(thisJ, addrB_id);
-  long vecB[2];
-  vecB[0] = env->GetLongField(srcJ, addrA_id);
-  vecB[1] = env->GetLongField(srcJ, addrB_id);
-  auto ptrA = ALIAS_AS_NATIVEOBJPTR(&vecA[0]);
-  auto ptrB = ALIAS_AS_NATIVEOBJPTR(&vecB[0]);
-  *ptrA = std::move(*ptrB);
-  env->SetLongField(thisJ, addrA_id, vecA[0]);
-  env->SetLongField(thisJ, addrB_id, vecA[1]);
-  env->SetLongField(srcJ, addrA_id, vecB[0]);
-  env->SetLongField(srcJ, addrB_id, vecB[1]);
+  AlignedBuf bufA;
+  bufA.set_addrA(env->GetLongField(thisJ, info.addrA_id_));
+  bufA.set_addrB(env->GetLongField(thisJ, info.addrB_id_));
+  AlignedBuf bufB;
+  bufB.set_addrA(env->GetLongField(srcJ, info.addrA_id_));
+  bufB.set_addrB(env->GetLongField(srcJ, info.addrB_id_));
+  check_info(env, __LINE__);
+  bufA.as_NativeObjPtr() = std::move(bufB.as_NativeObjPtr());
+  check_info(env, __LINE__);
+  env->SetLongField(thisJ, info.addrA_id_, bufA.get_addrA());
+  env->SetLongField(thisJ, info.addrB_id_, bufA.get_addrB());
+  env->SetLongField(srcJ, info.addrA_id_, bufB.get_addrA());
+  env->SetLongField(srcJ, info.addrB_id_, bufB.get_addrB());
+  check_info(env, __LINE__);
 }
 
 NATIVEMETHOD(void, NativeBase, nativeReset)(
@@ -134,11 +190,12 @@ NATIVEMETHOD(void, NativeBase, nativeReset)(
   jlong addrA,
   jlong addrB
 ) {
-  long vec[2];
-  vec[0] = addrA;
-  vec[1] = addrB;
-  auto ptr = ALIAS_AS_NATIVEOBJPTR(&vec[0]);
-  ptr->reset();
+  check_info(env, __LINE__);
+  AlignedBuf bufA;
+  bufA.set_addrA(addrA);
+  bufA.set_addrB(addrB);
+  bufA.as_NativeObjPtr().reset();
+  check_info(env, __LINE__);
   // The Scala object fields are cleared in the wrapper
 }
 
@@ -148,11 +205,13 @@ NATIVEMETHOD(long, NativeBase, nativeUseCount)(
   jlong addrA,
   jlong addrB
 ) {
-  long vec[2];
-  vec[0] = addrA;
-  vec[1] = addrB;
-  auto ptr = ALIAS_AS_NATIVEOBJPTR(&vec[0]);
-  return ptr->use_count();
+  check_info(env, __LINE__);
+  AlignedBuf bufA;
+  bufA.set_addrA(addrA);
+  bufA.set_addrB(addrB);
+  auto count = bufA.as_NativeObjPtr().use_count();
+  check_info(env, __LINE__);
+  return count;
 }
 
 // We have constructors corresponding to std::make_shared<T>(...)
