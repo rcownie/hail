@@ -1,6 +1,5 @@
 #ifndef HAIL_REGION_H
 #define HAIL_REGION_H 1
-
 #include "hail/NativeObj.h"
 #include "hail/NativePtr.h"
 #include <stdlib.h>

@@ -814,6 +814,101 @@ final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, I
   }
 }
 
+//
+// Generate the Type-specific C++ code for a PackDecoder
+//
+object NativeDecode {
+
+  def appendCode(sb: StringBuilder, rowType: Type) {
+    var seen = new ArrayBuffer[Int]()
+    val stateDefs = new StringBuilder()
+    val localDefs = new StringBuilder()
+    val flushCode = new StringBuilder()
+    val entryCode = new StringBuilder()
+    val mainCode = new StringBuilder()
+
+    def stateVar(name: String, depth: Int): String = {
+      var d = if name.equals("s") 0 else depth
+      val bit = name match {
+        case "s" => 0x1
+        case "len" => 0x2
+        case "idx" => 0x4
+        case "off" => 0x8
+      }
+      if (seen.length <= d) seen = seen.padTo(d, 0)
+      if ((seen[d] & bit) == 0) {
+        seen[d] = (seen[d] | bit)
+        stateDefs.append(s"  long ${name}_ = 0;\n")
+        localDefs.append(s"    long ${name} = ${name}_;\n")
+        flushCode.append(s"    ${name}_ = ${name};\n")
+      }
+    }
+
+    var numStates = 0
+    def allocState(): Int = {
+      val s = numStates
+      numStates += 1
+      sb.append(entryCode, s"    case ${s}: goto resume${s};\n")
+      s
+    }
+
+    def isResumePoint(t: Type): Boolean = {
+      t match {
+        case s: TBaseStruct => (s.nMissingBytes > 0)
+        case a: TArray => !a.required
+        case _ => true
+      }
+    }
+
+    def scan(depth: Int, name: String, typ: Type) {
+      var here = -1
+      if isResumePoint(typ) {
+        here = allocState()
+        mainCode.append(s"    resume${here}: // ${name}\n")
+      }
+      typ match {
+        case t: TBoolean =>
+          mainCode.append(s"   if (!decodeByte(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
+        case t: TInt32 =>
+          mainCode.append(s"   if (!decodeInt(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
+        case t: TInt64 =>
+          mainCode.append(s"   if (!decodeLong(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
+        case t: TFloat32 =>
+          mainCode.append(s"   if (!decodeFloat(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
+        case t: TFloat64 =>
+          mainCode.append(s"   if (!decodeDouble(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
+        case t: TArray =>
+
+        case t: TBaseStruct =>
+      }
+    }
+
+    scan(0, "root", rowType)
+
+    sb.append("#include \"hail/hail.h\"\n")
+    sb.append("#include \"hail/PackCodec.h\"\n")
+    sb.append("\n")
+    sb.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
+    sb.append("class Decoder : public PackDecoderBase {\n")
+    sb.append("public:\n")
+    sb.append(stateDefs)
+    sb.append("\n")
+    sb.append("virtual long decodeUntilDoneOrNeedPush(RegionObj* region, long pushSize) {\n")
+    sb.append(localDefs)
+    sb.append("  switch (state) {\n")
+    sb.append(entryCode)
+    sb.append("  }\n")
+    sb.append(mainCode)
+    sb.append("  return(0);\n")
+    sb.append("needpush:\n")
+    sb.append(flushCode)
+    sb.append("  return prepareForPush();\n")
+    sb.append("}\n")
+    sb.append("};\n")
+    sb.append("NAMESPACE_HAIL_MODULE_END\n")
+  }
+}
+
 final class PackDecoder(rowType: Type, in: InputBuffer) extends Decoder {
   def close() {
     in.close()

@@ -169,7 +169,6 @@ public:
     cxx_name_(get_cxx_name()),
     java_home_(get_java_home()),
     java_md_(is_darwin_ ? "darwin" : "linux") {
-    
   }
   
   std::string get_lib_name(const std::string& key) {
