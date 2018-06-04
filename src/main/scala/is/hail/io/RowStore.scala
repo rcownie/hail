@@ -628,8 +628,9 @@ object EmitPackDecoder {
               region.loadBit(moff, const(t.missingIdx(i))).mux(
                 srvb.setMissing(),
                 readElement)
-            },
-            srvb.advance())
+            }
+            srvb.advance()
+          )
         } else {
           val skipField = skip(f.typ, mb, in, region)
           if (f.typ.required)
@@ -828,9 +829,9 @@ object NativeDecode {
     val mainCode = new StringBuilder()
 
     def stateVar(name: String, depth: Int): String = {
-      var d = if name.equals("s") 0 else depth
+      var d = if (name.equals("s")) 0 else depth
       val bit = name match {
-        case "s" => 0x1
+        case "s"   => 0x1
         case "len" => 0x2
         case "idx" => 0x4
         case "off" => 0x8
