@@ -317,36 +317,51 @@ private class Emit(
 
         EmitTriplet(setup, xmv, Code(
           len := tarray.loadLength(region, xa),
-          (xi < len).mux(
+          (xi < len && xi >= 0).mux(
             region.loadIRIntermediate(typ)(tarray.elementOffset(xa, len, xi)),
             Code._fatal(
               const("array index out of bounds: ")
-                .invoke[String, String]("concat", xi.load().toS)
-                .invoke[String, String]("concat", " / ")
-                .invoke[String, String]("concat", len.load().toS)
+                .concat(xi.load().toS)
+                .concat(" / ")
+                .concat(len.load().toS)
+                .concat(". IR: ")
+                .concat(Pretty(x))
             ))))
       case ArrayLen(a) =>
         val codeA = emit(a)
         strict(TContainer.loadLength(region, coerce[Long](codeA.v)), codeA)
 
-      case _: ArraySort | _: ToSet | _: ToDict =>
-        val a = ir.children(0).asInstanceOf[IR]
+      case x@(_: ArraySort | _: ToSet | _: ToDict) =>
+        val (a, ascending: IR, keyOnly) = x match {
+          case ArraySort(a, ascending) => (a, ascending, false)
+          case ToSet(a) => (a, True(), false)
+          case ToDict(a) => (a, True(), true)
+        }
         val atyp = coerce[TContainer](ir.typ)
+
+        val xAsc = mb.newLocal[Boolean]()
+        val codeAsc = emit(ascending)
 
         val aout = emitArrayIterator(a)
         val vab = new StagedArrayBuilder(atyp.elementType, mb, 16)
-        val sorter = new ArraySorter(mb, vab, keyOnly = ir.isInstanceOf[ToDict])
+        val sorter = new ArraySorter(mb, vab, keyOnly = keyOnly)
 
         val cont = { (m: Code[Boolean], v: Code[_]) =>
           m.mux(vab.addMissing(), vab.add(v))
         }
 
         val processArrayElts = aout.arrayEmitter(cont)
-        EmitTriplet(processArrayElts.setup, processArrayElts.m.getOrElse(const(false)), Code(
-          vab.clear,
-          aout.calcLength,
-          processArrayElts.addElements,
-          sorter.sortIntoRegion(distinct = !ir.isInstanceOf[ArraySort])))
+        EmitTriplet(
+          Code(
+            processArrayElts.setup,
+            codeAsc.setup,
+            xAsc := coerce[Boolean](codeAsc.m.mux(true, codeAsc.v))),
+          processArrayElts.m.getOrElse(const(false)),
+          Code(
+            vab.clear,
+            aout.calcLength,
+            processArrayElts.addElements,
+            sorter.sortIntoRegion(ascending = xAsc, distinct = !ir.isInstanceOf[ArraySort])))
 
       case ToArray(a) =>
         emit(a)
@@ -714,6 +729,50 @@ private class Emit(
         EmitTriplet(setup,
           xmo || !t.isFieldDefined(region, xo, idx),
           region.loadIRIntermediate(t.types(idx))(t.fieldOffset(xo, idx)))
+
+      case StringSlice(s, start, end) =>
+        val t = coerce[TString](s.typ)
+        val cs = emit(s)
+        val cstart = emit(start)
+        val cend = emit(end)
+        val vs = mb.newLocal[Long]()
+        val vstart = mb.newLocal[Int]()
+        val vend = mb.newLocal[Int]()
+        val vlen = mb.newLocal[Int]()
+        val vnewLen = mb.newLocal[Int]()
+        val checks = Code(
+          vs := coerce[Long](cs.v),
+          vstart := coerce[Int](cstart.v),
+          vend := coerce[Int](cend.v),
+          vlen := TString.loadLength(region, vs),
+          ((vstart < 0) || (vstart > vend) || (vend > vlen)).mux(
+            Code._fatal(
+              const("string slice out of bounds or invalid: \"")
+                .concat(TString.loadString(region, vs))
+                .concat("\"[")
+                .concat(vstart.toS)
+                .concat(":")
+                .concat(vend.toS)
+                .concat("]")
+            ),
+            Code._empty)
+        )
+        val sliced = Code(
+          vnewLen := (vend - vstart),
+          // if vstart = vlen = vend, then we want an empty string, but memcpy
+          // with a pointer one past the end of the allocated region is probably
+          // not safe, so for *all* empty slices, we just inline the code to
+          // stick the length (the contents is size zero so we needn't allocate
+          // for it or really do anything)
+          vnewLen.ceq(0).mux(
+            region.appendInt(0),
+            region.appendStringSlice(region, vs, vstart, vnewLen)))
+        strict(Code(checks, sliced), cs, cstart, cend)
+
+      case StringLength(s) =>
+        val t = coerce[TString](s.typ)
+        val cs = emit(s)
+        strict(TString.loadLength(region, coerce[Long](cs.v)), cs)
 
       case In(i, typ) =>
         EmitTriplet(Code._empty,

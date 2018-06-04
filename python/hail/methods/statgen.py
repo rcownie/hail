@@ -10,7 +10,7 @@ from hail.genetics import KinshipMatrix
 from hail.genetics.reference_genome import reference_genome_type
 from hail.linalg import BlockMatrix
 from hail.matrixtable import MatrixTable
-from hail.methods.misc import require_biallelic, require_row_key_variant, require_col_key_str, maximal_independent_set
+from hail.methods.misc import require_biallelic, require_row_key_variant, require_partition_key_locus, require_col_key_str, maximal_independent_set
 from hail.stats import UniformDist, BetaDist, TruncatedBetaDist
 from hail.table import Table
 from hail.typecheck import *
@@ -1992,8 +1992,8 @@ class SplitMulti(object):
            keep_star=bool,
            left_aligned=bool)
 def split_multi_hts(ds, keep_star=False, left_aligned=False) -> MatrixTable:
-    """Split multiallelic variants for datasets with a standard high-throughput
-    sequencing entry schema.
+    """Split multiallelic variants for datasets that contain one or more fields
+    from a standard high-throughput sequencing entry schema.
 
     .. code-block:: text
 
@@ -2002,7 +2002,9 @@ def split_multi_hts(ds, keep_star=False, left_aligned=False) -> MatrixTable:
         AD: array<int32>,
         DP: int32,
         GQ: int32,
-        PL: array<int32>
+        PL: array<int32>,
+        PGT: call,
+        PID: str,
       }
 
     For other entry fields, use :class:`.SplitMulti`.
@@ -2052,7 +2054,8 @@ def split_multi_hts(ds, keep_star=False, left_aligned=False) -> MatrixTable:
     the minimum over multiallelic `PL` entries for genotypes that map to that
     genotype.
 
-    `GQ` is recomputed from `PL`.
+    `GQ` is recomputed from `PL` if `PL` is provided. If not, it is copied from the
+    original GQ.
 
     Here is a second example for a het non-ref
 
@@ -2126,32 +2129,40 @@ def split_multi_hts(ds, keep_star=False, left_aligned=False) -> MatrixTable:
 
     """
 
-    if ds.entry.dtype != hl.hts_entry_schema:
-        raise FatalError("'split_multi_hts': entry schema must be the HTS entry schema:\n"
-                         "  found: {}\n"
-                         "  expected: {}\n"
-                         "  Use 'hl.SplitMulti' to split entries with non-HTS entry fields.".format(
-            ds.entry.dtype, hl.hts_entry_schema
-        ))
+    entry_fields = set(ds.entry)
 
+    update_entries_expression = {}
     sm = SplitMulti(ds, keep_star=keep_star, left_aligned=left_aligned)
-    pl = hl.or_missing(
-        hl.is_defined(ds.PL),
-        (hl.range(0, 3).map(lambda i: hl.min((hl.range(0, hl.triangle(ds.alleles.length()))
-            .filter(
-            lambda j: hl.downcode(hl.unphased_diploid_gt_index_call(j),
-                                  sm.a_index()) == hl.unphased_diploid_gt_index_call(
-                i))
-            .map(lambda j: ds.PL[j]))))))
+
+    if 'GT' in entry_fields:
+        update_entries_expression['GT'] = hl.downcode(ds.GT, sm.a_index())
+    if 'DP' in entry_fields:
+        update_entries_expression['DP'] = ds.DP
+    if 'AD' in entry_fields:
+        update_entries_expression['AD'] = hl.or_missing(hl.is_defined(ds.AD),
+                                                        [hl.sum(ds.AD) - ds.AD[sm.a_index()], ds.AD[sm.a_index()]])
+    if 'PL' in entry_fields:
+        pl = hl.or_missing(
+            hl.is_defined(ds.PL),
+            (hl.range(0, 3).map(lambda i:
+                                hl.min((hl.range(0, hl.triangle(ds.alleles.length()))
+                                        .filter(lambda j: hl.downcode(hl.unphased_diploid_gt_index_call(j),
+                                                                      sm.a_index()) == hl.unphased_diploid_gt_index_call(i)
+                                                ).map(lambda j: ds.PL[j]))))))
+        update_entries_expression['PL'] = pl
+        if 'GQ' in entry_fields:
+            update_entries_expression['GQ'] = hl.gq_from_pl(pl)
+    else:
+        if 'GQ' in entry_fields:
+            update_entries_expression['GQ'] = ds.GQ
+
+    if 'PGT' in entry_fields:
+        update_entries_expression['PGT'] = hl.downcode(ds.PGT, sm.a_index())
+    if 'PID' in entry_fields:
+        update_entries_expression['PID'] = ds.PID
+
     sm.update_rows(a_index=sm.a_index(), was_split=sm.was_split())
-    sm.update_entries(
-        GT=hl.downcode(ds.GT, sm.a_index()),
-        AD=hl.or_missing(hl.is_defined(ds.AD),
-                         [hl.sum(ds.AD) - ds.AD[sm.a_index()], ds.AD[sm.a_index()]]),
-        DP=ds.DP,
-        GQ=hl.gq_from_pl(pl),
-        PL=pl
-    )
+    sm.update_entries(**update_entries_expression)
     return sm.result()
 
 
@@ -2893,7 +2904,7 @@ def _local_ld_prune(mt, call_field, r2=0.2, bp_window_size=1000000, memory_per_c
     max_queue_size = int(max(1.0, math.ceil(memory_available_per_core / bytes_per_variant)))
 
     sites_only_table = Table(Env.hail().methods.LocalLDPrune.apply(
-        require_biallelic(mt, 'ld_prune')._jvds, call_field, float(r2), bp_window_size, max_queue_size))
+        mt._jvds, call_field, float(r2), bp_window_size, max_queue_size))
 
     return sites_only_table
 
@@ -2901,8 +2912,9 @@ def _local_ld_prune(mt, call_field, r2=0.2, bp_window_size=1000000, memory_per_c
 @typecheck(call_expr=expr_call,
            r2=numeric,
            bp_window_size=int,
-           memory_per_core=int)
-def ld_prune(call_expr, r2=0.2, bp_window_size=1000000, memory_per_core=256):
+           memory_per_core=int,
+           block_size=nullable(int))
+def ld_prune(call_expr, r2=0.2, bp_window_size=1000000, memory_per_core=256, block_size=None):
     """Returns a maximal subset of nearly-uncorrelated variants.
 
     .. include:: ../_templates/req_diploid_gt.rst
@@ -2913,23 +2925,41 @@ def ld_prune(call_expr, r2=0.2, bp_window_size=1000000, memory_per_core=256):
 
     Notes
     -----
-    This method finds a maximal subset of variants such that the squared
-    Pearson correlation coefficient :math:`r^2` of any pair at most
-    `bp_window_size` base pairs apart is strictly less than `r2`. Each variant is
-    represented as a vector over samples with elements given by the
-    (mean-imputed) number of alternate alleles. In particular, even if present,
-    **phase information is ignored**.
+    This method finds a maximal subset of variants such that the squared Pearson
+    correlation coefficient :math:`r^2` of any pair at most `bp_window_size`
+    base pairs apart is strictly less than `r2`. Each variant is represented as
+    a vector over samples with elements given by the (mean-imputed) number of
+    alternate alleles. In particular, even if present, **phase information is
+    ignored**. 
 
-    The method prunes variants in linkage disequilibirum in two stages.
-    
-    The first (local) stage prunes correlated variants within each partition,
-    using a local variant queue whose size is determined by `memory_per_core`.
-    A larger queue may facilitate more local pruning in this stage.
-    The parallelism is the number of partitions in the dataset.
+    The method prunes variants in linkage disequilibrium in three stages.
 
-    The second (global) stage computes the correlation matrix across all
-    remaining variants. Correlated variants within `bp_window_size` base pairs
-    form the edges of a graph to which :func:`.maximal_independent_set` is applied.
+    - The first, "local pruning" stage prunes correlated variants within each
+      partition, using a local variant queue whose size is determined by
+      `memory_per_core`. A larger queue may facilitate more local pruning in
+      this stage. The parallelism is the number of partitions in the dataset.
+
+    - The second, "global correlation" stage uses block matrix multiplication
+      to compute correlation between each pair of remaining variants  within
+      `bp_window_size` base pairs, and then forms a graph with edges between
+      correlated errors. The parallelism of writing the locally-pruned matrix
+      table as a block matrix is ``n_locally_pruned_variants / block_size``.
+
+    - The third, "global pruning" stage applies :func:`.maximal_independent_set`
+      to prune this graph until no edges remain.
+
+    If you encounter a Hadoop write/replication error, consider:
+
+    - increasing the size of persistent disk, e.g. by increasing the number of
+      persistent workers or the disk size per persistent worker. The
+      locally-pruned matrix table and block matrix are stored as temporary files
+      on persistent disk.
+
+    - limiting the Hadoop write buffer size, e.g. by setting the property on
+      cluster startup: ``--properties 'core:fs.gs.io.buffersize.write=1048576``.
+      This issue arises for very large sample size because, when writing the
+      locally-pruned block matrix, the number of concurrently open files per
+      task is ``n_samples / block_size``.
 
     Parameters
     ----------
@@ -2942,14 +2972,23 @@ def ld_prune(call_expr, r2=0.2, bp_window_size=1000000, memory_per_core=256):
         Window size in base pairs (inclusive upper bound).
     memory_per_core : :obj:`int`
         Memory in MB per core for local pruning queue.
+    block_size: :obj:`int`, optional
+        Block size for block matrices in the second stage.
+        Default given by :meth:`.BlockMatrix.default_block_size`.
 
     Returns
     -------
     :class:`.Table`
         Table of a maximal independent set of variants.
     """
+    if block_size is None:
+        block_size = BlockMatrix.default_block_size()
+
     check_entry_indexed('ld_prune/call_expr', call_expr)
     mt = matrix_table_source('ld_prune/call_expr', call_expr)
+
+    require_row_key_variant(mt, 'ld_prune')
+    require_partition_key_locus(mt, 'ld_prune')
 
     #  FIXME: remove once select_entries on a field is free
     if call_expr in mt._fields_inverse:
@@ -2958,7 +2997,7 @@ def ld_prune(call_expr, r2=0.2, bp_window_size=1000000, memory_per_core=256):
         field = Env.get_uid()
         mt = mt.select_entries(**{field: call_expr})
 
-    sites_only_table = _local_ld_prune(mt, field, r2, bp_window_size, memory_per_core)
+    sites_only_table = _local_ld_prune(require_biallelic(mt, 'ld_prune'), field, r2, bp_window_size, memory_per_core)
 
     sites_path = new_temp_file()
     sites_only_table.write(sites_path, overwrite=True)
@@ -2973,7 +3012,11 @@ def ld_prune(call_expr, r2=0.2, bp_window_size=1000000, memory_per_core=256):
 
     locally_pruned_path = new_temp_file()
     locally_pruned_ds.write(locally_pruned_path, overwrite=True)
+
     locally_pruned_ds = hl.read_matrix_table(locally_pruned_path)
+
+    n_locally_pruned_variants = locally_pruned_ds.count_rows()
+    info(f'ld_prune: local pruning stage retained {n_locally_pruned_variants} variants')
 
     locally_pruned_ds = locally_pruned_ds.add_row_index('row_idx')
 
@@ -2983,25 +3026,29 @@ def ld_prune(call_expr, r2=0.2, bp_window_size=1000000, memory_per_core=256):
                 * locally_pruned_ds.centered_length_sd_reciprocal, 0))
 
     # BlockMatrix.from_entry_expr writes to disk
-    block_matrix = BlockMatrix.from_entry_expr(normalized_mean_imputed_genotype_expr, block_size=1024)
-    correlation_matrix = (block_matrix @ (block_matrix.T))
+    block_matrix = BlockMatrix.from_entry_expr(normalized_mean_imputed_genotype_expr, block_size)
+    correlation_matrix = block_matrix @ block_matrix.T
 
     locally_pruned_rows = locally_pruned_ds.rows()
     locally_pruned_rows = locally_pruned_rows.key_by(contig=locally_pruned_rows.locus.contig)
     locally_pruned_rows = locally_pruned_rows.select(pos=locally_pruned_rows.locus.position)
     entries = correlation_matrix._filtered_entries_table(locally_pruned_rows, bp_window_size, False)
 
-    entries = entries.filter((entries.entry ** 2 >= r2) & (entries.i != entries.j) & (entries.i < entries.j))
+    entries = entries.filter((entries.entry ** 2 >= r2) & (entries.i < entries.j))
 
     index_table = sites_only_table.add_index().key_by('idx').select('locus')
     entries = entries.annotate(locus_i=index_table[entries.i].locus, locus_j=index_table[entries.j].locus)
 
     entries = entries.filter((entries.locus_i.contig == entries.locus_j.contig)
-                             & ((hl.abs(entries.locus_i.position - entries.locus_j.position)) <= bp_window_size))
+                             & (entries.locus_j.position - entries.locus_i.position <= bp_window_size))
 
     entries_path = new_temp_file()
     entries.write(entries_path, overwrite=True)
     entries = hl.read_table(entries_path)
+
+    n_edges = entries.count()
+    info(f'ld_prune: correlation graph of locally-pruned variants has {n_edges} edges,'
+         f'\n    finding maximal independent set...')
 
     related_nodes_to_remove = maximal_independent_set(entries.i, entries.j, keep=False)
 

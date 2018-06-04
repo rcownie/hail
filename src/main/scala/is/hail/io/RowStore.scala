@@ -11,10 +11,10 @@ import org.apache.spark.rdd.RDD
 import org.json4s.{Extraction, JValue}
 import org.json4s.jackson.JsonMethods
 import java.io.{Closeable, InputStream, OutputStream, PrintWriter}
-
 import is.hail.asm4s._
 import is.hail.utils.richUtils.ByteTrackingOutputStream
 import org.apache.spark.{ExposedMetrics, TaskContext}
+import scala.collection.mutable.ArrayBuffer
 
 trait BufferSpec extends Serializable {
   def buildInputBuffer(in: InputStream): InputBuffer
@@ -628,9 +628,8 @@ object EmitPackDecoder {
               region.loadBit(moff, const(t.missingIdx(i))).mux(
                 srvb.setMissing(),
                 readElement)
-            }
-            srvb.advance()
-          )
+            },
+            srvb.advance())
         } else {
           val skipField = skip(f.typ, mb, in, region)
           if (f.typ.required)
@@ -820,7 +819,7 @@ final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, I
 //
 object NativeDecode {
 
-  def appendCode(sb: StringBuilder, rowType: Type) {
+  def appendCode(sb: StringBuilder, rowType: Type): Unit = {
     var seen = new ArrayBuffer[Int]()
     val stateDefs = new StringBuilder()
     val localDefs = new StringBuilder()
@@ -837,12 +836,14 @@ object NativeDecode {
         case "off" => 0x8
       }
       if (seen.length <= d) seen = seen.padTo(d, 0)
-      if ((seen[d] & bit) == 0) {
-        seen[d] = (seen[d] | bit)
-        stateDefs.append(s"  long ${name}_ = 0;\n")
-        localDefs.append(s"    long ${name} = ${name}_;\n")
-        flushCode.append(s"    ${name}_ = ${name};\n")
+      val result = s"${name}${depth}"
+      if ((seen(d) & bit) == 0) {
+        seen(d) = (seen(d) | bit)
+        stateDefs.append(s"  long ${result}_ = 0;\n")
+        localDefs.append(s"    long ${result} = ${result}_;\n")
+        flushCode.append(s"    ${result}_ = ${result};\n")
       }
+      result
     }
 
     var numStates = 0
@@ -863,7 +864,7 @@ object NativeDecode {
 
     def scan(depth: Int, name: String, typ: Type) {
       var here = -1
-      if isResumePoint(typ) {
+      if (isResumePoint(typ)) {
         here = allocState()
         mainCode.append(s"    resume${here}: // ${name}\n")
       }
