@@ -421,7 +421,8 @@ static std::string to_qualified_name(
   const std::string& key,
   jstring nameJ,
   int numArgs,
-  bool is_global
+  bool is_global,
+  bool is_longfunc
 ) {
   JString name(env, nameJ);
   char argTypeCodes[32];
@@ -433,8 +434,9 @@ static std::string to_qualified_name(
     strcpy(buf, name);
   } else {
     auto moduleName = std::string("hm_") + key;
-    sprintf(buf, "_ZN4hail%lu%s%lu%sE%s",
-      moduleName.length(), moduleName.c_str(), strlen(name), (const char*)name, argTypeCodes);
+    sprintf(buf, "_ZN4hail%lu%s%lu%sE%s%s",
+      moduleName.length(), moduleName.c_str(), strlen(name), (const char*)name, 
+      is_longfunc ? "P12NativeStatus" : "", argTypeCodes);
   }
   return std::string(buf);
 }
@@ -450,15 +452,16 @@ void NativeModule::find_LongFuncL(
   if (!try_load()) {
     NATIVE_ERROR(st, 1001, "ErrModuleNotFound");
   } else {
-    auto qualName = to_qualified_name(env, key_, nameJ, numArgs, is_global_);
+    auto qualName = to_qualified_name(env, key_, nameJ, numArgs, is_global_, true);
     D("is_global %s qualName \"%s\"\n", is_global_ ? "true" : "false", qualName.c_str());    
     funcAddr = ::dlsym(is_global_ ? RTLD_DEFAULT : dlopen_handle_, qualName.c_str());
     D("dlsym -> funcAddr %p\n", funcAddr);
     if (!funcAddr) {
+      fprintf(stderr, "ErrLongFuncNotFound \"%s\"\n", qualName.c_str());
       NATIVE_ERROR(st, 1003, "ErrLongFuncNotFound dlsym(\"%s\")", qualName.c_str());
     }
   }
-  auto ptr = MAKE_NATIVE(NativeFuncObj<long>, shared_from_this(), funcAddr);
+  NativeObjPtr ptr = std::make_shared< NativeFuncObj<long> >(shared_from_this(), funcAddr);
   init_NativePtr(env, funcObj, &ptr);
 }
 
@@ -473,22 +476,21 @@ void NativeModule::find_PtrFuncL(
   if (!try_load()) {
     NATIVE_ERROR(st, 1001, "ErrModuleNotFound");
   } else {
-    auto qualName = to_qualified_name(env, key_, nameJ, numArgs, is_global_);
+    auto qualName = to_qualified_name(env, key_, nameJ, numArgs, is_global_, false);
     funcAddr = ::dlsym(is_global_ ? RTLD_DEFAULT : dlopen_handle_, qualName.c_str());
     if (!funcAddr) {
+      fprintf(stderr, "ErrPtrFuncNotFound \"%s\"\n", qualName.c_str());
       NATIVE_ERROR(st, 1003, "ErrPtrFuncNotFound dlsym(\"%s\")", qualName.c_str());
     }
   }
-  auto ptr = MAKE_NATIVE(NativeFuncObj<NativeObjPtr>, shared_from_this(), funcAddr);
+  NativeObjPtr ptr = std::make_shared< NativeFuncObj<NativeObjPtr> >(shared_from_this(), funcAddr);
   init_NativePtr(env, funcObj, &ptr);
 }
 
 // Functions implementing NativeModule native methods
 
 static NativeModule* to_NativeModule(JNIEnv* env, jobject obj) {
-  // It should be a dynamic_cast, but I'm trying to eliminate
-  // the use of RTTI which is problematic in dynamic libraries
-  return reinterpret_cast<NativeModule*>(get_from_NativePtr(env, obj));
+  return static_cast<NativeModule*>(get_from_NativePtr(env, obj));
 }
 
 NATIVEMETHOD(void, NativeModule, nativeCtorMaster)(
@@ -503,7 +505,7 @@ NATIVEMETHOD(void, NativeModule, nativeCtorMaster)(
   JString source(env, sourceJ);
   JString include(env, includeJ);
   bool force_build = (force_buildJ != JNI_FALSE);
-  auto ptr = MAKE_NATIVE(NativeModule, options, source, include, force_build);
+  NativeObjPtr ptr = std::make_shared<NativeModule>(options, source, include, force_build);
   init_NativePtr(env, thisJ, &ptr);
 }
 
@@ -518,7 +520,7 @@ NATIVEMETHOD(void, NativeModule, nativeCtorWorker)(
   JString key(env, keyJ);
   long binary_size = env->GetArrayLength(binaryJ);
   auto binary = env->GetByteArrayElements(binaryJ, 0);
-  auto ptr = MAKE_NATIVE(NativeModule, is_global, key, binary_size, binary);
+  NativeObjPtr ptr = std::make_shared<NativeModule>(is_global, key, binary_size, binary);
   env->ReleaseByteArrayElements(binaryJ, binary, JNI_ABORT);
   init_NativePtr(env, thisJ, &ptr);
 }

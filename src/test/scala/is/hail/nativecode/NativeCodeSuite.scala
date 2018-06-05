@@ -70,7 +70,7 @@ class NativeCodeSuite extends SparkSuite {
     val funcHash8 = globalModule.findLongFuncL8(st, "hailTestHash8")
     if (st.fail) System.err.println(s"error: ${st}")
     assert(st.ok)
-    ret = funcHash8(0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8)
+    ret = funcHash8(st, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8)
     System.err.println(s"funcHash8 funcAddr ${funcHash8.get().toHexString} => ${ret.toHexString}")
     assert(ret == 0x87654321L)
     val t0 = System.currentTimeMillis()
@@ -78,7 +78,7 @@ class NativeCodeSuite extends SparkSuite {
     val numCalls = 100*1000000
     var countdown = numCalls
     while (countdown > 0) {
-      sum = funcHash1(sum)
+      sum = funcHash1(st, sum)
       countdown -= 1
     }
     val t1 = System.currentTimeMillis()
@@ -98,7 +98,7 @@ class NativeCodeSuite extends SparkSuite {
     sb.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
     sb.append("\n")
     // A very simple function
-    sb.append("long testFunc1(long a0) { return a0+1; }\n\n")
+    sb.append("long testFunc1(NativeStatus* st, long a0) { return a0+1; }\n\n")
     // Now declare our own NativeObj
     sb.append("class MyObj : public NativeObj {\n")
     sb.append("public:\n")
@@ -110,7 +110,7 @@ class NativeCodeSuite extends SparkSuite {
     sb.append("};\n")
     sb.append("\n")
     sb.append("NativeObjPtr makeMyObj(long val) {\n")
-    sb.append("  return MAKE_NATIVE(MyObj, val);\n")
+    sb.append("  return std::make_shared<MyObj>(val);\n")
     sb.append("}\n")
     sb.append("\n")
     sb.append("NAMESPACE_HAIL_MODULE_END\n")
@@ -126,7 +126,7 @@ class NativeCodeSuite extends SparkSuite {
       if (st.fail)
         System.err.println(s"error: ${st}")
       else {
-        val ret = testFunc1(6)
+        val ret = testFunc1(st, 6)
         System.err.println(s"testFunc(6) returns ${ret}")
       }
       testFunc1.close()

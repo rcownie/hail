@@ -2,21 +2,31 @@
 #define HAIL_NATIVEPTR_H 1
 
 #include "hail/NativeObj.h"
+#include "hail/NativeStatus.h"
 #include <jni.h>
 #include <memory>
 
 namespace hail {
 
-using LongFuncN = long(...);
+using LongFuncN = long(NativeStatus*, ...);
 using PtrFuncN = NativeObjPtr(...);
+
+template<typename ReturnT>
+struct FuncType {
+  using type = ReturnT(...);
+};
+
+template<>
+struct FuncType<long> {
+  using type = long(NativeStatus*, ...);
+};
 
 template<typename ReturnT>
 class NativeFuncObj : public NativeObj {
 public:
-  using FuncType = ReturnT(...);
-public:
   NativeObjPtr module_; // keep-alive for the loaded module
-  FuncType *func_;
+  typedef typename FuncType<ReturnT>.type FuncT;
+  FuncT *func_;
   
 public:
   inline NativeFuncObj(
@@ -31,10 +41,7 @@ public:
   
   virtual ~NativeFuncObj() { }
 
-private:
-  // disable copy-assign
-  NativeFuncObj& operator=(const NativeFuncObj& b);
-  
+  NativeFuncObj& operator=(const NativeFuncObj& b) = delete;  
 };
 
 // Simple class to manage conversion of Java/Scala String params

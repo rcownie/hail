@@ -13,7 +13,7 @@ REGIONMETHOD(void, Region, nativeCtor)(
   JNIEnv* env,
   jobject thisJ
 ) {
-  auto ptr = MAKE_NATIVE(Region);
+  NativeObjPtr ptr = std::make_shared<Region>();
   init_NativePtr(env, thisJ, &ptr);
 }
 
@@ -21,7 +21,7 @@ REGIONMETHOD(void, Region, clearButKeepMem)(
   JNIEnv* env,
   jobject thisJ
 ) {
-  auto r = reinterpret_cast<Region*>(get_from_NativePtr(env, thisJ));
+  auto r = static_cast<Region*>(get_from_NativePtr(env, thisJ));
   r->clear_but_keep_mem();
 }
 
@@ -30,7 +30,7 @@ REGIONMETHOD(void, Region, nativeAlign)(
   jobject thisJ,
   jlong a
 ) {
-  auto r = reinterpret_cast<Region*>(get_from_NativePtr(env, thisJ));
+  auto r = static_cast<Region*>(get_from_NativePtr(env, thisJ));
   r->align(a);
 }
 
@@ -40,7 +40,7 @@ REGIONMETHOD(long, Region, nativeAlignAllocate)(
   jlong a,
   jlong n
 ) {
-  auto r = reinterpret_cast<Region*>(get_from_NativePtr(env, thisJ));
+  auto r = static_cast<Region*>(get_from_NativePtr(env, thisJ));
   return reinterpret_cast<long>(r->allocate(a, n));
 }
 
@@ -49,7 +49,7 @@ REGIONMETHOD(long, Region, nativeAllocate)(
   jobject thisJ,
   jlong n
 ) {
-  auto r = reinterpret_cast<Region*>(get_from_NativePtr(env, thisJ));
+  auto r = static_cast<Region*>(get_from_NativePtr(env, thisJ));
   return reinterpret_cast<long>(r->allocate(n));
 }
 

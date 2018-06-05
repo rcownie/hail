@@ -2,12 +2,14 @@
 #define HAIL_NATIVESTATUS_H 1
 
 #include "hail/NativeObj.h"
+#include <cstdarg>
+#include <cstdio>
 #include <string>
-#include <stdarg.h>
 
-namespace hail {
+// NativeStatus is not in the "hail" namespace, because that would complicate
+// the mangled names of functions which have a "NativeStatus*" parameter
 
-class NativeStatus : public NativeObj {
+class NativeStatus : public hail::NativeObj {
 public:
   int errno_;
   std::string msg_;
@@ -19,7 +21,7 @@ public:
   virtual ~NativeStatus() { }
   
   inline void clear() {
-    // When errno_ == 0, the values of err_ and location_ are ignored
+    // When errno_ == 0, the values of msg_ and location_ are ignored
     errno_ = 0;
   }
   
@@ -40,7 +42,5 @@ using NativeStatusPtr = std::shared_ptr<NativeStatus>;
 
 #define NATIVE_ERROR(_p, _code, _msg, ...) \
    { (_p)->set(__FILE__, __LINE__, _code, _msg, ##__VA_ARGS__); }
-
-} // end hail
 
 #endif

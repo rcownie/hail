@@ -4,8 +4,12 @@
 # this list
 OBJECTS := \
   ibs.o davies.o \
-  NativeModule.o NativePtr.o \
-  NativeStatus.o NativeLongFunc.o NativeCodeSuite.o Region.o
+  NativeCodeSuite.o \
+  NativeLongFunc.o \
+  NativeModule.o \
+  NativePtr.o \
+  NativeStatus.o \
+  Region.o
 
 UNAME_S := $(shell uname -s)
 UNAME_P := $(shell uname -p)
@@ -57,7 +61,7 @@ ifeq ($(UNAME_S),Darwin)
   shared_library = lib/darwin/libhail.dylib
 endif
 
-all: $(shared_library)
+all: debug $(shared_library)
 
 debug:
 	echo "make debug"
@@ -84,11 +88,12 @@ clean:
 headers: $(shell /usr/bin/find ../resources/include -name "*.h")
 	touch headers
 
+NativeCodeSuite.o: headers
+NativeLongFunc.o: headers
 NativeModule.o: headers
 NativePtr.o: headers
 NativeStatus.o: headers
-NativeLongFunc.o: headers
-NativeCodeSuite.o: headers
+Region.o: headers
 
 # if your build machine cannot access this URL, download this tar.gz and place
 # it in the same directory as this Makefile. If you do so, the build will
@@ -103,5 +108,5 @@ libsimdpp-2.0-rc2: libsimdpp-2.0-rc2.tar.gz
 
 $(shared_library): libsimdpp-2.0-rc2 ${OBJECTS}
 	mkdir -p $(basename $(shared_library))
-	${CXX} ${LIBFLAGS} ${LIBDIRS} ${CXXFLAGS} ${OBJECTS} -o $@
+	${CXX} ${LIBFLAGS} ${LIBDIRS} ${CXXFLAGS} ${OBJECTS} -o $@ 
 
