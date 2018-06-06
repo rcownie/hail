@@ -135,7 +135,7 @@ class NativeCodeSuite extends SparkSuite {
     if (st.fail)
       System.err.println(s"error: ${st}")
     assert(st.ok)
-    val myObj = new NativePtr(makeMyObj, 55L)
+    val myObj = new NativePtr(makeMyObj, st, 55L)
     assert(myObj.get() != 0)
     // Now try getting the binary
     val key = mod.getKey()

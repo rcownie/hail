@@ -9,24 +9,15 @@
 namespace hail {
 
 using LongFuncN = long(NativeStatus*, ...);
-using PtrFuncN = NativeObjPtr(...);
-
-template<typename ReturnT>
-struct FuncType {
-  using type = ReturnT(...);
-};
-
-template<>
-struct FuncType<long> {
-  using type = long(NativeStatus*, ...);
-};
+using PtrFuncN = NativeObjPtr(NativeStatus*, ...);
 
 template<typename ReturnT>
 class NativeFuncObj : public NativeObj {
 public:
+  using FuncType = ReturnT(NativeStatus*, ...);
+public:
   NativeObjPtr module_; // keep-alive for the loaded module
-  typedef typename FuncType<ReturnT>.type FuncT;
-  FuncT *func_;
+  FuncType *func_;
   
 public:
   inline NativeFuncObj(
