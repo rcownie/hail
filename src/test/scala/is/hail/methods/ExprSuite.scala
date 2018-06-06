@@ -39,8 +39,7 @@ class ExprSuite extends SparkSuite {
     assert(run[Int]("""if (false) 1 else 0""").contains(0))
 
     assert(run[IndexedSeq[String]]("""["a"]""").contains(Array("a"): IndexedSeq[String]))
-    // how do I create an empty array?
-    // assert(run[IndexedSeq[Int]]("[] : Array[Int]").contains(Array[Int]() : IndexedSeq[Int]))
+    assert(run[IndexedSeq[Int]]("[1][:0]").contains(Array[Int]() : IndexedSeq[Int]))
     assert(run[IndexedSeq[Int]]("[1]").contains(Array(1): IndexedSeq[Int]))
     assert(run[IndexedSeq[Int]]("[1,2]").contains(Array(1, 2): IndexedSeq[Int]))
     assert(run[IndexedSeq[Int]]("[1,2,3]").contains(Array(1, 2, 3): IndexedSeq[Int]))
@@ -60,11 +59,6 @@ class ExprSuite extends SparkSuite {
     assert(run[String]("""{a: "a", b: "b"}.b""").contains("b"))
     assert(run[Annotation]("""{a: {aa: "aa"}, b: "b"}.a""").contains(Annotation("aa")))
     assert(run[String]("""{a: {aa: "aa"}, b: "b"}.a.aa""").contains("aa"))
-
-    assert(run[Annotation]("""merge({a: 1, b: 2}, {c: false, d: true}) """).contains(Annotation(1, 2, false, true)))
-    assert(run[Annotation]("""merge(NA: Struct{a: Int, b: Int}, {c: false, d: true}) """).contains(Annotation(null, null, false, true)))
-    assert(run[Annotation]("""merge({a: 1, b: 2}, NA: Struct{c: Boolean, d: Boolean}) """).contains(Annotation(1, 2, null, null)))
-    assert(run[Annotation]("""merge(NA: Struct{a: Int, b: Int}, NA: Struct{c: Boolean, d: Boolean}) """).isEmpty)
 
     assert(run[Int]("let a = 0 and b = 3 in b").contains(3))
     assert(run[Int]("let a = 0 and b = a in b").contains(0))
@@ -554,29 +548,6 @@ class ExprSuite extends SparkSuite {
 
     assert(eval[Int](""" genedict["gene2"] """).contains(10))
 
-    val (dictType, result) = evalWithType[Map[_, _]](""" index(structArray, f2) """)
-    assert(result.contains(
-      Map("A" -> Annotation(1, 2),
-        "B" -> Annotation(5, 6),
-        "C" -> Annotation(10, 10))
-    ))
-    assert(dictType == TDict(TString(), TStruct(("f1", TInt32()), ("f3", TInt32()))))
-
-    val (dictt, dictr2) = evalWithType(""" index(structArray, f2)""")
-    assert(dictr2.contains(Map("A" -> Annotation(1, 2),
-      "B" -> Annotation(5, 6),
-      "C" -> Annotation(10, 10))))
-    assert(dictt == TDict(TString(), TStruct("f1" -> TInt32(), "f3" -> TInt32())))
-
-    assert(eval[Int](""" index(structArray, f2)["B"].f3 """).contains(6))
-    assert(eval[Map[_, _]](""" index(structArray, f2).mapValues(x => x.f1) """).contains(Map(
-      "A" -> 1,
-      "B" -> 5,
-      "C" -> 10)
-    ))
-    assert(eval[Boolean](""" index(structArray, f2).contains("B") """).contains(true))
-    assert(eval[Boolean](""" index(structArray, f2).contains("E") """).contains(false))
-
     assert(eval[Map[_, _]](""" genedict.mapValues(x => x + 1) """).contains(Map("gene1" -> 3, "gene2" -> 11, "gene3" -> 15)))
 
     assert(eval[IndexedSeq[Int]]("""genedict.values""").contains(IndexedSeq(2, 10, 14)))
@@ -625,17 +596,6 @@ class ExprSuite extends SparkSuite {
       eval[Int]("""if (0.1) 1 else 0"""))
     TestUtils.interceptFatal(ifConditionNotBooleanMessage)(
       eval[Int]("""if ([1]) 1 else 0"""))
-
-    assert(eval[Annotation]("""merge({a: 1, b: 2}, {c: false, d: true}) """).contains(Annotation(1, 2, false, true)))
-    assert(eval[Annotation]("""merge(NA: Struct{a: Int, b: Int}, {c: false, d: true}) """).contains(Annotation(null, null, false, true)))
-    assert(eval[Annotation]("""merge({a: 1, b: 2}, NA: Struct{c: Boolean, d: Boolean}) """).contains(Annotation(1, 2, null, null)))
-    assert(eval[Annotation]("""merge(NA: Struct{a: Int, b: Int}, NA: Struct{c: Boolean, d: Boolean}) """).isEmpty)
-    TestUtils.interceptFatal("cannot merge structs with same-name fields")(
-      eval[Annotation]("""merge({a: 1, b: 2}, {c: false, d: true, a: 1, b: 0}) """).contains(Annotation(1, 2, false, true)))
-    TestUtils.interceptFatal("invalid arguments to `merge'")(
-      eval[Annotation]("""merge(NA: Struct{a: Int, b: Int}) """).isEmpty)
-    TestUtils.interceptFatal("invalid arguments to `merge'")(
-      eval[Annotation]("""merge(NA: Struct{a: Int, b: Int}, 5) """).isEmpty)
 
     assert(eval[Annotation](""" select({a:1,b:2}, a) """).contains(Annotation(1)))
     assert(eval[Boolean](""" let x = {a:1, b:2, c:3, `\tweird\t`: 4} in select(x, a,b,`\tweird\t`) == drop(x, c) """).contains(true))
@@ -828,13 +788,13 @@ class ExprSuite extends SparkSuite {
       x.get(false) should contain theSameElementsAs Seq(1, 3, 5)
     }
 
-    (eval[Map[String, IndexedSeq[Int]]]("[1].tail().groupBy(k => if (k % 2 == 0) \"even\" else \"odd\")").get
+    (eval[Map[String, IndexedSeq[Int]]]("[1][:0].groupBy(k => if (k % 2 == 0) \"even\" else \"odd\")").get
       shouldBe empty)
 
-    (eval[Map[Int, IndexedSeq[Int]]]("[1].tail().groupBy(k => k % 2)").get
+    (eval[Map[Int, IndexedSeq[Int]]]("[1][:0].groupBy(k => k % 2)").get
       shouldBe empty)
 
-    (eval[Map[Boolean, IndexedSeq[Int]]]("[1].tail().groupBy(k => k % 2 == 0)").get
+    (eval[Map[Boolean, IndexedSeq[Int]]]("[1][:0].groupBy(k => k % 2 == 0)").get
       shouldBe empty)
 
     {
@@ -859,7 +819,7 @@ class ExprSuite extends SparkSuite {
       x.get("odd") should contain theSameElementsAs Seq(1, 3, 5)
     }
 
-    (eval[Map[String, IndexedSeq[Int]]]("[1].tail().toSet().groupBy(k => if (k % 2 == 0) \"even\" else \"odd\")").get
+    (eval[Map[String, IndexedSeq[Int]]]("[1][:0].toSet().groupBy(k => if (k % 2 == 0) \"even\" else \"odd\")").get
       shouldBe empty)
 
     {

@@ -10,6 +10,7 @@ import org.objectweb.asm.tree.AbstractInsnNode
 
 import scala.collection.generic.Growable
 import scala.collection.mutable
+import scala.reflect.ClassTag
 
 object EmitFunctionBuilder {
   def apply[R: TypeInfo](): EmitFunctionBuilder[AsmFunction0[R]] =
@@ -57,6 +58,35 @@ class EmitMethodBuilder(
     fb.getCodeOrdering[T](t, op, missingGreatest)
 }
 
+class DependentEmitFunction[F >: Null <: AnyRef : TypeInfo : ClassTag](
+  parentfb: EmitFunctionBuilder[_],
+  parameterTypeInfo: Array[MaybeGenericTypeInfo[_]],
+  returnTypeInfo: MaybeGenericTypeInfo[_],
+  packageName: String = "is/hail/codegen/generated"
+) extends EmitFunctionBuilder[F](parameterTypeInfo, returnTypeInfo, packageName) with DependentFunction[F] {
+
+  private[this] val rgMap: mutable.Map[ReferenceGenome, Code[ReferenceGenome]] =
+    mutable.Map[ReferenceGenome, Code[ReferenceGenome]]()
+
+  private[this] val typMap: mutable.Map[Type, Code[Type]] =
+    mutable.Map[Type, Code[Type]]()
+
+  override def getReferenceGenome(rg: ReferenceGenome): Code[ReferenceGenome] =
+    rgMap.getOrElse(rg, {
+      val fromParent = parentfb.getReferenceGenome(rg)
+      val field = addField[ReferenceGenome](fromParent)
+      field.load()
+    })
+
+  override def getType(t: Type): Code[Type] =
+    typMap.getOrElse(t, {
+      val fromParent = parentfb.getType(t)
+      val field = addField[Type](fromParent)
+      field.load()
+    })
+
+}
+
 class EmitFunctionBuilder[F >: Null](
   parameterTypeInfo: Array[MaybeGenericTypeInfo[_]],
   returnTypeInfo: MaybeGenericTypeInfo[_],
@@ -79,10 +109,20 @@ class EmitFunctionBuilder[F >: Null](
 
   def numTypes: Int = typMap.size
 
-  def getType(t: Type): Code[Type] =
+  private[this] def addReferenceGenome(rg: ReferenceGenome): Code[Unit] = {
+    val rgExists = Code.invokeScalaObject[String, Boolean](ReferenceGenome.getClass, "hasReference", const(rg.name))
+    val addRG = Code.invokeScalaObject[ReferenceGenome, Unit](ReferenceGenome.getClass, "addReference", getReferenceGenome(rg))
+    rgExists.mux(Code._empty, addRG)
+  }
+
+  def getType(t: Type): Code[Type] = {
+    val references = ReferenceGenome.getReferences(t).toArray
+    val setup = Code(Code(references.map(addReferenceGenome): _*),
+      Code.invokeScalaObject[String, Type](
+        Parser.getClass, "parseType", const(t.parsableString())))
     typMap.getOrElseUpdate(t,
-      newLazyField[Type](
-        Code.invokeScalaObject[String, Type](Parser.getClass, "parseType", const(t.parsableString()))))
+      newLazyField[Type](setup))
+  }
 
   def getCodeOrdering[T](t: Type, op: CodeOrdering.Op, missingGreatest: Boolean): CodeOrdering.F[T] = {
     val f = compareMap.getOrElseUpdate((t, op, missingGreatest), {
@@ -157,4 +197,11 @@ class EmitFunctionBuilder[F >: Null](
 
   override def newMethod[A: TypeInfo, B: TypeInfo, C: TypeInfo, D: TypeInfo, E: TypeInfo, R: TypeInfo]: EmitMethodBuilder =
     newMethod(Array[TypeInfo[_]](typeInfo[A], typeInfo[B], typeInfo[C], typeInfo[D], typeInfo[E]), typeInfo[R])
+
+  def newDependentFunction[A1: TypeInfo, A2: TypeInfo, A3: TypeInfo, R: TypeInfo]: DependentEmitFunction[AsmFunction3[A1, A2, A3, R]] = {
+    val df = new DependentEmitFunction[AsmFunction3[A1, A2, A3, R]](
+      this, Array(GenericTypeInfo[A1], GenericTypeInfo[A2], GenericTypeInfo[A3]), GenericTypeInfo[R])
+    children += df
+    df
+  }
 }

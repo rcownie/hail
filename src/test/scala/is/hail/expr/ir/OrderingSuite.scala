@@ -3,13 +3,13 @@ package is.hail.expr.ir
 import is.hail.annotations._
 import is.hail.check.{Gen, Prop}
 import is.hail.asm4s._
-import is.hail.expr.ir._
 import is.hail.expr.types._
 import is.hail.utils._
 import org.apache.spark.sql.Row
+import org.scalatest.testng.TestNGSuite
 import org.testng.annotations.Test
 
-class OrderingSuite {
+class OrderingSuite extends TestNGSuite {
 
   def recursiveSize(t: Type): Int = {
     val inner = t match {
@@ -139,14 +139,16 @@ class OrderingSuite {
     val compareGen = for {
       elt <- Type.genArb
       a <- TArray(elt).genNonmissingValue
-    } yield (elt, a)
-    val p = Prop.forAll(compareGen) { case (t, a: IndexedSeq[Any]) =>
-      val irF = { irs: Seq[IR] => ArraySort(irs(0)) }
+      asc <- Gen.coin()
+    } yield (elt, a, asc)
+    val p = Prop.forAll(compareGen) { case (t, a: IndexedSeq[Any], asc: Boolean) =>
+      val irF = { irs: Seq[IR] => ArraySort(irs(0), Literal(asc, TBoolean())) }
       val f = getCompiledFunction(irF, TArray(t), TArray(t))
+      val ord = if (asc) t.ordering.toOrdering else t.ordering.reverse.toOrdering
 
       Region.scoped { region =>
         val actual = f(region, Seq(a))
-        val expected = a.sorted(t.ordering.toOrdering)
+        val expected = a.sorted(ord)
         expected == actual
       }
     }
@@ -182,7 +184,7 @@ class OrderingSuite {
     val p = Prop.forAll(compareGen) { case (telt: TTuple, a: IndexedSeq[Row] @unchecked) =>
       val array: IndexedSeq[Row] = a ++ a
       val irF = { irs: Seq[IR] => ToDict(irs(0)) }
-      val f = getCompiledFunction(irF, TArray(telt), TArray(telt))
+      val f = getCompiledFunction(irF, TArray(telt), TArray(+telt))
 
       Region.scoped { region =>
         val actual = f(region, Seq(array)).asInstanceOf[IndexedSeq[Row]]
@@ -198,7 +200,7 @@ class OrderingSuite {
 
   @Test def testSortOnMissingArray() {
     val tarray = TArray(TStruct("key" -> TInt32(), "value" -> TInt32()))
-    val irs: Array[IR => IR] = Array(ArraySort(_), ToSet(_), ToDict(_))
+    val irs: Array[IR => IR] = Array(ArraySort(_, True()), ToSet(_), ToDict(_))
 
     for (irF <- irs) {
       val ir = IsNA(irF(NA(tarray)))
@@ -215,7 +217,7 @@ class OrderingSuite {
   @Test def testSetContainsOnRandomSet() {
     val compareGen = Type.genArb
       .flatMap(t => Gen.zip(Gen.const(TSet(t)), TSet(t).genNonmissingValue, t.genValue))
-    val p = Prop.forAll(compareGen) { case (tset: TSet, set: Set[Any] @unchecked, test1: Any) =>
+    val p = Prop.forAll(compareGen) { case (tset: TSet, set: Set[Any] @unchecked, test1) =>
       val telt = tset.elementType
 
       val ir = { irs: Seq[IR] => SetContains(irs(0), irs(1)) }
@@ -240,9 +242,10 @@ class OrderingSuite {
 
   @Test def testDictGetOnRandomDict() {
     val compareGen = Gen.zip(Type.genArb, Type.genArb).flatMap {
-      case (k, v) => Gen.zip(Gen.const(TDict(k, v)), TDict(k, v).genNonmissingValue, k.genValue)
+      case (k, v) =>
+        Gen.zip(Gen.const(TDict(k, v)), TDict(k, v).genNonmissingValue, k.genValue)
     }
-    val p = Prop.forAll(compareGen) { case (tdict: TDict, dict: Map[Any, Any] @unchecked, testKey1: Any) =>
+    val p = Prop.forAll(compareGen) { case (tdict: TDict, dict: Map[Any, Any] @unchecked, testKey1) =>
       val telt = coerce[TBaseStruct](tdict.elementType)
 
       val ir = { irs: Seq[IR] => DictGet(irs(0), irs(1)) }

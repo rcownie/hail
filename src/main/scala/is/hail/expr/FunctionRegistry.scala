@@ -1053,12 +1053,6 @@ object FunctionRegistry {
   registerMethod("toArray", (a: Set[Any]) => a.toArray[Any]: IndexedSeq[Any])(setHr(TTHr), arrayHr(TTHr))
   registerMethod("toArray", (a: IndexedSeq[Any]) => a)(arrayHr(TTHr), arrayHr(TTHr))
 
-  registerMethod("head", (a: IndexedSeq[Any]) => a.head)(arrayHr(TTHr), TTHr)
-  registerMethod("tail", (a: IndexedSeq[Any]) => a.tail)(arrayHr(TTHr), arrayHr(TTHr))
-
-  registerMethod("head", (a: Set[Any]) => a.head)(setHr(TTHr), TTHr)
-  registerMethod("tail", (a: Set[Any]) => a.tail)(setHr(TTHr), setHr(TTHr))
-
   registerMethod("append", (x: IndexedSeq[Any], a: Any) => x :+ a)(arrayHr(TTHr), TTHr, arrayHr(TTHr))
   registerMethod("extend", (x: IndexedSeq[Any], a: IndexedSeq[Any]) => x ++ a)(arrayHr(TTHr), arrayHr(TTHr), arrayHr(TTHr))
 
@@ -1281,7 +1275,7 @@ object FunctionRegistry {
 
   registerAggregator[Double, java.lang.Double]("min", () => new MinAggregator[Double, java.lang.Double]())(aggregableHr(float64Hr), boxedFloat64Hr)
 
-  registerAggregator[IndexedSeq[Double], Any]("infoScore", () => new InfoScoreAggregator())(aggregableHr(arrayHr(float64Hr)),
+  registerAggregator[IndexedSeq[java.lang.Double], Any]("infoScore", () => new InfoScoreAggregator())(aggregableHr(arrayHr(boxedFloat64Hr)),
     new HailRep[Any] {
       def typ: Type = InfoScoreCombiner.signature
     })

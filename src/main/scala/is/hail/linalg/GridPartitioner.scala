@@ -4,10 +4,17 @@ import org.apache.spark.Partitioner
 import breeze.linalg.{DenseVector => BDV}
 import is.hail.utils._
 
+import scala.collection.mutable
 
-case class GridPartitioner(blockSize: Int, nRows: Long, nCols: Long, maybeSparse: Option[Array[Int]] = None) extends Partitioner {
-  require(nRows > 0 && nRows <= Int.MaxValue.toLong * blockSize)
-  require(nCols > 0 && nCols <= Int.MaxValue.toLong * blockSize)
+
+case class GridPartitioner(blockSize: Int, nRows: Long, nCols: Long, maybeBlocks: Option[Array[Int]] = None) extends Partitioner {
+  if (nRows == 0)
+    fatal("block matrix must have at least one row")
+  if (nCols == 0)
+    fatal("block matrix must have at least one column")
+  
+  require(nRows <= Int.MaxValue.toLong * blockSize)
+  require(nCols <= Int.MaxValue.toLong * blockSize)
   
   def indexBlockIndex(index: Long): Int = (index / blockSize).toInt
 
@@ -18,9 +25,9 @@ case class GridPartitioner(blockSize: Int, nRows: Long, nCols: Long, maybeSparse
 
   val maxNBlocks: Long = nBlockRows.toLong * nBlockCols
   
-  require(maybeSparse.forall(bis => bis.isEmpty ||
+  require(maybeBlocks.forall(bis => bis.isEmpty ||
     (bis.isIncreasing && bis.head >= 0 && bis.last < maxNBlocks &&
-      bis.length < maxNBlocks))) // a sparse block matrix cannot have all blocks present
+      bis.length < maxNBlocks))) // a block-sparse matrix cannot have all blocks present
 
   val lastBlockRowNRows: Int = indexBlockOffset(nRows - 1) + 1
   val lastBlockColNCols: Int = indexBlockOffset(nCols - 1) + 1
@@ -41,53 +48,37 @@ case class GridPartitioner(blockSize: Int, nRows: Long, nCols: Long, maybeSparse
     i + j * nBlockRows
   }
   
-  def filterBlocks(blocksToKeep: Array[Int]): (GridPartitioner, Array[Int]) = {
-    require(blocksToKeep.isEmpty ||
-      (blocksToKeep.isIncreasing && blocksToKeep.head >= 0 && blocksToKeep.last < maxNBlocks)) // could move into Some
-    
-    val (filteredBlocks, partsToKeep) = maybeSparse match {
-      case Some(bis) =>
-        val blocksToKeepSet = blocksToKeep.toSet
-        bis.zipWithIndex.filter { case (bi, _) => blocksToKeepSet(bi) }.unzip
-      case None => (blocksToKeep, blocksToKeep)
-    }
-    
-    val filteredGP =
-      if (partsToKeep.length == numPartitions)
-        this
-      else
-        GridPartitioner(blockSize, nRows, nCols, Some(filteredBlocks))
-
-    (filteredGP, partsToKeep)
-  }
-  
-  def intersectBlocks(that: GridPartitioner): Option[Array[Int]] = {
-    (maybeSparse, that.maybeSparse) match {
+  def intersect(that: GridPartitioner): GridPartitioner = {
+    copy(maybeBlocks = (maybeBlocks, that.maybeBlocks) match {
       case (Some(bis), Some(bis2)) => Some(bis.filter(bis2.toSet))
       case (Some(bis), None) => Some(bis)
       case (None, Some(bis2)) => Some(bis2)
       case (None, None) => None
-    }
+    })
   }
   
-  def unionBlocks(that: GridPartitioner): Option[Array[Int]] = {
-    (maybeSparse, that.maybeSparse) match {
+  def union(that: GridPartitioner): GridPartitioner = {
+    copy(maybeBlocks = (maybeBlocks, that.maybeBlocks) match {
       case (Some(bis), Some(bis2)) =>
-        val union = bis.union(bis2)
-        scala.util.Sorting.quickSort(union)
-        Some(union)
+        val union = (bis ++ bis2).distinct
+        if (union.length == maxNBlocks)
+          None
+        else {
+          scala.util.Sorting.quickSort(union)
+          Some(union)
+        }
       case _ => None
-    }
+    })
   }
 
-  override val numPartitions: Int = maybeSparse match {
+  override val numPartitions: Int = maybeBlocks match {
     case Some(bis) => bis.length
     case None =>
       assert(maxNBlocks < Int.MaxValue)
       maxNBlocks.toInt
   }
   
-  val partBlock: Int => Int = maybeSparse match {
+  val partBlock: Int => Int = maybeBlocks match {
     case Some(bis) => pi =>
       assert(pi >= 0 && pi < bis.length)
       bis(pi)
@@ -96,7 +87,7 @@ case class GridPartitioner(blockSize: Int, nRows: Long, nCols: Long, maybeSparse
       pi
   }
   
-  val blockPart: Int => Int = maybeSparse match {
+  val blockPart: Int => Int = maybeBlocks match {
     case Some(bis) => bis.zipWithIndex.toMap.withDefaultValue(-1)
     case None => bi => bi
   }
@@ -112,7 +103,7 @@ case class GridPartitioner(blockSize: Int, nRows: Long, nCols: Long, maybeSparse
   def transpose: (GridPartitioner, Int => Int) = {
     val gpT = GridPartitioner(blockSize, nCols, nRows)
     def transposeBI(bi: Int): Int = coordinatesBlock(gpT.blockBlockCol(bi), gpT.blockBlockRow(bi))
-    maybeSparse match {
+    maybeBlocks match {
       case Some(bis) =>
         val (biTranspose, piTranspose) = bis.map(transposeBI).zipWithIndex.sortBy(_._1).unzip
         val inverseTransposePI = piTranspose.zipWithIndex.sortBy(_._1).map(_._2)
@@ -131,44 +122,72 @@ case class GridPartitioner(blockSize: Int, nRows: Long, nCols: Long, maybeSparse
     val firstCol = j * blockSize
     v(firstCol until firstCol + blockColNCols(j))
   }
-  
+
+  def maybeBlockRows(): Option[Array[Int]] = maybeBlocks.map(_.map(blockBlockRow).distinct)
+
+  def maybeBlockCols(): Option[Array[Int]] = maybeBlocks.map(_.map(blockBlockCol).distinct)
+
   // returns increasing array of all blocks intersecting the diagonal band consisting of
-  //   all entries with -lowerBandwidth <= (colIndex - rowIndex) <= upperBandwidth
-  def bandedBlocks(lowerBandwidth: Long, upperBandwidth: Long): Array[Int] = {
-    require(lowerBandwidth >= 0 && upperBandwidth >= 0)
+  //   all elements with lower <= jj - ii <= upper
+  def bandBlocks(lower: Long, upper: Long): Array[Int] = {
+    require(lower <= upper)
     
-    val lowerBlockBandwidth = indexBlockIndex(lowerBandwidth + blockSize - 1)
-    val upperBlockBandwidth = indexBlockIndex(upperBandwidth + blockSize - 1)
+    val lowerBlock = java.lang.Math.floorDiv(lower, blockSize).toInt
+    val upperBlock = java.lang.Math.floorDiv(upper + blockSize - 1, blockSize).toInt
 
     (for { j <- 0 until nBlockCols
-           i <- ((j - upperBlockBandwidth) max 0) to
-                ((j + lowerBlockBandwidth) min (nBlockRows - 1))
+           i <- ((j - upperBlock) max 0) to
+                ((j - lowerBlock) min (nBlockRows - 1))
     } yield (j * nBlockRows) + i).toArray
   }
 
-  // returns increasing array of all blocks intersecting the rectangle [firstRow, lastRow] x [firstCol, lastCol]
-  def rectangularBlocks(firstRow: Long, lastRow: Long, firstCol: Long, lastCol: Long): Array[Int] = {
-    require(firstRow >= 0 && lastRow < nRows)
-    require(firstCol >= 0 && lastCol < nCols)
+  // returns increasing array of all blocks intersecting the rectangle
+  // [r(0), r(1)) x [r(2), r(3)), i.e. [startRow, stopRow) x [startCol, stopCol)
+  // rectangle checked in Python
+  def rectangleBlocks(r: Array[Long]): Array[Int] = {
+    val startBlockRow = indexBlockIndex(r(0))
+    val stopBlockRow = java.lang.Math.floorDiv(r(1) - 1, blockSize).toInt + 1
+    val startBlockCol = indexBlockIndex(r(2))
+    val stopBlockCol = java.lang.Math.floorDiv(r(3) - 1, blockSize).toInt + 1
     
-    if (firstRow > lastRow || firstCol > lastCol)
-      return Array.empty[Int]
-    
-    val firstBlockRow = indexBlockIndex(firstRow)
-    val lastBlockRow = indexBlockIndex(lastRow)
-    val firstBlockCol = indexBlockIndex(firstCol)
-    val lastBlockCol = indexBlockIndex(lastCol)
-    
-    (for { j <- firstBlockCol to lastBlockCol
-           i <- firstBlockRow to lastBlockRow
+    (for { j <- startBlockCol until stopBlockCol
+           i <- startBlockRow until stopBlockRow
     } yield (j * nBlockRows) + i).toArray
   }
 
   // returns increasing array of all blocks intersecting the union of rectangles
-  def rectangularBlocks(rectangles: Array[Array[Long]]): Array[Int] = {
-    require(rectangles.forall(r => r.length == 4))
-    val rects = rectangles.foldLeft(Set[Int]())((s, r) => s ++ rectangularBlocks(r(0), r(1), r(2), r(3))).toArray    
-    scala.util.Sorting.quickSort(rects)
-    rects
+  // rectangles checked in Python
+  def rectanglesBlocks(rectangles: Array[Array[Long]]): Array[Int] = {
+    val blocks = rectangles.foldLeft(mutable.Set[Int]())((s, r) => s ++= rectangleBlocks(r)).toArray    
+    scala.util.Sorting.quickSort(blocks)
+    blocks
+  }
+  
+  // starts, stops checked in Python
+  def rowIntervalsBlocks(starts: Array[Long], stops: Array[Long]): Array[Int] = {
+    val rectangles = starts.grouped(blockSize).zip(stops.grouped(blockSize))
+      .zipWithIndex
+      .flatMap { case ((startsInBlockRow, stopsInBlockRow), blockRow) =>
+        val nRowsInBlockRow = blockRowNRows(blockRow)
+        var minStart = Long.MaxValue
+        var maxStop = Long.MinValue
+        var ii = 0
+        while (ii < nRowsInBlockRow) {
+          val start = startsInBlockRow(ii)
+          val stop = stopsInBlockRow(ii)
+          if (start < stop) {
+            minStart = minStart min start
+            maxStop = maxStop max stop
+          }
+          ii += 1
+        }
+        if (minStart < maxStop) {
+          val row = blockRow * blockSize
+          Some(Array(row, row + 1, minStart, maxStop))
+        } else
+          None
+      }.toArray
+    
+    rectanglesBlocks(rectangles)
   }
 }

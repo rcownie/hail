@@ -5,6 +5,7 @@ from hail.typecheck import *
 from hail.table import Table
 from hail.expr.expressions import expr_float64, matrix_table_source, check_entry_indexed
 import numpy as np
+import itertools
 from enum import IntEnum
 
 block_matrix_type = lazy()
@@ -47,8 +48,6 @@ class BlockMatrix(object):
 
     .. include:: ../_templates/experimental.rst
 
-    Notes
-    -----
     A block matrix is a distributed analogue of a two-dimensional
     `NumPy ndarray
     <https://docs.scipy.org/doc/numpy/reference/arrays.ndarray.html>`__ with
@@ -57,16 +56,24 @@ class BlockMatrix(object):
 
     >>> from hail.linalg import BlockMatrix
 
-    The core operations are
-    consistent with NumPy: ``+``, ``-``, ``*``, and ``/`` for element-wise
-    addition, subtraction, multiplication, and division; ``@`` for matrix
-    multiplication; and ``**`` for element-wise exponentiation to a scalar
-    power.
+    Under the hood, block matrices are partitioned like a checkerboard into
+    square blocks with side length a common block size. Blocks in the final row
+    or column of blocks may be truncated, so block size need not evenly divide
+    the matrix dimensions. Block size defaults to the value given by
+    :meth:`default_block_size`.
+
+    **Operations and broadcasting**
+
+    The core operations are consistent with NumPy: ``+``, ``-``, ``*``, and
+    ``/`` for element-wise addition, subtraction, multiplication, and division;
+    ``@`` for matrix multiplication; ``T`` for transpose; and ``**`` for
+    element-wise exponentiation to a scalar power.
 
     For element-wise binary operations, each operand may be a block matrix, an
     ndarray, or a scalar (:obj:`int` or :obj:`float`). For matrix
     multiplication, each operand may be a block matrix or an ndarray. If either
-    operand is a block matrix, the result is a block matrix.
+    operand is a block matrix, the result is a block matrix. Binary operations
+    between block matrices require that both operands have the same block size.
 
     To interoperate with block matrices, ndarray operands must be one or two
     dimensional with dtype convertible to ``float64``. One-dimensional ndarrays
@@ -80,6 +87,17 @@ class BlockMatrix(object):
     There is one exception: block matrices do not currently support element-wise
     "outer product" of a single row and a single column, although the same
     effect can be achieved for ``*`` by using ``@``.
+
+    Warning
+    -------
+
+        For binary operations, if the first operand is an ndarray and the
+        second operand is a block matrix, the result will be a ndarray of block
+        matrices. To achieve the desired behavior for ``+`` and ``*``, place the
+        block matrix operand first; for ``-``, ``/``, and ``@``, first convert
+        the ndarray to a block matrix using :meth:`.from_numpy`.
+
+    **Indexing and slicing**
 
     Block matrices also support NumPy-style 2-dimensional
     `indexing and slicing <https://docs.scipy.org/doc/numpy/user/basics.indexing.html>`__,
@@ -107,19 +125,81 @@ class BlockMatrix(object):
     Use :meth:`filter`, :meth:`filter_rows`, and :meth:`filter_cols` to
     subset to non-slice subsets of rows and columns, e.g. to rows ``[0, 2, 5]``.
 
-    Under the hood, block matrices are partitioned like a checkerboard into
-    square blocks with side length a common block size (blocks in the final row
-    or column of blocks may be truncated). Block size defaults to the value
-    given by :meth:`default_block_size`. Binary operations between block
-    matrices require that both operands have the same block size.
+    **Block-sparse representation**
 
-    Warning
-    -------
-    For binary operations, if the first operand is an ndarray and the second
-    operand is a block matrix, the result will be a ndarray of block matrices.
-    To achieve the desired behavior for ``+`` and ``*``, place the block matrix
-    operand first; for ``-``, ``/``, and ``@``, first convert the ndarray to a
-    block matrix using :meth:`.from_numpy`.
+    By default, block matrices compute and store all blocks explicitly.
+    However, some applications involve block matrices in which:
+
+    - some blocks consist entirely of zeroes.
+
+    - some blocks are not of interest.
+
+    For example, statistical geneticists often want to compute and manipulate a
+    banded correlation matrix capturing "linkage disequilibrium" between nearby
+    variants along the genome. In this case, working with the full correlation
+    matrix for tens of millions of variants would be prohibitively expensive,
+    and in any case, entries far from the diagonal are either not of interest or
+    ought to be zeroed out before downstream linear algebra.
+
+    To enable such computations, block matrices do not require that all blocks
+    be realized explicitly. Implicit (dropped) blocks behave as blocks of
+    zeroes, so we refer to a block matrix in which at least one block is
+    implicitly zero as a **block-sparse matrix**. Otherwise, we say the matrix
+    is block-dense. The property :meth:`is_sparse` encodes this state.
+
+    Dropped blocks are not stored in memory or on :meth:`write`. In fact,
+    blocks that are dropped prior to an action like :meth:`export` or
+    :meth:`to_numpy` are never computed in the first place, nor are any blocks
+    of upstream operands on which only dropped blocks depend! In addition,
+    linear algebra is accelerated by avoiding, for example, explicit addition of
+    or multiplication by blocks of zeroes.
+
+    Block-sparse matrices may be created with
+    :meth:`sparsify_band`,
+    :meth:`sparsify_rectangles`,
+    :meth:`sparsify_row_intervals`,
+    and :meth:`sparsify_triangle`.
+
+    The following methods naturally propagate block-sparsity:
+
+    - Addition and subtraction "union" realized blocks.
+
+    - Element-wise multiplication "intersects" realized blocks.
+
+    - Transpose "transposes" realized blocks.
+
+    - :meth:`abs` and :meth:`sqrt` preserve the realized blocks.
+
+    - :meth:`sum` along an axis realizes those blocks for which at least one
+      block summand is realized.
+
+    These following methods always result in a block-dense matrix:
+
+    - :meth:`fill`
+
+    - Addition or subtraction of a scalar or broadcasted vector.
+
+    - Matrix multiplication, ``@``.
+
+    - Matrix slicing, and more generally :meth:`filter`, :meth:`filter_rows`,
+      and :meth:`filter_cols`.
+
+    The following methods fail if any operand is block-sparse, but can be forced
+    by first applying :meth:`densify`.
+
+    - Element-wise division between two block matrices.
+
+    - Multiplication by a scalar or broadcasted vector which includes an
+      infinite or ``nan`` value.
+
+    - Division by a scalar or broadcasted vector which includes a zero, infinite
+      or ``nan`` value.
+
+    - Division of a scalar or broadcasted vector by a block matrix.
+
+    - Element-wise exponentiation by a negative exponent.
+
+    - Natural logarithm, :meth:`log`.
     """
     def __init__(self, jbm):
         self._jbm = jbm
@@ -266,7 +346,16 @@ class BlockMatrix(object):
 
         Notes
         -----
-        If any values are missing, an error message is returned.
+        Do not use this method if you want to store a copy of the resulting
+        block matrix. Instead, use :meth:`write_from_entry_expr` followed by
+        :meth:`BlockMatrix.read`.
+
+        If a pipelined transformation significantly downsamples the rows of the
+        underlying matrix table, then repartitioning the matrix table ahead of
+        this method will greatly improve its performance.
+
+        The method will fail if any values are missing. To be clear, special
+        float values like ``NaN`` are not missing values.
 
         Parameters
         ----------
@@ -320,6 +409,39 @@ class BlockMatrix(object):
         if not block_size:
             block_size = BlockMatrix.default_block_size()
         return cls(Env.hail().linalg.BlockMatrix.random(Env.hc()._jhc, n_rows, n_cols, block_size, seed, uniform))
+
+    @classmethod
+    @typecheck_method(n_rows=int,
+                      n_cols=int,
+                      value=float,
+                      block_size=nullable(int))
+    def fill(cls, n_rows, n_cols, value, block_size=None):
+        """Creates a block matrix with all elements the same value.
+
+        Examples
+        --------
+        Create a block matrix with 10 rows, 20 columns, and all elements equal to ``1.0``:
+
+        >>> bm = BlockMatrix.fill(10, 20, 1.0)
+
+        Parameters
+        ----------
+        n_rows: :obj:`int`
+            Number of rows.
+        n_cols: :obj:`int`
+            Number of columns.
+        value: :obj:`float`
+            Value of all elements.
+        block_size: :obj:`int`, optional
+            Block size. Default given by :meth:`default_block_size`.
+
+        Returns
+        -------
+        :class:`.BlockMatrix`
+        """
+        if not block_size:
+            block_size = BlockMatrix.default_block_size()
+        return cls(Env.hail().linalg.BlockMatrix.fill(Env.hc()._jhc, n_rows, n_cols, value, block_size))
 
     @classmethod
     @typecheck_method(n_rows=int,
@@ -422,9 +544,14 @@ class BlockMatrix(object):
 
         Notes
         -----
-        If any values are missing, an error message is returned.
-
         The resulting file can be loaded with :meth:`BlockMatrix.read`.
+
+        If a pipelined transformation significantly downsamples the rows of the
+        underlying matrix table, then repartitioning the matrix table ahead of
+        this method will greatly improve its performance.
+
+        The method will fail if any values are missing. To be clear, special
+        float values like ``NaN`` are not missing values.
 
         Parameters
         ----------
@@ -450,6 +577,17 @@ class BlockMatrix(object):
             field = Env.get_uid()
             mt.select_entries(**{field: entry_expr})._jvds.writeBlockMatrix(path, field, block_size)
 
+    @staticmethod
+    def _check_indices(indices, size):
+        if len(indices) == 0:
+            raise ValueError('index list must be non-empty')
+        elif not all(x < y for x, y in zip(indices, indices[1:])):
+            raise ValueError('index list must be strictly increasing')
+        elif indices[0] < 0:
+            raise ValueError(f'index list values must be in range [0, {size}), found {indices[0]}')
+        elif indices[-1] >= size:
+            raise ValueError(f'index list values must be in range [0, {size}), found {indices[-1]}')
+
     @typecheck_method(rows_to_keep=sequenceof(int))
     def filter_rows(self, rows_to_keep):
         """Filters matrix rows.
@@ -463,6 +601,7 @@ class BlockMatrix(object):
         -------
         :class:`.BlockMatrix`
         """
+        BlockMatrix._check_indices(rows_to_keep, self.n_rows)
         return BlockMatrix(self._jbm.filterRows(jarray(Env.jvm().long, rows_to_keep)))
 
     @typecheck_method(cols_to_keep=sequenceof(int))
@@ -478,6 +617,7 @@ class BlockMatrix(object):
         -------
         :class:`.BlockMatrix`
         """
+        BlockMatrix._check_indices(cols_to_keep, self.n_cols)
         return BlockMatrix(self._jbm.filterCols(jarray(Env.jvm().long, cols_to_keep)))
 
     @typecheck_method(rows_to_keep=sequenceof(int),
@@ -502,6 +642,8 @@ class BlockMatrix(object):
         -------
         :class:`.BlockMatrix`
         """
+        BlockMatrix._check_indices(rows_to_keep, self.n_rows)
+        BlockMatrix._check_indices(cols_to_keep, self.n_cols)
         return BlockMatrix(self._jbm.filter(jarray(Env.jvm().long, rows_to_keep),
                                             jarray(Env.jvm().long, cols_to_keep)))
 
@@ -524,7 +666,7 @@ class BlockMatrix(object):
                 raise ValueError(f'slice step must be positive, found {idx.step}')
 
             start = 0 if idx.start is None else BlockMatrix._pos_index(idx.start, size, 'start index')
-            stop = size if idx.stop is None else BlockMatrix._pos_index(idx.stop, size, 'stop index', allow_size=True) 
+            stop = size if idx.stop is None else BlockMatrix._pos_index(idx.stop, size, 'stop index', allow_size=True)
             step = 1 if idx.step is None else idx.step
 
             if start < stop:
@@ -565,11 +707,149 @@ class BlockMatrix(object):
     def _filtered_entries_table(self, table, radius, include_diagonal):
         return Table(self._jbm.filteredEntriesTable(table._jt, radius, include_diagonal))
 
+    @typecheck_method(lower=int, upper=int, blocks_only=bool)
+    def sparsify_band(self, lower=0, upper=0, blocks_only=False):
+        r"""Filter to a diagonal band.
+
+        Examples
+        --------
+        Consider the following block matrix:
+
+        >>> import numpy as np
+        >>> nd = np.array([[ 1.0,  2.0,  3.0,  4.0],
+        ...                [ 5.0,  6.0,  7.0,  8.0],
+        ...                [ 9.0, 10.0, 11.0, 12.0],
+        ...                [13.0, 14.0, 15.0, 16.0]])
+        >>> bm = BlockMatrix.from_numpy(nd, block_size=2)
+
+        Filter to a band from one below the diagonal to
+        two above the diagonal and collect to NumPy:
+
+        >>> bm.sparsify_band(lower=-1, upper=2).to_numpy()
+        array([[ 1.,  2.,  3.,  0.],
+               [ 5.,  6.,  7.,  8.],
+               [ 0., 10., 11., 12.],
+               [ 0.,  0., 15., 16.]])
+
+        Set all blocks fully outside the diagonal to zero
+        and collect to NumPy:
+
+        >>> bm.sparsify_band(lower=0, upper=0, blocks_only=True).to_numpy()
+        array([[ 1.,  2.,  0.,  0.],
+               [ 5.,  6.,  0.,  0.],
+               [ 0.,  0., 11., 12.],
+               [ 0.,  0., 15., 16.]])
+
+        Notes
+        -----
+        This method creates a block-sparse matrix by zeroing out all blocks
+        which are disjoint from a diagonal band. By default,
+        all elements outside the band but inside blocks that overlap the
+        band are set to zero as well.
+
+        The band is defined in terms of inclusive `lower` and `upper` indices
+        relative to the diagonal. For example, the indices -1, 0, and 1
+        correspond to the sub-diagonal, diagonal, and super-diagonal,
+        respectively. The diagonal band contains the elements at positions
+        :math:`(i, j)` such that
+
+        .. math::
+
+          \mathrm{lower} \leq j - i \leq \mathrm{upper}.
+
+        `lower` must be less than or equal to `upper`, but their values may
+        exceed the dimensions of the matrix, the band need not include the
+        diagonal, and the matrix need not be square.
+
+        Parameters
+        ----------
+        lower: :obj:`int`
+            Index of lowest band relative to the diagonal.
+        upper: :obj:`int`
+            Index of highest band relative to the diagonal.
+        blocks_only: :obj:`bool`
+            If ``False``, set all elements outside the band to zero.
+            If ``True``, only set all blocks outside the band to blocks
+            of zeros; this is more efficient.
+
+        Returns
+        -------
+        :class:`.BlockMatrix`
+            Sparse block matrix.
+        """
+        if lower > upper:
+            raise ValueError(f'sparsify_band: lower={lower} is greater than upper={upper}')
+
+        return BlockMatrix(self._jbm.filterBand(lower, upper, blocks_only))
+
+    @typecheck_method(lower=bool, blocks_only=bool)
+    def sparsify_triangle(self, lower=False, blocks_only=False):
+        """Filter to the upper or lower triangle.
+
+        Examples
+        --------
+        Consider the following block matrix:
+
+        >>> import numpy as np
+        >>> nd = np.array([[ 1.0,  2.0,  3.0,  4.0],
+        ...                [ 5.0,  6.0,  7.0,  8.0],
+        ...                [ 9.0, 10.0, 11.0, 12.0],
+        ...                [13.0, 14.0, 15.0, 16.0]])
+        >>> bm = BlockMatrix.from_numpy(nd, block_size=2)
+
+        Filter to the upper triangle and collect to NumPy:
+
+        >>> bm.sparsify_triangle().to_numpy()
+        array([[ 1.,  2.,  3.,  4.],
+               [ 0.,  6.,  7.,  8.],
+               [ 0.,  0., 11., 12.],
+               [ 0.,  0.,  0., 16.]])
+
+        Set all blocks fully outside the upper triangle to zero
+        and collect to NumPy:
+
+        >>> bm.sparsify_triangle(blocks_only=True).to_numpy()
+        array([[ 1.,  2.,  3.,  4.],
+               [ 5.,  6.,  7.,  8.],
+               [ 0.,  0., 11., 12.],
+               [ 0.,  0., 15., 16.]])
+
+        Notes
+        -----
+        This method creates a block-sparse matrix by zeroing out all blocks
+        which are disjoint from the (non-strict) upper or lower triangle. By
+        default, all elements outside the triangle but inside blocks that
+        overlap the triangle are set to zero as well.
+
+        Parameters
+        ----------
+        lower: :obj:`bool`
+            If ``False``, keep the upper triangle.
+            If ``True``, keep the lower triangle.
+        blocks_only: :obj:`bool`
+            If ``False``, set all elements outside the triangle to zero.
+            If ``True``, only set all blocks outside the triangle to
+            blocks of zeros; this is more efficient.
+
+        Returns
+        -------
+        :class:`.BlockMatrix`
+            Sparse block matrix.
+        """
+        if lower:
+            lower_band = 1 - self.n_rows
+            upper_band = 0
+        else:
+            lower_band = 0
+            upper_band = self.n_cols - 1
+
+        return self.sparsify_band(lower_band, upper_band, blocks_only)
+
     @typecheck_method(starts=sequenceof(int),
                       stops=sequenceof(int),
                       blocks_only=bool)
     def sparsify_row_intervals(self, starts, stops, blocks_only=False):
-        """Creates a sparse block matrix by filtering to an interval for each row.
+        """Creates a block-sparse matrix by filtering to an interval for each row.
 
         Examples
         --------
@@ -588,13 +868,10 @@ class BlockMatrix(object):
         >>> (bm.sparsify_row_intervals(starts=[1, 0, 2, 2],
         ...                            stops= [2, 0, 3, 4])
         ...    .to_numpy())
-
-        .. code-block:: text
-
-            array([[ 0.,  2.,  0.,  0.],
-                   [ 0.,  0.,  0.,  0.],
-                   [ 0.,  0., 11.,  0.],
-                   [ 0.,  0., 15., 16.]])
+        array([[ 0.,  2.,  0.,  0.],
+               [ 0.,  0.,  0.,  0.],
+               [ 0.,  0., 11.,  0.],
+               [ 0.,  0., 15., 16.]])
 
         Set all blocks fully outside the given row intervals to
         blocks of zeros and collect to NumPy:
@@ -603,40 +880,22 @@ class BlockMatrix(object):
         ...                            stops= [2, 0, 3, 4],
         ...                            blocks_only=True)
         ...    .to_numpy())
-
-        .. code-block:: text
-
-            array([[ 1.,  2.,  0.,  0.],
-                   [ 5.,  6.,  0.,  0.],
-                   [ 0.,  0., 11., 12.],
-                   [ 0.,  0., 15., 16.]])
+        array([[ 1.,  2.,  0.,  0.],
+               [ 5.,  6.,  0.,  0.],
+               [ 0.,  0., 11., 12.],
+               [ 0.,  0., 15., 16.]])
 
         Notes
         -----
-        This methods creates a sparse block matrix by zeroing out all blocks
+        This method creates a block-sparse matrix by zeroing out all blocks
         which are disjoint from all row intervals. By default, all elements
         outside the row intervals but inside blocks that overlap the row
         intervals are set to zero as well.
 
-        Sparse block matrices do not store the zeroed blocks explicitly; rather
-        zeroed blocks are dropped both in memory and when stored on disk. This
-        enables computations, such as banded correlation for a huge number of
-        variables, that would otherwise be prohibitively expensive, as dropped
-        blocks are never computed in the first place. Matrix multiplication
-        by a sparse block matrix is also accelerated in proportion to the
-        block sparsity.
-
-        Matrix product ``@`` currently always results in a dense block matrix.
-        Sparse block matrices also support transpose,
-        :meth:`diagonal`, and all non-mathematical operations except filtering.
-
-        Element-wise mathematical operations are currently supported if and
-        only if they cannot transform zeroed blocks to non-zero blocks. For
-        example, all forms of element-wise multiplication ``*`` are supported,
-        and element-wise multiplication results in a sparse block matrix with
-        block support equal to the intersection of that of the operands. On the
-        other hand, scalar addition is not supported, and matrix addition is
-        supported only between block matrices with the same block sparsity.
+        `starts` and `stops` must both have length equal to the number of
+        rows. The interval for row ``i`` is ``[starts[i], stops[i])``. In
+        particular, ``0 <= starts[i] <= stops[i] <= n_cols`` is required
+        for all ``i``.
 
         This method requires the number of rows to be less than :math:`2^{31}`.
 
@@ -655,6 +914,19 @@ class BlockMatrix(object):
         :class:`.BlockMatrix`
             Sparse block matrix.
         """
+        n_rows = self.n_rows
+        n_cols = self.n_cols
+        if n_rows >= (1 << 31):
+            raise ValueError(f'n_rows must be less than 2^31, found {n_rows}')
+        if len(starts) != n_rows or len(stops) != n_rows:
+            raise ValueError(f'starts and stops must both have length {n_rows} (the number of rows)')
+        if any([start < 0 for start in starts]):
+            raise ValueError('all start values must be non-negative')
+        if any([stop > self.n_cols for stop in stops]):
+            raise ValueError(f'all stop values must be less than or equal to {n_cols} (the number of columns)')
+        if any([starts[i] > stops[i] for i in range(0, n_rows)]):
+            raise ValueError('every start value must be less than or equal to the corresponding stop value')
+
         return BlockMatrix(self._jbm.filterRowIntervals(
             jarray(Env.jvm().long, starts),
             jarray(Env.jvm().long, stops),
@@ -734,6 +1006,21 @@ class BlockMatrix(object):
         return np.fromfile(path).reshape((self.n_rows, self.n_cols))
 
     @property
+    def is_sparse(self):
+        """Returns ``True`` if block-sparse.
+
+        Notes
+        -----
+        A block matrix is block-sparse if at least of its blocks is dropped,
+        i.e. implicitly a block of zeros.
+
+        Returns
+        -------
+        :obj:`bool`
+        """
+        return self._jbm.gp().maybeBlocks().isDefined()
+
+    @property
     def T(self):
         """Matrix transpose.
 
@@ -742,6 +1029,15 @@ class BlockMatrix(object):
         :class:`.BlockMatrix`
         """
         return BlockMatrix(self._jbm.transpose())
+
+    def densify(self):
+        """Restore all dropped blocks as explicit blocks of zeros.
+
+        Returns
+        -------
+        :class:`.BlockMatrix`
+        """
+        return BlockMatrix(self._jbm.densify())
 
     def cache(self):
         """Persist this block matrix in memory.
@@ -1037,6 +1333,24 @@ class BlockMatrix(object):
         """
         return BlockMatrix(self._jbm.sqrt())
 
+    def abs(self):
+        """Element-wise absolute value.
+
+        Returns
+        -------
+        :class:`.BlockMatrix`
+        """
+        return BlockMatrix(self._jbm.abs())
+
+    def log(self):
+        """Element-wise natural logarithm.
+
+        Returns
+        -------
+        :class:`.BlockMatrix`
+        """
+        return BlockMatrix(self._jbm.log())
+
     def diagonal(self):
         """Extracts diagonal elements as ndarray.
 
@@ -1046,13 +1360,57 @@ class BlockMatrix(object):
         """
         return _ndarray_from_jarray(self._jbm.diagonal())
 
-    def entries(self):
-        """Returns a table with the coordinates and numeric value of each block matrix entry.
+    @typecheck_method(axis=nullable(int))
+    def sum(self, axis=None):
+        """Sums array elements over one or both axes.
 
         Examples
         --------
         >>> import numpy as np
-        >>> block_matrix = BlockMatrix.from_numpy(np.matrix([[5, 7], [2, 8]]), 2)
+        >>> nd = np.array([[ 1.0,  2.0,  3.0],
+        ...                [ 4.0,  5.0,  6.0]])
+        >>> bm = BlockMatrix.from_numpy(nd)
+        >>> bm.sum()
+        21.0
+
+        >>> bm.sum(axis=0).to_numpy()
+        array([[5., 7., 9.]])
+
+        >>> bm.sum(axis=1).to_numpy()
+        array([[ 6.],
+               [15.]])
+
+        Parameters
+        ----------
+        axis: :obj:`int`, optional
+            Axis over which to sum.
+            By default, sum all elements.
+            If ``0``, sum over rows.
+            If ``1``, sum over columns.
+
+        Returns
+        -------
+        :obj:`float` or :class:`BlockMatrix`
+            If None, returns a float.
+            If ``0``, returns a block matrix with a single row.
+            If ``1``, returns a block matrix with a single column.
+        """
+        if axis is None:
+            return self._jbm.sum()
+        elif axis == 0:
+            return BlockMatrix(self._jbm.rowSum())
+        elif axis == 1:
+            return BlockMatrix(self._jbm.colSum())
+        else:
+            raise ValueError(f'axis must be None, 0, or 1: found {axis}')
+
+    def entries(self):
+        """Returns a table with the indices and value of each block matrix entry.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> block_matrix = BlockMatrix.from_numpy(np.array([[5, 7], [2, 8]]), 2)
         >>> entries_table = block_matrix.entries()
         >>> entries_table.show()
         +-------+-------+-------------+
@@ -1066,10 +1424,21 @@ class BlockMatrix(object):
         |     1 |     1 | 8.00000e+00 |
         +-------+-------+-------------+
 
-        Warning
-        -------
+        Notes
+        -----
         The resulting table may be filtered, aggregated, and queried, but should only be
         directly exported to disk if the block matrix is very small.
+
+        For block-sparse matrices, only realized blocks are included. To force inclusion
+        of zeroes in dropped blocks, apply :meth:`densify` first.
+
+        The resulting table has the following fields:
+
+        - **i** (:py:data:`.tint64`, key field) -- Row index.
+
+        - **j** (:py:data:`.tint64`, key field) -- Column index.
+
+        - **entry** (:py:data:`.tfloat64`) -- Value of entry.
 
         Returns
         -------
@@ -1079,24 +1448,17 @@ class BlockMatrix(object):
         return Table(self._jbm.entriesTable(Env.hc()._jhc))
 
     @staticmethod
-    @typecheck(input=str,
-               output=str,
+    @typecheck(path_in=str,
+               path_out=str,
                delimiter=str,
                header=nullable(str),
                add_index=bool,
                parallel=nullable(enumeration('separate_header', 'header_per_shard')),
                partition_size=nullable(int),
                entries=enumeration('full', 'lower', 'strict_lower', 'upper', 'strict_upper'))
-    def export(input, output, delimiter='\t', header=None, add_index=False, parallel=None,
+    def export(path_in, path_out, delimiter='\t', header=None, add_index=False, parallel=None,
                partition_size=None, entries='full'):
         """Exports a stored block matrix as a delimited text file.
-
-        Warning
-        -------
-        The block matrix must be stored in row-major format, as results
-        from :meth:`.BlockMatrix.write` with ``force_row_major=True`` and from
-        :meth:`.BlockMatrix.write_from_entry_expr`. Otherwise,
-        :meth:`export` will produce an error message.
 
         Examples
         --------
@@ -1115,8 +1477,8 @@ class BlockMatrix(object):
         Export the upper-triangle of the matrix as a block gzipped file of
         comma-separated values.
 
-        >>> BlockMatrix.export(input='output/example.bm',
-        ...                    output='output/example.csv.bgz',
+        >>> BlockMatrix.export(path_in='output/example.bm',
+        ...                    path_out='output/example.csv.bgz',
         ...                    delimiter=',',
         ...                    entries='upper')
 
@@ -1124,8 +1486,8 @@ class BlockMatrix(object):
         gzipped files, each with a header line for columns ``idx``, ``A``,
         ``B``, and ``C``.
 
-        >>> BlockMatrix.export(input='output/example.bm',
-        ...                    output='output/example.gz',
+        >>> BlockMatrix.export(path_in='output/example.bm',
+        ...                    path_out='output/example.gz',
         ...                    header='\t'.join(['idx', 'A', 'B', 'C']),
         ...                    add_index=True,
         ...                    parallel='header_per_shard',
@@ -1143,6 +1505,13 @@ class BlockMatrix(object):
 
             idx A   B   C
             2   0.7 0.3 1.0
+
+        Warning
+        -------
+        The block matrix must be stored in row-major format, as results
+        from :meth:`.BlockMatrix.write` with ``force_row_major=True`` and from
+        :meth:`.BlockMatrix.write_from_entry_expr`. Otherwise,
+        :meth:`export` will fail.
 
         Notes
         -----
@@ -1206,9 +1575,9 @@ class BlockMatrix(object):
 
         Parameters
         ----------
-        input: :obj:`str`
+        path_in: :obj:`str`
             Path to input block matrix, stored row-major on disk.
-        output: :obj:`str`
+        path_out: :obj:`str`
             Path for export.
             Use extension ``.gz`` for gzip or ``.bgz`` for block gzip.
         delimiter: :obj:`str`
@@ -1234,21 +1603,222 @@ class BlockMatrix(object):
             Describes which entries to export. One of:
             ``'full'``, ``'lower'``, ``'strict_lower'``, ``'upper'``, ``'strict_upper'``.
         """
-        jrm = Env.hail().linalg.RowMatrix.readBlockMatrix(Env.hc()._jhc, input, joption(partition_size))
+        jrm = Env.hail().linalg.RowMatrix.readBlockMatrix(Env.hc()._jhc, path_in, joption(partition_size))
 
         export_type = Env.hail().utils.ExportType.getExportType(parallel)
 
         if entries == 'full':
-            jrm.export(output, delimiter, joption(header), add_index, export_type)
+            jrm.export(path_out, delimiter, joption(header), add_index, export_type)
         elif entries == 'lower':
-            jrm.exportLowerTriangle(output, delimiter, joption(header), add_index, export_type)
+            jrm.exportLowerTriangle(path_out, delimiter, joption(header), add_index, export_type)
         elif entries == 'strict_lower':
-            jrm.exportStrictLowerTriangle(output, delimiter, joption(header), add_index, export_type)
+            jrm.exportStrictLowerTriangle(path_out, delimiter, joption(header), add_index, export_type)
         elif entries == 'upper':
-            jrm.exportUpperTriangle(output, delimiter, joption(header), add_index, export_type)
+            jrm.exportUpperTriangle(path_out, delimiter, joption(header), add_index, export_type)
         else:
             assert entries == 'strict_upper'
-            jrm.exportStrictUpperTriangle(output, delimiter, joption(header), add_index, export_type)
+            jrm.exportStrictUpperTriangle(path_out, delimiter, joption(header), add_index, export_type)
+
+    @typecheck_method(rectangles=sequenceof(sequenceof(int)))
+    def sparsify_rectangles(self, rectangles):
+        """Filter to blocks overlapping the union of rectangular regions.
+
+        Examples
+        --------
+        Consider the following block matrix:
+
+        >>> import numpy as np
+        >>> nd = np.array([[ 1.0,  2.0,  3.0,  4.0],
+        ...                [ 5.0,  6.0,  7.0,  8.0],
+        ...                [ 9.0, 10.0, 11.0, 12.0],
+        ...                [13.0, 14.0, 15.0, 16.0]])
+        >>> bm = BlockMatrix.from_numpy(nd)
+
+        Filter to blocks covering three rectangles and collect to NumPy:
+
+        >>> bm.sparsify_rectangles([[0, 1, 0, 1], [0, 3, 0, 2], [1, 2, 0, 4]]).to_numpy()
+        array([[ 1.,  2.,  3.,  4.],
+               [ 5.,  6.,  7.,  8.],
+               [ 9., 10.,  0.,  0.],
+               [13., 14.,  0.,  0.]])
+
+        Notes
+        -----
+        This method creates a block-sparse matrix by zeroing out (dropping)
+        all blocks which are disjoint from the union of a set of rectangular
+        regions. Partially overlapping blocks are *not* modified.
+
+        Each rectangle is encoded as a list of length four of
+        the form ``[row_start, row_stop, col_start, col_stop]``,
+        where starts are inclusive and stops are exclusive.
+        These must satisfy ``0 <= row_start <= row_stop <= n_rows`` and
+        ``0 <= col_start <= col_stop <= n_cols``.
+
+        For example ``[0, 2, 1, 3]`` corresponds to the row-index range
+        ``[0, 2)`` and column-index range ``[1, 3)``, i.e. the elements at
+        positions ``(0, 1)``, ``(0, 2)``, ``(1, 1)``, and ``(1, 2)``.
+
+        The number of rectangles must be less than :math:`2^{29}`.
+
+        Parameters
+        ----------
+        rectangles: :obj:`list` of :obj:`list` of :obj:`int`
+            List of rectangles of the form
+            ``[row_start, row_stop, col_start, col_stop]``.
+
+        Returns
+        -------
+        :class:`.BlockMatrix`
+            Sparse block matrix.
+        """
+        n_rectangles = len(rectangles)
+        if n_rectangles >= (1 << 29):
+            raise ValueError(f'number of rectangles must be less than 2^29, found {n_rectangles}')
+
+        n_rows = self.n_rows
+        n_cols = self.n_cols
+        for r in rectangles:
+            if len(r) != 4:
+                raise ValueError(f'rectangle {r} does not have length 4')
+            if not (0 <= r[0] <= r[1] <= n_rows and 0 <= r[2] <= r[3] <= n_cols):
+                raise ValueError(f'rectangle {r} does not satisfy '
+                                 f'0 <= r[0] <= r[1] <= n_rows and 0 <= r[2] <= r[3] <= n_cols')
+
+        flattened_rectangles = jarray(Env.jvm().long, list(itertools.chain(*rectangles)))
+        return BlockMatrix(self._jbm.filterRectangles(flattened_rectangles))
+
+    @staticmethod
+    @typecheck(path_in=str,
+               path_out=str,
+               rectangles=sequenceof(sequenceof(int)),
+               delimiter=str,
+               n_partitions=nullable(int))
+    def export_rectangles(path_in, path_out, rectangles, delimiter='\t', n_partitions=None):
+        """Export rectangular regions from a stored block matrix to delimited text files.
+
+        Examples
+        --------
+        Consider the following block matrix:
+
+        >>> import numpy as np
+        >>> nd = np.array([[ 1.0,  2.0,  3.0,  4.0],
+        ...                [ 5.0,  6.0,  7.0,  8.0],
+        ...                [ 9.0, 10.0, 11.0, 12.0],
+        ...                [13.0, 14.0, 15.0, 16.0]])
+
+        Filter to the three rectangles and write.
+
+        >>> rectangles = [[0, 1, 0, 1], [0, 3, 0, 2], [1, 2, 0, 4]]
+        >>>
+        >>> (BlockMatrix.from_numpy(nd)
+        ...     .sparsify_rectangles(rectangles)
+        ...     .write('output/example.bm', force_row_major=True))
+
+        Export the three rectangles to TSV files:
+
+        >>> BlockMatrix.export_rectangles(
+        ...     path_in='output/example.bm',
+        ...     path_out='output/example',
+        ...     rectangles = rectangles)
+
+        This produces three files in the folder ``output/example``.
+
+        The first file is ``rect-0_0-1-0-1``:
+
+        .. code-block:: text
+
+            1.0
+
+        The second file is ``rect-1_0-3-0-2``:
+
+        .. code-block:: text
+
+            1.0 2.0
+            5.0 6.0
+            9.0 10.0
+
+        The third file is ``rect-2_1-2-0-4``:
+
+        .. code-block:: text
+
+            5.0 6.0 7.0 8.0
+
+        Warning
+        -------
+        The block matrix must be stored in row-major format, as results
+        from :meth:`.BlockMatrix.write` with ``force_row_major=True`` and
+        from :meth:`.BlockMatrix.write_from_entry_expr`. Otherwise,
+        :meth:`export` will fail.
+
+        Notes
+        -----
+        This method exports rectangular regions of a stored block matrix
+        to delimited text files, in parallel by region.
+
+        The block matrix can be sparse so long as all blocks overlapping
+        the rectangles are present, i.e. this method does not currently
+        support implicit zeros.
+
+        Each rectangle is encoded as a list of length four of
+        the form ``[row_start, row_stop, col_start, col_stop]``,
+        where starts are inclusive and stops are exclusive.
+        These must satisfy ``0 <= row_start <= row_stop <= n_rows`` and
+        ``0 <= col_start <= col_stop <= n_cols``.
+
+        For example ``[0, 2, 1, 3]`` corresponds to the row-index range
+        ``[0, 2)`` and column-index range ``[1, 3)``, i.e. the elements at
+        positions ``(0, 1)``, ``(0, 2)``, ``(1, 1)``, and ``(1, 2)``.
+
+        Each file name encodes the index of the rectangle in `rectangles`
+        and the bounds as formatted in the example.
+
+        The number of rectangles must be less than :math:`2^{29}`.
+
+        Parameters
+        ----------
+        path_in: :obj:`srt`
+            Path to input block matrix, stored row-major on disk.
+        path_out: :obj:`str`
+            Path for folder of exported files.
+        rectangles: :obj:`list` of :obj:`list` of :obj:`int`
+            List of rectangles of the form
+            ``[row_start, row_stop, col_start, col_stop]``.
+        delimiter: :obj:`str`
+            Column delimiter.
+        n_partitions: :obj:`int`, optional
+            Maximum parallelism of export.
+            Defaults to (and cannot exceed) the number of rectangles.
+        """
+        n_rectangles = len(rectangles)
+        if n_rectangles == 0:
+            raise ValueError('no rectangles provided')
+        if n_rectangles >= (1 << 29):
+            raise ValueError(f'number of rectangles must be less than 2^29, found {n_rectangles}')
+
+        if n_partitions is None:
+            n_partitions = n_rectangles
+        else:
+            if n_partitions > n_rectangles:
+                raise ValueError(
+                    f'n_partitions ({n_partitions}) cannot exceed the number of rectangles ({n_rectangles})')
+            elif n_partitions < 0:
+                raise ValueError(f'n_partitions must be positive, found {n_partitions}')
+
+        meta = Env.hail().linalg.BlockMatrix.readMetadata(Env.hc()._jhc, path_in)
+        n_rows = meta.nRows()
+        n_cols = meta.nCols()
+
+        for r in rectangles:
+            if len(r) != 4:
+                raise ValueError(f'rectangle {r} does not have length 4')
+            if not (0 <= r[0] <= r[1] <= n_rows and 0 <= r[2] <= r[3] <= n_cols):
+                raise ValueError(f'rectangle {r} does not satisfy '
+                                 f'0 <= r[0] <= r[1] <= n_rows and 0 <= r[2] <= r[3] <= n_cols')
+
+        flattened_rectangles = jarray(Env.jvm().long, list(itertools.chain(*rectangles)))
+
+        return Env.hail().linalg.BlockMatrix.exportRectangles(
+            Env.hc()._jhc, path_in, path_out, flattened_rectangles, delimiter, n_partitions)
 
 
 block_matrix_type.set(BlockMatrix)

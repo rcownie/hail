@@ -1,7 +1,7 @@
 package is.hail.expr.ir
 
 import is.hail.utils._
-import is.hail.expr.{BaseIR, FilterColsIR, MatrixFilterRowsIR, MatrixRead, TableFilter, TableMapGlobals, TableMapRows, TableRead, TableUnion}
+import is.hail.expr._
 
 object Simplify {
   private[this] def isStrict(x: IR): Boolean = {
@@ -66,7 +66,7 @@ object Simplify {
 
       case ArrayLen(MakeArray(args, _)) => I32(args.length)
 
-      case ArrayRef(MakeArray(args, _), I32(i)) => args(i)
+      case ArrayRef(MakeArray(args, _), I32(i)) if i >= 0 && i < args.length => args(i)
 
       case ArrayFilter(a, _, True()) => a
 
@@ -112,13 +112,19 @@ object Simplify {
           fields2.filter { case (name, _) => !fields1Set.contains(name) }
         MakeStruct(finalFields)
 
+      case GetField(SelectFields(old, fields), name) => GetField(old, name)
+
+      case SelectFields(MakeStruct(fields), fieldNames) =>
+        val makeStructFields = fields.toMap
+        MakeStruct(fieldNames.map(f => f -> makeStructFields(f)))
+
       case GetTupleElement(MakeTuple(xs), idx) => xs(idx)
 
       // optimize TableIR
       case TableFilter(t, True()) => t
 
-      case TableFilter(TableRead(path, spec, _), False() | NA(_)) =>
-        TableRead(path, spec, dropRows = true)
+      case TableFilter(TableRead(path, spec, typ, _), False() | NA(_)) =>
+        TableRead(path, spec, typ, dropRows = true)
 
       case TableFilter(TableFilter(t, p1), p2) =>
         TableFilter(t,
@@ -126,10 +132,18 @@ object Simplify {
 
       case TableCount(TableMapGlobals(child, _, _)) => TableCount(child)
 
-      case TableCount(TableMapRows(child, _, _)) => TableCount(child)
+      case TableCount(TableMapRows(child, _, _, _)) => TableCount(child)
 
       case TableCount(TableUnion(children)) =>
         children.map(TableCount).reduce[IR](ApplyBinaryPrimOp(Add(), _, _))
+
+      case TableCount(TableKeyBy(child, _, _, _)) => TableCount(child)
+
+      case TableCount(TableUnkey(child)) => TableCount(child)
+
+      case TableCount(TableRange(n, _)) => I64(n)
+
+      case TableCount(TableParallelize(_, rows, _)) => I64(rows.length)
 
         // flatten unions
       case TableUnion(children) if children.exists(_.isInstanceOf[TableUnion]) =>
@@ -146,6 +160,13 @@ object Simplify {
 
       case FilterColsIR(MatrixRead(typ, partitionCounts, _, dropRows, f), False() | NA(_)) =>
         MatrixRead(typ, partitionCounts, dropCols = true, dropRows, f)
+
+      // Ignore column or row data that is immediately dropped
+      case MatrixRowsTable(MatrixRead(typ, partitionCounts, false, dropRows, f)) =>
+        MatrixRowsTable(MatrixRead(typ, partitionCounts, dropCols = true, dropRows, f))
+
+      case MatrixColsTable(MatrixRead(typ, partitionCounts, dropCols, false, f)) =>
+        MatrixColsTable(MatrixRead(typ, partitionCounts, dropCols, dropRows = true, f))
 
       // Keep all rows/cols = do nothing
       case MatrixFilterRowsIR(m, True()) => m

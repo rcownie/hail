@@ -12,6 +12,9 @@ object UtilFunctions extends RegistryFunctions {
 
   def parseBoolean(s: String): Boolean = s.toBoolean
 
+  def min(a: IR, b: IR): IR = If(ApplyComparisonOp(LT(a.typ), a, b), a, b)
+  def max(a: IR, b: IR): IR = If(ApplyComparisonOp(GT(a.typ), a, b), a, b)
+
   def registerAll() {
     val thisClass = getClass
 
@@ -29,7 +32,13 @@ object UtilFunctions extends RegistryFunctions {
     registerIR("range", TInt32())(ArrayRange(I32(0), _, I32(1)))
 
     registerIR("annotate", tv("T", _.isInstanceOf[TStruct]), tv("U", _.isInstanceOf[TStruct])) { (s, annotations) =>
-      InsertFields(s, annotations.asInstanceOf[MakeStruct].fields)
+      annotations match {
+        case s2: MakeStruct => InsertFields(s, s2.fields)
+        case s2 =>
+          val styp = coerce[TStruct](s2.typ)
+          val struct = Ref(genUID(), styp)
+          Let(struct.name, s2, InsertFields(s, styp.fieldNames.map { n => n -> GetField(struct, n) } ))
+      }
     }
 
     registerCode("toInt32", TBoolean(), TInt32()) { (_, x: Code[Boolean]) => x.toI }
@@ -56,5 +65,8 @@ object UtilFunctions extends RegistryFunctions {
       val s = asm4s.coerce[String](wrapArg(mb, TString())(x))
       Code.invokeScalaObject[String, Boolean](thisClass, "parseBoolean", s)
     }
+
+    registerIR("min", tv("T"), tv("T"))(min)
+    registerIR("max", tv("T"), tv("T"))(max)
   }
 }

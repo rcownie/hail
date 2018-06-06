@@ -13,6 +13,7 @@ import is.hail.sparkextras.ContextRDD
 import is.hail.utils._
 import is.hail.variant._
 import org.apache.commons.lang3.StringUtils
+import org.apache.spark.Partitioner
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{DataFrame, Row, SQLContext}
@@ -59,17 +60,22 @@ object Table {
     Table(hc, df.rdd, signature, key)
   }
 
-  def read(hc: HailContext, path: String): Table = {
+  def read(hc: HailContext, path: String, rowFields: Set[String] = null): Table = {
+    val successFile = path + "/_SUCCESS"
+    if (!hc.hadoopConf.exists(path + "/_SUCCESS"))
+      fatal(s"write failed: file not found: $successFile")
 
     val spec = (RelationalSpec.read(hc, path): @unchecked) match {
       case ts: TableSpec => ts
       case _: MatrixTableSpec => fatal(s"file is a MatrixTable, not a Table: '$path'")
     }
 
-    val successFile = path + "/_SUCCESS"
-    if (!hc.hadoopConf.exists(path + "/_SUCCESS"))
-      fatal(s"write failed: file not found: $successFile")
-    new Table(hc, TableRead(path, spec, dropRows = false))
+    var typ = spec.table_type
+    if (rowFields != null)
+      typ = typ.copy(
+        rowType = typ.rowType.filter(rowFields)._1)
+
+    new Table(hc, TableRead(path, spec, typ, dropRows = false))
   }
 
   def parallelize(hc: HailContext, rowsJSON: String, signature: TStruct,
@@ -447,6 +453,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
         })
 
         val r = rdd.aggregate(zVals.map(_.copy()))(seqOp, combOp)
+        ec.set(0, globalsBc.value)
         resultOp(r)
 
         (f(), t)
@@ -526,18 +533,19 @@ class Table(val hc: HailContext, val tir: TableIR) {
     copy2(rvd = rvd.head(n))
   }
 
-  def keyBy(key: String*): Table = keyBy(key.toArray, key.toArray)
+  def keyBy(key: String*): Table = keyBy(key.toArray, null)
 
-  def keyBy(keys: java.util.ArrayList[String]): Table = keyBy(keys, keys)
+  def keyBy(keys: java.util.ArrayList[String]): Table =
+    keyBy(Option(keys).map(_.asScala.toArray), true)
 
   def keyBy(
     keys: java.util.ArrayList[String],
     partitionKeys: java.util.ArrayList[String]
   ): Table = keyBy(keys.asScala.toArray, partitionKeys.asScala.toArray)
 
-  def keyBy(keys: Array[String]): Table = keyBy(keys, keys, true)
+  def keyBy(keys: Array[String]): Table = keyBy(keys, sort = true)
 
-  def keyBy(keys: Array[String], sort: Boolean): Table = keyBy(keys, keys, sort)
+  def keyBy(keys: Array[String], sort: Boolean): Table = keyBy(keys, null, sort)
 
   def keyBy(maybeKeys: Option[Array[String]]): Table = keyBy(maybeKeys, true)
 
@@ -548,22 +556,22 @@ class Table(val hc: HailContext, val tir: TableIR) {
     }
 
   def keyBy(keys: Array[String], partitionKeys: Array[String], sort: Boolean = true): Table =
-    new Table(hc, TableKeyBy(tir, keys, partitionKeys.length, sort))
+    new Table(hc, TableKeyBy(tir, keys, Option(partitionKeys).map(_.length), sort))
 
   def unkey(): Table =
     new Table(hc, TableUnkey(tir))
 
-  def select(expr: String, newKey: java.util.ArrayList[String]): Table =
-    select(expr, Option(newKey).map(_.asScala.toFastIndexedSeq))
+  def select(expr: String, newKey: java.util.ArrayList[String], preservedKeyFields: java.lang.Integer): Table =
+    select(expr, Option(newKey).map(_.asScala.toFastIndexedSeq), Option(preservedKeyFields).map(_.toInt))
 
-  def select(expr: String, newKey: Option[IndexedSeq[String]]): Table = {
+  def select(expr: String, newKey: Option[IndexedSeq[String]], preservedKeyFields: Option[Int]): Table = {
     val ec = rowEvalContext()
     val ast = Parser.parseToAST(expr, ec)
     assert(ast.`type`.isInstanceOf[TStruct])
 
     ast.toIROpt() match {
       case Some(ir) if useIR(ast) =>
-        new Table(hc, TableMapRows(tir, ir, newKey))
+        new Table(hc, TableMapRows(tir, ir, newKey, preservedKeyFields))
       case _ =>
         val (t, f) = Parser.parseExpr(expr, ec)
         val newSignature = t.asInstanceOf[TStruct]
@@ -574,7 +582,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
           f().asInstanceOf[Row]
         }
 
-        copy(rdd = rdd.map(annotF), signature = newSignature, key = newKey.orElse(key))
+        copy(rdd = rdd.map(annotF), signature = newSignature, key = newKey)
     }
   }
 
@@ -586,13 +594,16 @@ class Table(val hc: HailContext, val tir: TableIR) {
   }
 
   def distinctByKey(): Table = {
-    require(!key.isEmpty)
-    copy2(rvd = toOrderedRVD(hintPartitioner = None, partitionKeys = key.get.length).distinctByKey())
+    require(key.isDefined)
+    val sorted = keyBy(key.get.toArray, sort = true)
+    sorted.copy2(rvd = sorted.rvd.asInstanceOf[OrderedRVD].distinctByKey())
   }
 
   def groupByKey(name: String): Table = {
-    require(!key.isEmpty)
-    copy2(rvd = toOrderedRVD(hintPartitioner = None, partitionKeys = key.get.length).groupByKey(name),
+    require(key.isDefined)
+    val sorted = keyBy(key.get.toArray, sort = true)
+    sorted.copy2(
+      rvd = sorted.rvd.asInstanceOf[OrderedRVD].groupByKey(name),
       signature = keySignature.get ++ TStruct(name -> TArray(valueSignature)))
   }
 
@@ -606,7 +617,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
     toMatrixTable(rowKeys.asScala.toArray, colKeys.asScala.toArray,
       rowFields.asScala.toArray, colFields.asScala.toArray,
       partitionKeys.asScala.toArray,
-      Option(nPartitions)
+      Option(nPartitions).map(_.asInstanceOf[Int])
     )
   }
 
@@ -861,8 +872,9 @@ class Table(val hc: HailContext, val tir: TableIR) {
     val newKey: Option[IndexedSeq[String]] = keyFieldIdx.map(_.flatMap { i =>
       newFields(i).map { case (n, _) => n }
     })
+    val preservedKeyFields = keyFieldIdx.map(_.takeWhile(i => newFields(i).length == 1).length)
 
-    new Table(hc, TableMapRows(tir, ir.MakeStruct(newFields.flatten), newKey))
+    new Table(hc, TableMapRows(tir, ir.MakeStruct(newFields.flatten), newKey, preservedKeyFields))
   }
 
   // expandTypes must be called before toDF
@@ -958,7 +970,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
     copy2(rvd = rvd.sample(withReplacement = false, p, seed))
   }
 
-  def index(name: String = "index"): Table = {
+  def index(name: String): Table = {
     if (fieldNames.contains(name))
       fatal(s"name collision: cannot index table, because column '$name' already exists")
 
@@ -1137,5 +1149,93 @@ class Table(val hc: HailContext, val tir: TableIR) {
     val orderedKTType = new OrderedRVDType(key.get.take(partitionKeys).toArray, key.get.toArray, signature)
     assert(hintPartitioner.forall(p => p.pkType.types.sameElements(orderedKTType.pkType.types)))
     OrderedRVD.coerce(orderedKTType, rvd, None, hintPartitioner)
+  }
+
+  def intervalJoin(other: Table, fieldName: String): Table = {
+    assert(other.keySignature.exists(s => s.size == 1 && s.types(0).isInstanceOf[TInterval]))
+    val intervalType = other.keySignature.get.types(0).asInstanceOf[TInterval]
+    assert(keySignature.exists(s => s.size == 1 && s.types(0) == intervalType.pointType))
+
+    val leftORVD = rvd match {
+      case ordered: OrderedRVD => ordered
+      case unordered =>
+        OrderedRVD.coerce(
+          new OrderedRVDType(key.get.toArray, key.get.toArray, signature),
+          unordered)
+    }
+
+    val typOrdering = intervalType.pointType.ordering
+
+    val typToInsert: Type = other.valueSignature
+
+    val (newRVType, ins) = signature.unsafeStructInsert(typToInsert, List(fieldName))
+
+    val partBc = hc.sc.broadcast(leftORVD.partitioner)
+    val rightSignature = other.signature
+    val rightKeyFieldIdx = other.keyFieldIdx.get(0)
+    val rightValueFieldIdx = other.valueFieldIdx
+    val partitionKeyedIntervals = other.rvd.boundary.crdd
+      .flatMap { rv =>
+        val r = SafeRow(rightSignature, rv)
+        val interval = r.getAs[Interval](rightKeyFieldIdx)
+        if (interval != null) {
+          val rangeTree = partBc.value.rangeTree
+          val pkOrd = partBc.value.pkType.ordering
+          val wrappedInterval = interval.copy(
+            start = Row(interval.start),
+            end = Row(interval.end))
+          rangeTree.queryOverlappingValues(pkOrd, wrappedInterval).map(i => (i, r))
+        } else
+          Iterator()
+      }
+
+    val nParts = rvd.getNumPartitions
+    val zipRDD = partitionKeyedIntervals.partitionBy(new Partitioner {
+      def getPartition(key: Any): Int = key.asInstanceOf[Int]
+
+      def numPartitions: Int = nParts
+    }).values
+
+    val localRVRowType = signature
+    val pkIndex = signature.fieldIdx(key.get(0))
+    val newTableType = typ.copy(rowType = newRVType)
+    val newOrderedRVType = new OrderedRVDType(key.get.toArray, key.get.toArray, newRVType)
+    val newRVD = leftORVD.zipPartitionsPreservesPartitioning(
+      newOrderedRVType,
+      zipRDD
+    ) { (it, intervals) =>
+      val intervalAnnotations: Array[(Interval, Any)] =
+        intervals.map { r =>
+          val interval = r.getAs[Interval](rightKeyFieldIdx)
+          (interval, Row.fromSeq(rightValueFieldIdx.map(r.get)))
+        }.toArray
+
+      val iTree = IntervalTree.annotationTree(typOrdering, intervalAnnotations)
+
+      val rvb = new RegionValueBuilder()
+      val rv2 = RegionValue()
+
+      it.map { rv =>
+        val ur = new UnsafeRow(localRVRowType, rv)
+        val pk = ur.get(pkIndex)
+        val queries = iTree.queryValues(typOrdering, pk)
+        val value = if (queries.isEmpty)
+          null
+        else
+          queries(0)
+        assert(typToInsert.typeCheck(value))
+
+        rvb.set(rv.region)
+        rvb.start(newRVType)
+
+        ins(rv.region, rv.offset, rvb, () => rvb.addAnnotation(typToInsert, value))
+
+        rv2.set(rv.region, rvb.end())
+
+        rv2
+      }
+    }
+
+    copy2(rvd = newRVD, signature = newRVType)
   }
 }

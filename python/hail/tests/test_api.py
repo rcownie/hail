@@ -375,6 +375,11 @@ class TableTests(unittest.TestCase):
 
         self.assertRaises(NotImplementedError, f)
 
+    def test_join_with_partition_key_from_mt(self):
+        mt = hl.import_vcf(resource('sample.vcf'))
+        rows = mt.rows()
+        rows.annotate(foo = rows[rows.key]).take(1)
+
     def test_joins(self):
         kt = hl.utils.range_table(1).key_by().drop('idx')
         kt = kt.annotate(a='foo')
@@ -419,6 +424,15 @@ class TableTests(unittest.TestCase):
 
         kt2 = kt2.annotate_globals(kt_foo=kt.index_globals().foo)
         self.assertEqual(kt2.globals.kt_foo.value, 5)
+
+    def test_interval_join(self):
+        left = hl.utils.range_table(50, n_partitions=10)
+        intervals = hl.utils.range_table(4)
+        intervals = intervals.key_by(interval = hl.interval(intervals.idx * 10, intervals.idx * 10 + 5))
+        left = left.annotate(interval_matches = intervals.index(left.key))
+        self.assertTrue(left.all(hl.case()
+                                 .when(left.idx % 10 < 5, left.interval_matches.idx == left.idx // 10)
+                                 .default(hl.is_missing(left.interval_matches))))
 
     def test_join_with_empty(self):
         kt = hl.utils.range_table(10)
@@ -512,7 +526,7 @@ class TableTests(unittest.TestCase):
         kt = hl.utils.range_table(10)
         kt = kt.annotate_globals(foo=5, fi=3)
         kt = kt.annotate(bar=45, baz=32).key_by('bar')
-        renamed = kt.rename({'foo': 'foo2', 'bar' : 'bar2'})
+        renamed = kt.rename({'foo': 'foo2', 'bar': 'bar2'})
         renamed.count()
 
         self.assertEqual(list(renamed.key), ['bar2'])
@@ -592,6 +606,11 @@ class TableTests(unittest.TestCase):
         self.assertEqual(list(t.key), ['idx'])
         
         self.assertEqual([r.idx for r in t.collect()], list(range(26)))
+
+    def test_issue_3654(self):
+        ht = hl.utils.range_table(10)
+        ht = ht.annotate(x = [1,2])
+        self.assertEqual(ht.aggregate(hl.agg.array_sum(ht.x) / [2, 2]), [5.0, 10.0])
 
 class MatrixTests(unittest.TestCase):
     def get_vds(self, min_partitions=None) -> hl.MatrixTable:
@@ -765,6 +784,26 @@ class MatrixTests(unittest.TestCase):
         vds = self.get_vds()
         vds = vds.drop_cols()
         self.assertEqual(vds.count_cols(), 0)
+
+    def test_explode_rows(self):
+        mt = hl.utils.range_matrix_table(4, 4)
+        mt = mt.annotate_entries(e = mt.row_idx * 10 + mt.col_idx)
+
+        self.assertTrue(mt.annotate_rows(x = [1]).explode_rows('x').drop('x')._same(mt))
+
+        self.assertEqual(mt.annotate_rows(x = hl.empty_array('int')).explode_rows('x').count_rows(), 0)
+        self.assertEqual(mt.annotate_rows(x = hl.null('array<int>')).explode_rows('x').count_rows(), 0)
+        self.assertEqual(mt.annotate_rows(x = hl.range(0, mt.row_idx)).explode_rows('x').count_rows(), 6)
+
+    def test_explode_cols(self):
+        mt = hl.utils.range_matrix_table(4, 4)
+        mt = mt.annotate_entries(e = mt.row_idx * 10 + mt.col_idx)
+
+        self.assertTrue(mt.annotate_cols(x = [1]).explode_cols('x').drop('x')._same(mt))
+
+        self.assertEqual(mt.annotate_cols(x = hl.empty_array('int')).explode_cols('x').count_cols(), 0)
+        self.assertEqual(mt.annotate_cols(x = hl.null('array<int>')).explode_cols('x').count_cols(), 0)
+        self.assertEqual(mt.annotate_cols(x = hl.range(0, mt.col_idx)).explode_cols('x').count_cols(), 6)
 
     def test_collect_cols_by_key(self):
         mt = hl.utils.range_matrix_table(3, 3)
@@ -1071,10 +1110,11 @@ class MatrixTests(unittest.TestCase):
                 ds._filter_partitions([0, 3, 7], keep=False))))
 
     def test_from_rows_table(self):
-        ds = hl.import_vcf(resource('sample.vcf'))
-        rt = ds.rows()
+        mt = hl.import_vcf(resource('sample.vcf'))
+        mt = mt.annotate_globals(foo = 'bar')
+        rt = mt.rows()
         rm = hl.MatrixTable.from_rows_table(rt, partition_key='locus')
-        self.assertTrue(rm._same(ds.drop_cols().select_entries().key_cols_by().select_cols()))
+        self.assertTrue(rm._same(mt.drop_cols().select_entries().key_cols_by().select_cols()))
 
     def test_sample_rows(self):
         ds = self.get_vds()
@@ -1400,7 +1440,6 @@ class FunctionsTests(unittest.TestCase):
             exp=hl.exp(kt.c),
             fet=hl.fisher_exact_test(kt.a, kt.b, kt.c, kt.d),
             hwe=hl.hardy_weinberg_p(1, 2, 1),
-            index=hl.index(kt.g, 'z'),
             is_defined=hl.is_defined(kt.i),
             is_missing=hl.is_missing(kt.i),
             is_nan=hl.is_nan(hl.float64(kt.a)),

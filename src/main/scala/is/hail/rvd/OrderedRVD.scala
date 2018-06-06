@@ -99,7 +99,6 @@ class OrderedRVD(
 
     require(ordType.rowType == typ.rowType)
     require(ordType.kType isPrefixOf typ.kType)
-    require(newPartitioner.pkType isIsomorphicTo ordType.pkType)
 
     new OrderedRVD(
       typ = ordType,
@@ -774,7 +773,7 @@ object OrderedRVD {
     val localType = typ
     val partBc = partitioner.broadcast(crdd.sparkContext)
     val enc = RVD.wireCodec.buildEncoder(localType.rowType)
-    val dec = RVD.wireCodec.buildDecoder(localType.rowType)
+    val dec = RVD.wireCodec.buildDecoder(localType.rowType, localType.rowType)
     OrderedRVD(typ,
       partitioner,
       crdd.cmapPartitions { (ctx, it) =>
@@ -890,7 +889,7 @@ object OrderedRVD {
     codec: CodecSpec,
     rdd: RDD[Array[Byte]]
   ): OrderedRVD = {
-    val dec = codec.buildDecoder(typ.rowType)
+    val dec = codec.buildDecoder(typ.rowType, typ.rowType)
     apply(
       typ,
       partitioner,

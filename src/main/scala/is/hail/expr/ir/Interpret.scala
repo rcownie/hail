@@ -1,6 +1,6 @@
 package is.hail.expr.ir
 
-import is.hail.HailContext
+import is.hail.{HailContext, stats}
 import is.hail.annotations.aggregators.RegionValueAggregator
 import is.hail.annotations._
 import is.hail.expr.{SymbolTable, TypedAggregator}
@@ -39,8 +39,8 @@ object Interpret {
     apply(ir, valueEnv, args, agg, None).asInstanceOf[T]
   }
 
-  private def apply(ir: IR, env: Env[Any], args: IndexedSeq[Any], agg: Option[Agg], aggregator: Option[TypedAggregator[Any]]): Any = {
-    def interpret(ir: IR, env: Env[Any] = env, args: IndexedSeq[Any] = args, agg: Option[Agg] = agg, aggregator: Option[TypedAggregator[Any]] = aggregator): Any =
+  private def apply(ir: IR, env: Env[Any], args: IndexedSeq[(Any, Type)], agg: Option[Agg], aggregator: Option[TypedAggregator[Any]]): Any = {
+    def interpret(ir: IR, env: Env[Any] = env, args: IndexedSeq[(Any, Type)] = args, agg: Option[Agg] = agg, aggregator: Option[TypedAggregator[Any]] = aggregator): Any =
       apply(ir, env, args, agg, aggregator)
     ir match {
       case I32(x) => x
@@ -181,8 +181,14 @@ object Interpret {
         val iValue = interpret(i, env, args, agg)
         if (aValue == null || iValue == null)
           null
-        else
-          aValue.asInstanceOf[IndexedSeq[Any]].apply(iValue.asInstanceOf[Int])
+        else {
+          val a = aValue.asInstanceOf[IndexedSeq[Any]]
+          val i = iValue.asInstanceOf[Int]
+          if (i < 0 || i >= a.length)
+            fatal(s"array index out of bounds: $i / ${ a.length }")
+          else
+            a.apply(i)
+        }
       case ArrayLen(a) =>
         val aValue = interpret(a, env, args, agg)
         if (aValue == null)
@@ -193,16 +199,25 @@ object Interpret {
         val startValue = interpret(start, env, args, agg)
         val stopValue = interpret(stop, env, args, agg)
         val stepValue = interpret(step, env, args, agg)
+        if (stepValue == 0)
+          fatal("Array range cannot have step size 0.")
         if (startValue == null || stopValue == null || stepValue == null)
           null
         else
           startValue.asInstanceOf[Int] until stopValue.asInstanceOf[Int] by stepValue.asInstanceOf[Int]
-      case ArraySort(a) =>
+      case ArraySort(a, ascending) =>
         val aValue = interpret(a, env, args, agg)
+        val ascendingValue = interpret(ascending, env, args, agg)
         if (aValue == null)
           null
-        else
-          aValue.asInstanceOf[IndexedSeq[Any]].sorted(a.typ.ordering.toOrdering)
+        else {
+          val ord =
+            if (ascendingValue == null || ascendingValue.asInstanceOf[Boolean])
+              a.typ.asInstanceOf[TArray].elementType.ordering
+            else
+              a.typ.asInstanceOf[TArray].elementType.ordering.reverse
+          aValue.asInstanceOf[IndexedSeq[Any]].sorted(ord.toOrdering)
+        }
       case ToSet(a) =>
         val aValue = interpret(a, env, args, agg)
         if (aValue == null)
@@ -223,7 +238,7 @@ object Interpret {
         else
           cValue match {
             case s: Set[_] => s.toIndexedSeq
-            case d: Map[_, _] => d.toIndexedSeq
+            case d: Map[_, _] => d.iterator.map { case (k, v) => Row(k, v) }.toFastIndexedSeq
             case a => a
           }
 
@@ -325,6 +340,8 @@ object Interpret {
               case TInt64(_) => new SumAggregator[Long]()
               case TFloat32(_) => new SumAggregator[Float]()
               case TFloat64(_) => new SumAggregator[Double]()
+              case TArray(TInt64(_), _) => new SumArrayAggregator[Long]()
+              case TArray(TFloat64(_), _) => new SumArrayAggregator[Double]()
             }
           case Max() =>
             aggType match {
@@ -398,8 +415,25 @@ object Interpret {
           null
         else
           oValue.asInstanceOf[Row].get(idx)
-      case In(i, _) => args(i)
-      case Die(message) => fatal(message)
+      case StringSlice(s, start, end) =>
+        val Array(maybeString, vstart: Int, vend: Int) =
+          Array(s, start, end).map(interpret(_, env, args, agg))
+        if (maybeString == null)
+          null
+        else {
+          val vs = maybeString.asInstanceOf[String]
+          if (vstart < 0 || vstart > vend || vend > vs.length)
+            fatal(s"""string slice out of bounds or invalid: "$vs"[$vstart:$vend]""")
+          else
+            vs.substring(vstart, vend)
+        }
+      case StringLength(s) =>
+        val vs = interpret(s).asInstanceOf[String]
+        if (vs == null) null else vs.getBytes().length
+      case In(i, _) =>
+        val (a, _) = args(i)
+        a
+      case Die(message, typ) => fatal(message)
       case ir@ApplyIR(function, functionArgs, conversion) =>
         interpret(ir.explicitNode, env, args, agg)
       case ir@Apply(function, functionArgs) =>
@@ -451,6 +485,12 @@ object Interpret {
           SafeRow(TTuple(ir.implementation.returnType), region, resultOffset)
             .get(0)
         }
+      case Uniroot(functionid, fn, minIR, maxIR) =>
+        val f = { x: Double => interpret(fn, env.bind(functionid, x), args, agg).asInstanceOf[Double] }
+        val min = interpret(minIR, env, args, agg)
+        val max = interpret(maxIR, env, args, agg)
+        stats.uniroot(f, min.asInstanceOf[Double], max.asInstanceOf[Double]).orNull
+
       case TableCount(child) =>
         child.partitionCounts
           .map(_.sum)

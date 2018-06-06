@@ -13,15 +13,14 @@ def range_matrix_table(n_rows, n_cols, n_partitions=None) -> 'hail.MatrixTable':
 
     Examples
     --------
-    .. doctest::
 
-        >>> range_ds = hl.utils.range_matrix_table(n_rows=100, n_cols=10)
+    >>> range_ds = hl.utils.range_matrix_table(n_rows=100, n_cols=10)
 
-        >>> range_ds.count_rows()
-        100
+    >>> range_ds.count_rows()
+    100
 
-        >>> range_ds.count_cols()
-        10
+    >>> range_ds.count_cols()
+    10
 
     Notes
     -----
@@ -48,10 +47,10 @@ def range_matrix_table(n_rows, n_cols, n_partitions=None) -> 'hail.MatrixTable':
     -------
     :class:`.MatrixTable`
     """
-    check_positive('range_matrix_table', 'n_rows', n_rows)
-    check_positive('range_matrix_table', 'n_cols', n_cols)
+    check_positive_and_in_range('range_matrix_table', 'n_rows', n_rows)
+    check_positive_and_in_range('range_matrix_table', 'n_cols', n_cols)
     if n_partitions is not None:
-        check_positive('range_matrix_table', 'n_partitions', n_partitions)
+        check_positive_and_in_range('range_matrix_table', 'n_partitions', n_partitions)
     return hail.MatrixTable(Env.hail().variant.MatrixTable.range(Env.hc()._jhc, n_rows, n_cols, joption(n_partitions)))
 
 @typecheck(n=int, n_partitions=nullable(int))
@@ -60,12 +59,11 @@ def range_table(n, n_partitions=None) -> 'hail.Table':
 
     Examples
     --------
-    .. doctest::
 
-        >>> df = hl.utils.range_table(100)
+    >>> df = hl.utils.range_table(100)
 
-        >>> df.count()
-        100
+    >>> df.count()
+    100
 
     Notes
     -----
@@ -87,15 +85,18 @@ def range_table(n, n_partitions=None) -> 'hail.Table':
     -------
     :class:`.Table`
     """
-    check_positive('range_table', 'n', n)
+    check_positive_and_in_range('range_table', 'n', n)
     if n_partitions is not None:
-        check_positive('range_table', 'n_partitions', n_partitions)
+        check_positive_and_in_range('range_table', 'n_partitions', n_partitions)
 
     return hail.Table(Env.hail().table.Table.range(Env.hc()._jhc, n, joption(n_partitions)))
 
-def check_positive(caller, name, value):
+def check_positive_and_in_range(caller, name, value):
     if value <= 0:
         raise ValueError(f"'{caller}': parameter '{name}' must be positive, found {value}")
+    elif value > hail.tint32.max_value:
+        raise ValueError(f"'{caller}': parameter '{name}' must be less than or equal to {hail.tint32.max_value}, "
+                         f"found {value}")
 
 def wrap_to_list(s):
     if isinstance(s, list):

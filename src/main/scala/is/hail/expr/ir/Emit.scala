@@ -3,6 +3,7 @@ package is.hail.expr.ir
 import is.hail.asm4s._
 import is.hail.annotations._
 import is.hail.annotations.aggregators._
+import is.hail.expr.ir.functions.MathFunctions
 import is.hail.expr.types._
 import is.hail.utils._
 
@@ -316,36 +317,51 @@ private class Emit(
 
         EmitTriplet(setup, xmv, Code(
           len := tarray.loadLength(region, xa),
-          (xi < len).mux(
+          (xi < len && xi >= 0).mux(
             region.loadIRIntermediate(typ)(tarray.elementOffset(xa, len, xi)),
             Code._fatal(
               const("array index out of bounds: ")
-                .invoke[String, String]("concat", xi.load().toS)
-                .invoke[String, String]("concat", " / ")
-                .invoke[String, String]("concat", len.load().toS)
+                .concat(xi.load().toS)
+                .concat(" / ")
+                .concat(len.load().toS)
+                .concat(". IR: ")
+                .concat(Pretty(x))
             ))))
       case ArrayLen(a) =>
         val codeA = emit(a)
         strict(TContainer.loadLength(region, coerce[Long](codeA.v)), codeA)
 
-      case _: ArraySort | _: ToSet | _: ToDict =>
-        val a = ir.children(0).asInstanceOf[IR]
-        val atyp = coerce[TArray](a.typ)
+      case x@(_: ArraySort | _: ToSet | _: ToDict) =>
+        val (a, ascending: IR, keyOnly) = x match {
+          case ArraySort(a, ascending) => (a, ascending, false)
+          case ToSet(a) => (a, True(), false)
+          case ToDict(a) => (a, True(), true)
+        }
+        val atyp = coerce[TContainer](ir.typ)
+
+        val xAsc = mb.newLocal[Boolean]()
+        val codeAsc = emit(ascending)
 
         val aout = emitArrayIterator(a)
         val vab = new StagedArrayBuilder(atyp.elementType, mb, 16)
-        val sorter = new ArraySorter(mb, vab, keyOnly = ir.isInstanceOf[ToDict])
+        val sorter = new ArraySorter(mb, vab, keyOnly = keyOnly)
 
         val cont = { (m: Code[Boolean], v: Code[_]) =>
           m.mux(vab.addMissing(), vab.add(v))
         }
 
         val processArrayElts = aout.arrayEmitter(cont)
-        EmitTriplet(processArrayElts.setup, processArrayElts.m.getOrElse(const(false)), Code(
-          vab.clear,
-          aout.calcLength,
-          processArrayElts.addElements,
-          sorter.sortIntoRegion(distinct = !ir.isInstanceOf[ArraySort])))
+        EmitTriplet(
+          Code(
+            processArrayElts.setup,
+            codeAsc.setup,
+            xAsc := coerce[Boolean](codeAsc.m.mux(true, codeAsc.v))),
+          processArrayElts.m.getOrElse(const(false)),
+          Code(
+            vab.clear,
+            aout.calcLength,
+            processArrayElts.addElements,
+            sorter.sortIntoRegion(ascending = xAsc, distinct = !ir.isInstanceOf[ArraySort])))
 
       case ToArray(a) =>
         emit(a)
@@ -581,7 +597,7 @@ private class Emit(
           Code(codeI.setup, codeA.setup,
             codeI.m.mux(
               Code._empty,
-               agg.seqOp(aggregator(coerce[Int](codeI.v)), codeA.v, codeA.m))),
+               agg.seqOp(region, aggregator(coerce[Int](codeI.v)), codeA.v, codeA.m))),
           const(false),
           Code._empty)
 
@@ -714,12 +730,56 @@ private class Emit(
           xmo || !t.isFieldDefined(region, xo, idx),
           region.loadIRIntermediate(t.types(idx))(t.fieldOffset(xo, idx)))
 
+      case StringSlice(s, start, end) =>
+        val t = coerce[TString](s.typ)
+        val cs = emit(s)
+        val cstart = emit(start)
+        val cend = emit(end)
+        val vs = mb.newLocal[Long]()
+        val vstart = mb.newLocal[Int]()
+        val vend = mb.newLocal[Int]()
+        val vlen = mb.newLocal[Int]()
+        val vnewLen = mb.newLocal[Int]()
+        val checks = Code(
+          vs := coerce[Long](cs.v),
+          vstart := coerce[Int](cstart.v),
+          vend := coerce[Int](cend.v),
+          vlen := TString.loadLength(region, vs),
+          ((vstart < 0) || (vstart > vend) || (vend > vlen)).mux(
+            Code._fatal(
+              const("string slice out of bounds or invalid: \"")
+                .concat(TString.loadString(region, vs))
+                .concat("\"[")
+                .concat(vstart.toS)
+                .concat(":")
+                .concat(vend.toS)
+                .concat("]")
+            ),
+            Code._empty)
+        )
+        val sliced = Code(
+          vnewLen := (vend - vstart),
+          // if vstart = vlen = vend, then we want an empty string, but memcpy
+          // with a pointer one past the end of the allocated region is probably
+          // not safe, so for *all* empty slices, we just inline the code to
+          // stick the length (the contents is size zero so we needn't allocate
+          // for it or really do anything)
+          vnewLen.ceq(0).mux(
+            region.appendInt(0),
+            region.appendStringSlice(region, vs, vstart, vnewLen)))
+        strict(Code(checks, sliced), cs, cstart, cend)
+
+      case StringLength(s) =>
+        val t = coerce[TString](s.typ)
+        val cs = emit(s)
+        strict(TString.loadLength(region, coerce[Long](cs.v)), cs)
+
       case In(i, typ) =>
         EmitTriplet(Code._empty,
           mb.getArg[Boolean](normalArgumentPosition(i) + 1),
           mb.getArg(normalArgumentPosition(i))(typeToTypeInfo(typ)))
-      case Die(m) =>
-        present(Code._throw(Code.newInstance[RuntimeException, String](m)))
+      case Die(m, typ) =>
+        present(Code._throw(Code.newInstance[HailException, String](m)))
       case ir@ApplyIR(fn, args, conversion) =>
         emit(ir.explicitNode)
       case ir@Apply(fn, args) =>
@@ -746,7 +806,60 @@ private class Emit(
         val unified = x.implementation.unify(args.map(_.typ))
         assert(unified)
         x.implementation.apply(mb, args.map(emit(_)): _*)
+      case x@Uniroot(argname, fn, min, max) =>
+        val missingError = s"result of function missing in call to uniroot; must be defined along entire interval"
+        val asmfunction = getAsDependentFunction[Double, Double](fn, argname, env, mb.fb, missingError)
+
+        val localF = mb.newField[AsmFunction3[Region, Double, Boolean, Double]]
+        val codeMin = emit(min)
+        val codeMax = emit(max)
+
+        val res = mb.newLocal[java.lang.Double]
+
+        val setup = Code(codeMin.setup, codeMax.setup)
+        val m = Code(
+          localF := asmfunction.newInstance(),
+          res := Code.invokeScalaObject[Region, AsmFunction3[Region, Double, Boolean, Double], Double, Double, java.lang.Double](
+            MathFunctions.getClass,
+            "iruniroot", region, localF, codeMin.value[Double], codeMax.value[Double]),
+          res.isNull)
+
+        EmitTriplet(setup, m, res.invoke[Double]("doubleValue"))
     }
+  }
+
+  private def getAsDependentFunction[A1 : TypeInfo, R : TypeInfo](
+    ir: IR, argname: String, env: Emit.E, fb: EmitFunctionBuilder[_], errorMsg: String
+  ): DependentFunction[AsmFunction3[Region, A1, Boolean, R]] = {
+    var ids = Set[String]()
+    def getReferenced: IR => IR = {
+      case Ref(id, typ) if id == argname =>
+        In(0, typ)
+      case node@Ref(id, _) if env.lookupOption(id).isDefined =>
+        ids += id
+        node
+      case node => Recur(getReferenced)(node)
+    }
+
+    val f = fb.newDependentFunction[Region, A1, Boolean, R]
+
+    val newIR = getReferenced(ir)
+    val newEnv = ids.foldLeft(
+      Env.empty[(TypeInfo[_], Code[Boolean], Code[_])]) { (e: Emit.E, id: String) =>
+      val (ti, m, v) = env.lookup(id)
+      val newM = f.addField[Boolean](m)
+      val newV = f.addField(v)(ti.asInstanceOf[TypeInfo[Any]])
+      e.bind(id, (ti, newM.load(), newV.load()))
+    }
+
+    val foo = new Emit(f.apply_method, 1)
+    val EmitTriplet(setup, m, v) = foo.emit(newIR, newEnv)
+
+    val call = Code(
+      setup,
+      m.mux(Code._fatal(errorMsg), v))
+    f.emit(call)
+    f
   }
 
   private def emitArrayIterator(ir: IR, env: E): ArrayIteratorTriplet = {
@@ -778,10 +891,9 @@ private class Emit(
           step.ceq(0).mux(
             Code._fatal("Array range cannot have step size 0."),
             Code._empty[Unit]),
-          llen := start.ceq(stop).mux(0L,
-            (step < 0).mux(
-              (start.toL - stop.toL - 1L) / (-step).toL + 1L,
-              (stop.toL - start.toL - 1L) / step.toL + 1L)),
+          llen := (step < 0).mux(
+              (start <= stop).mux(0L, (start.toL - stop.toL - 1L) / (-step).toL + 1L),
+              (start >= stop).mux(0L, (stop.toL - start.toL - 1L) / step.toL + 1L)),
           (llen > const(Int.MaxValue.toLong)).mux(
             Code._fatal("Array range cannot have more than MAXINT elements."),
             len := (llen < 0L).mux(0L, llen).toI)

@@ -18,19 +18,9 @@ from hail.utils.misc import *
 class GroupedMatrixTable(ExprContainer):
     """Matrix table grouped by row or column that can be aggregated into a new matrix table.
 
-    There are only two operations on a grouped matrix table, :meth:`.GroupedMatrixTable.partition_hint`
-    and :meth:`.GroupedMatrixTable.aggregate`.
+    The main operation on a grouped matrix table is :meth:`.GroupedMatrixTable.aggregate`.
 
-    .. testsetup::
-
-        dataset2 = dataset.annotate_globals(global_field=5)
-        table1 = dataset.rows()
-        table1 = table1.annotate_globals(global_field=5)
-        table1 = table1.annotate(consequence='SYN')
-
-        table2 = dataset.cols()
-        table2 = table2.annotate(pop='AMR', is_case=False, sex='F')
-
+    A grouped matrix table with a non-trivial grouping cannot be grouped again.
     """
 
     def __init__(self, parent: 'MatrixTable', row_keys=None, col_keys=None):
@@ -175,10 +165,6 @@ class GroupedMatrixTable(ExprContainer):
         --------
         Aggregate to a matrix with cohort as column keys, computing the call rate
         as an entry field:
-
-        .. testsetup::
-
-            dataset = dataset.annotate_cols(cohort = 'cohort')
 
         >>> dataset_result = (dataset.group_cols_by(dataset.cohort)
         ...                          .aggregate(call_rate = agg.fraction(hl.is_defined(dataset.GT))))
@@ -341,16 +327,15 @@ class GroupedMatrixTable(ExprContainer):
         if self._col_keys is not None:
             assert self._new_col_keys is not None
             base = MatrixTable(base.key_cols_by(*self._new_col_keys)._jvds
-                               .groupColsBy(','.join(["`{}` = sa.`{}`".format(k, k) for k in self._new_col_keys]),
-                                            ',\n'.join(strs)))
+                               .aggregateColsByKey(hl.struct(**named_exprs)._ast.to_hql()))
         elif self._row_keys is not None:
             if self._partition_key is None:
                 self._partition_key = self._row_keys.keys()
             pk = {k: self._row_keys[k] for k in self._partition_key}
             rest_of_key = {k: self._row_keys[k] for k in self._row_keys.keys() if k not in self._partition_key}
             base = MatrixTable(
-                base._key_rows_by("GroupedMatrixTable.group_rows_by", pk, rest_of_key)._jvds.aggregateRowsByKey(
-                    ',\n'.join(strs)))
+                base._key_rows_by("GroupedMatrixTable.aggregate", pk, rest_of_key)
+                ._jvds.aggregateRowsByKey(hl.struct(**named_exprs)._ast.to_hql(), ',\n'.join(strs)))
         else:
             raise ValueError("GroupedMatrixTable cannot be aggregated if no groupings are specified.")
 
@@ -368,16 +353,6 @@ class MatrixTable(ExprContainer):
 
     Examples
     --------
-
-    .. testsetup::
-
-        dataset2 = dataset.annotate_globals(global_field=5)
-        table1 = dataset.rows()
-        table1 = table1.annotate_globals(global_field=5)
-        table1 = table1.annotate(consequence='SYN')
-
-        table2 = dataset.cols()
-        table2 = table2.annotate(pop='AMR', is_case=False, sex='F')
 
     Add annotations:
 
@@ -469,12 +444,10 @@ class MatrixTable(ExprContainer):
                                     self._entry.items()):
             self._set_field(k, v)
 
-    @typecheck_method(item=oneof(str, sized_tupleof(oneof(slice, Expression, tupleof(Expression)),
-                                                    oneof(slice, Expression, tupleof(Expression)))))
     def __getitem__(self, item):
         if isinstance(item, str):
             return self._get_field(item)
-        else:
+        elif isinstance(item, tuple) and len(item) == 2:
             # this is the join path
             exprs = item
             row_key = None
@@ -505,25 +478,32 @@ class MatrixTable(ExprContainer):
             else:
                 col_key = wrap_to_tuple(exprs[1])
 
-            if row_key is not None and col_key is not None:
-                return self.index_entries(row_key, col_key)
-            elif row_key is not None and col_key is None:
-                warnings.warn('The mt[<row keys>, :] syntax is deprecated, and will be removed before 0.2 release.\n'
-                              '  Use one of the following instead:\n'
-                              '    mt.rows()[<row keys>]\n'
-                              '    mt.index_rows(<row keys>)', stacklevel=2)
-                return self.index_rows(*row_key)
-            elif row_key is None and col_key is not None:
-                warnings.warn('The mt[:, <col keys>] syntax is deprecated, and will be removed before 0.2 release.\n'
-                              '  Use one of the following instead:\n'
-                              '    mt.cols()[<col keys>]\n'
-                              '    mt.index_cols(<col keys>)', stacklevel=2)
-                return self.index_cols(*col_key)
-            else:
-                warnings.warn('The mt[:, :] syntax is deprecated, and will be removed before 0.2 release.\n'
-                              '  Use the following instead:\n'
-                              '    mt.index_globals()', stacklevel=2)
-                return self.index_globals()
+            if ((row_key is None or all(isinstance(e, Expression) for e in row_key)) and
+                    (col_key is None or all(isinstance(e, Expression) for e in col_key))):
+                if row_key is not None and col_key is not None:
+                    return self.index_entries(row_key, col_key)
+                elif row_key is not None and col_key is None:
+                    warnings.warn(
+                        'The mt[<row keys>, :] syntax is deprecated, and will be removed before 0.2 release.\n'
+                        '  Use one of the following instead:\n'
+                        '    mt.rows()[<row keys>]\n'
+                        '    mt.index_rows(<row keys>)', stacklevel=2)
+                    return self.index_rows(*row_key)
+                elif row_key is None and col_key is not None:
+                    warnings.warn(
+                        'The mt[:, <col keys>] syntax is deprecated, and will be removed before 0.2 release.\n'
+                        '  Use one of the following instead:\n'
+                        '    mt.cols()[<col keys>]\n'
+                        '    mt.index_cols(<col keys>)', stacklevel=2)
+                    return self.index_cols(*col_key)
+                else:
+                    warnings.warn('The mt[:, :] syntax is deprecated, and will be removed before 0.2 release.\n'
+                                  '  Use the following instead:\n'
+                                  '    mt.index_globals()', stacklevel=2)
+                    return self.index_globals()
+        raise ValueError(f"'MatrixTable.__getitem__' (mt[...]): Usage:\n"
+                         f"  Select a field: mt['Field name']\n"
+                         f"  index_entries shorthand: mt[(row keys), (col keys)]")
 
     @property
     def col_key(self):
@@ -534,10 +514,8 @@ class MatrixTable(ExprContainer):
 
         Get the column key field names:
 
-        .. doctest::
-
-            >>> list(dataset.col_key)
-            ['s']
+        >>> list(dataset.col_key)
+        ['s']
 
         Returns
         -------
@@ -554,10 +532,8 @@ class MatrixTable(ExprContainer):
 
         Get the row key field names:
 
-        .. doctest::
-
-            >>> list(dataset.row_key)
-            ['locus', 'alleles']
+        >>> list(dataset.row_key)
+        ['locus', 'alleles']
 
         Returns
         -------
@@ -574,10 +550,8 @@ class MatrixTable(ExprContainer):
 
         Get the partition key field names:
 
-        .. doctest::
-
-            >>> list(dataset.partition_key)
-            ['locus']
+        >>> list(dataset.partition_key)
+        ['locus']
 
         Returns
         -------
@@ -845,7 +819,7 @@ class MatrixTable(ExprContainer):
         Add global fields from another table and matrix table:
 
         >>> dataset_result = dataset.annotate_globals(thing1 = dataset2.index_globals().global_field,
-        ...                                           thing2 = table1.index_globals().global_field)
+        ...                                           thing2 = v_metadata.index_globals().global_field)
 
         Note
         ----
@@ -893,7 +867,7 @@ class MatrixTable(ExprContainer):
         Add functional annotations from a :class:`.Table` keyed by :class:`.TVariant`:, and another
         :class:`.MatrixTable`.
 
-        >>> dataset_result = dataset.annotate_rows(consequence = table1[dataset.locus, dataset.alleles].consequence,
+        >>> dataset_result = dataset.annotate_rows(consequence = v_metadata[dataset.locus, dataset.alleles].consequence,
         ...                                        dataset2_AF = dataset2.index_rows(dataset.row_key).info.AF)
 
         Note
@@ -941,7 +915,7 @@ class MatrixTable(ExprContainer):
 
         Add sample metadata from a :class:`.hail.Table`.
 
-        >>> dataset_result = dataset.annotate_cols(population = table2[dataset.s].pop)
+        >>> dataset_result = dataset.annotate_cols(population = s_metadata[dataset.s].pop)
 
         Note
         ----
@@ -1031,10 +1005,6 @@ class MatrixTable(ExprContainer):
         Examples
         --------
         Select one existing field and compute a new one:
-
-        .. testsetup::
-
-            dataset = dataset.annotate_globals(global_field_1 = 5, global_field_2 = 10)
 
         >>> dataset_result = dataset.select_globals(dataset.global_field_1,
         ...                                         another_global=['AFR', 'EUR', 'EAS', 'AMR', 'SAS'])
@@ -1559,6 +1529,10 @@ class MatrixTable(ExprContainer):
 
         Note
         ----
+        :meth:`transmute_rows` will not drop key fields.
+
+        Note
+        ----
         This method supports aggregation over columns.
 
         See Also
@@ -1592,6 +1566,10 @@ class MatrixTable(ExprContainer):
         drops all column fields referenced in those expressions. See
         :meth:`.Table.transmute` for full documentation on how transmute
         methods work.
+
+        Note
+        ----
+        :meth:`transmute_cols` will not drop key fields.
 
         Note
         ----
@@ -1658,11 +1636,9 @@ class MatrixTable(ExprContainer):
         --------
         Aggregate over rows:
 
-        .. doctest::
-
-            >>> dataset.aggregate_rows(hl.struct(n_high_quality=agg.count_where(dataset.qual > 40),
-            ...                                  mean_qual=agg.mean(dataset.qual)))
-            Struct(n_high_quality=100150224, mean_qual=50.12515572)
+        >>> dataset.aggregate_rows(hl.struct(n_high_quality=agg.count_where(dataset.qual > 40),
+        ...                                  mean_qual=agg.mean(dataset.qual)))
+        Struct(n_high_quality=100150224, mean_qual=50.12515572)
 
         Notes
         -----
@@ -1705,12 +1681,10 @@ class MatrixTable(ExprContainer):
         --------
         Aggregate over columns:
 
-        .. doctest::
-
-            >>> dataset.aggregate_cols(
-            ...    hl.struct(fraction_female=agg.fraction(dataset.pheno.is_female),
-            ...              case_ratio=agg.count_where(dataset.is_case) / agg.count()))
-            Struct(fraction_female=0.5102222, case_ratio=0.35156)
+        >>> dataset.aggregate_cols(
+        ...    hl.struct(fraction_female=agg.fraction(dataset.pheno.is_female),
+        ...              case_ratio=agg.count_where(dataset.is_case) / agg.count()))
+        Struct(fraction_female=0.5102222, case_ratio=0.35156)
 
         Notes
         -----
@@ -1754,11 +1728,9 @@ class MatrixTable(ExprContainer):
         --------
         Aggregate over entries:
 
-        .. doctest::
-
-            >>> dataset.aggregate_entries(hl.struct(global_gq_mean=agg.mean(dataset.GQ),
-            ...                                     call_rate=agg.fraction(hl.is_defined(dataset.GT))))
-            Struct(global_gq_mean=31.16200, call_rate=0.981682)
+        >>> dataset.aggregate_entries(hl.struct(global_gq_mean=agg.mean(dataset.GQ),
+        ...                                     call_rate=agg.fraction(hl.is_defined(dataset.GT))))
+        Struct(global_gq_mean=31.16200, call_rate=0.981682)
 
         Notes
         -----
@@ -1927,10 +1899,6 @@ class MatrixTable(ExprContainer):
         --------
         Aggregate to a matrix with cohort as column keys, computing the call rate
         as an entry field:
-
-        .. testsetup::
-
-            dataset = dataset.annotate_cols(cohort = 'cohort')
 
         >>> dataset_result = (dataset.group_cols_by(dataset.cohort)
         ...                          .aggregate(call_rate = agg.fraction(hl.is_defined(dataset.GT))))
@@ -2108,9 +2076,8 @@ class MatrixTable(ExprContainer):
 
         Examples
         --------
-        .. doctest::
 
-            >>> dataset.count()
+        >>> dataset.count()
 
         Returns
         -------
@@ -2129,11 +2096,7 @@ class MatrixTable(ExprContainer):
         Examples
         --------
 
-        >>> dataset.write('output/dataset.vds')
-
-        Note
-        ----
-        The write path must end in ".vds".
+        >>> dataset.write('output/dataset.mt')
 
         Warning
         -------
@@ -2227,7 +2190,8 @@ class MatrixTable(ExprContainer):
 
         Examples
         --------
-        >>> pli_dict = dataset.index_globals().pli
+        >>> dataset1 = dataset.annotate_globals(pli={'SCN1A': 0.999, 'SONIC': 0.014})
+        >>> pli_dict = dataset1.index_globals().pli
         >>> dataset_result = dataset2.annotate_rows(gene_pli = dataset2.gene.map(lambda x: pli_dict.get(x)))
 
         Returns
@@ -3024,11 +2988,6 @@ class MatrixTable(ExprContainer):
         Examples
         --------
 
-        .. testsetup::
-
-            dataset_to_union_1 = dataset
-            dataset_to_union_2 = dataset
-
         Union the columns of two datasets:
 
         >>> dataset_result = dataset_to_union_1.union_cols(dataset_to_union_2)
@@ -3071,11 +3030,9 @@ class MatrixTable(ExprContainer):
         --------
         Subset to the first three rows of the matrix:
 
-        .. doctest::
-
-            >>> dataset_result = dataset.head(3)
-            >>> dataset_result.count_rows()
-            3
+        >>> dataset_result = dataset.head(3)
+        >>> dataset_result.count_rows()
+        3
 
         Notes
         -----

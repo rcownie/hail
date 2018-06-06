@@ -9,7 +9,7 @@ class Interval(object):
     """
     An object representing a range of values between `start` and `end`.
 
-    >>> interval = hl.Interval(3, 6)
+    >>> interval2 = hl.Interval(3, 6)
 
     Parameters
     ----------
@@ -80,10 +80,8 @@ class Interval(object):
         Examples
         --------
 
-        .. doctest::
-
-            >>> interval.start
-            3
+        >>> interval2.start
+        3
 
         Returns
         -------
@@ -101,10 +99,8 @@ class Interval(object):
         Examples
         --------
 
-        .. doctest::
-
-            >>> interval.end
-            6
+        >>> interval2.end
+        6
 
         Returns
         -------
@@ -122,10 +118,8 @@ class Interval(object):
         Examples
         --------
 
-        .. doctest::
-
-            >>> interval.includes_start
-            True
+        >>> interval2.includes_start
+        True
 
         Returns
         -------
@@ -143,10 +137,8 @@ class Interval(object):
         Examples
         --------
 
-        .. doctest::
-
-            >>> interval.includes_end
-            False
+        >>> interval2.includes_end
+        False
 
         Returns
         -------
@@ -164,10 +156,8 @@ class Interval(object):
         Examples
         --------
 
-        .. doctest::
-
-            >>> interval.point_type
-            tint32
+        >>> interval2.point_type
+        tint32
 
         Returns
         -------
@@ -182,13 +172,11 @@ class Interval(object):
         Examples
         --------
 
-        .. doctest::
+        >>> interval2.contains(5)
+        True
 
-            >>> interval.contains(5)
-            True
-
-            >>> interval.contains(6)
-            False
+        >>> interval2.contains(6)
+        False
 
         Parameters
         ----------

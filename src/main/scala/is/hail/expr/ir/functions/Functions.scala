@@ -73,7 +73,6 @@ object IRFunctionRegistry {
 
     (validIR, validMethods) match {
       case (None, None) =>
-        log.warn(s"no IRFunction found for $name(${ args.mkString(", ") })")
         None
       case (None, Some(x)) => Some(x)
       case (Some(x), None) => Some(x)
@@ -81,13 +80,17 @@ object IRFunctionRegistry {
     }
   }
 
-  SetFunctions.registerAll()
-  CallFunctions.registerAll()
-  GenotypeFunctions.registerAll()
-  MathFunctions.registerAll()
-  ArrayFunctions.registerAll()
-  UtilFunctions.registerAll()
-  StringFunctions.registerAll()
+  Seq(
+    ArrayFunctions,
+    CallFunctions,
+    DictFunctions,
+    GenotypeFunctions,
+    LocusFunctions,
+    MathFunctions,
+    SetFunctions,
+    StringFunctions,
+    UtilFunctions
+  ).foreach(_.registerAll())
 }
 
 abstract class RegistryFunctions {

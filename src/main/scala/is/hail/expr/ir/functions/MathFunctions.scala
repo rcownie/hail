@@ -1,13 +1,15 @@
 package is.hail.expr.ir.functions
 
-import is.hail.asm4s.Code
+import is.hail.annotations.Region
+import is.hail.asm4s.{AsmFunction3, Code}
 import is.hail.expr.ir._
 import is.hail.expr.types._
 import org.apache.commons.math3.special.Gamma
 import is.hail.expr.ir.coerce
+import is.hail.stats.uniroot
+import is.hail.utils.fatal
 
 object MathFunctions extends RegistryFunctions {
-
   def log(x: Double, b: Double): Double = math.log(x) / math.log(b)
 
   def gamma(x: Double): Double = Gamma.gamma(x)
@@ -50,6 +52,24 @@ object MathFunctions extends RegistryFunctions {
 
   def runif(min: Double, max: Double): Double = min + (max - min) * math.random
 
+  def iruniroot(region: Region, irf: AsmFunction3[Region, Double, Boolean, Double], min: Double, max: Double): java.lang.Double = {
+    val f: Double => Double = irf(region, _, false)
+    if (!(min < max))
+      fatal(s"min must be less than max in call to uniroot, got: min $min, max $max")
+
+    val fmin = f(min)
+    val fmax = f(max)
+
+    if (fmin * fmax > 0.0)
+      fatal(s"sign of endpoints must have opposite signs, got: f(min) = $fmin, f(max) = $fmax")
+
+    val r = uniroot(f, min, max)
+    if (r.isEmpty)
+      null
+    else
+      r.get
+  }
+
   def registerAll() {
     val thisClass = getClass
     val mathPackageClass = Class.forName("scala.math.package$")
@@ -61,6 +81,11 @@ object MathFunctions extends RegistryFunctions {
     registerIR("toInt64", tnum("T"))(x => Cast(x, TInt64()))
     registerIR("toFloat32", tnum("T"))(x => Cast(x, TFloat32()))
     registerIR("toFloat64", tnum("T"))(x => Cast(x, TFloat64()))
+    
+    registerScalaFunction("abs", TInt32(), TInt32())(mathPackageClass, "abs")
+    registerScalaFunction("abs", TInt64(), TInt64())(mathPackageClass, "abs")
+    registerScalaFunction("abs", TFloat32(), TFloat32())(mathPackageClass, "abs")
+    registerScalaFunction("abs", TFloat64(), TFloat64())(mathPackageClass, "abs")
 
     registerScalaFunction("**", TInt32(), TInt32(), TFloat64())(thisClass, "pow")
     registerScalaFunction("**", TInt64(), TInt64(), TFloat64())(thisClass, "pow")

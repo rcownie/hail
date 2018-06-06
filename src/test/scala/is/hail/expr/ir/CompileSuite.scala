@@ -10,6 +10,8 @@ import is.hail.expr.types._
 import org.testng.annotations.Test
 import org.scalatest._
 import Matchers._
+import is.hail.TestUtils
+import is.hail.TestUtils.eval
 import is.hail.expr.ir.functions.IRFunctionRegistry
 import is.hail.utils.FastSeq
 import is.hail.variant.ReferenceGenome
@@ -378,39 +380,6 @@ class CompileSuite {
     assert(region.loadDouble(tOut.loadField(region, outOff, tOut.fieldIdx("0"))) === 8.0)
   }
 
-
-  @Test
-  def testArrayRange() {
-    val tRange = TArray(TInt32())
-    val ir = ArrayRange(In(0, TInt32()), In(1, TInt32()), In(2, TInt32()))
-    val region = Region()
-    val fb = EmitFunctionBuilder[Region, Int, Boolean, Int, Boolean, Int, Boolean, Long]
-    doit(ir, fb)
-    val f = fb.result()()
-    for {
-      start <- 0 to 2
-      stop <- start to 10
-      step <- 1 to 3
-    } {
-      val aoff = f(region, start, false, stop, false, step, false)
-      val expected = Array.range(start, stop, step)
-      val actual = new UnsafeIndexedSeq(tRange, region, aoff)
-      assert(actual.sameElements(expected))
-
-      val expected2 = Array.range(stop, start, -step)
-      val aoff2 = f(region, stop, false, start, false, -step, false)
-      val actual2 = new UnsafeIndexedSeq(tRange, region, aoff2)
-      assert(actual2.sameElements(expected2))
-    }
-
-    val (start, stop, step) = (Int.MinValue, Int.MaxValue, Int.MaxValue / 5)
-    val len = Range.count(start, stop, step, isInclusive = false)
-    val expected = Array.tabulate(len)(start + _ * step)
-    val aoff = f(region, start, false, stop, false, step, false)
-    val actual = new UnsafeIndexedSeq(tRange, region, aoff)
-    assert(actual.sameElements(expected))
-  }
-
   @Test
   def testArrayFilterCutoff() {
     val t = TArray(TInt32())
@@ -630,19 +599,6 @@ class CompileSuite {
     fb.emit(Code(v1 := isValid1, v2 := isValid2, v3 := isValid3, v1 && v2 && v3))
     val expected = grch37.isValidContig("X") && grch37.isValidContig("Y") && grch38.isValidContig("X")
     assert(fb.result()()("X", "Y") == expected)
-  }
-
-  @Test
-  def testStringConstantWorks() {
-    val ir = Str("hello")
-
-    val fb = EmitFunctionBuilder[Region, Long]
-    doit(ir, fb)
-    val f = fb.result()()
-
-    val region = Region()
-    val off = f(region)
-    assert(TString.loadString(region, off) == "hello")
   }
 
   @Test def testSelectFields() {

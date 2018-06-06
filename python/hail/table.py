@@ -11,7 +11,7 @@ from hail.utils import wrap_to_list, storage_level, LinkedList, Struct
 from hail.utils.java import *
 from hail.utils.misc import *
 
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 import itertools
 
 table_type = lazy()
@@ -94,11 +94,6 @@ class GroupedTable(ExprContainer):
 
     There are only two operations on a grouped table, :meth:`.GroupedTable.partition_hint`
     and :meth:`.GroupedTable.aggregate`.
-
-    .. testsetup ::
-
-        table1 = hl.import_table('data/kt_example1.tsv', impute=True, key='ID')
-
     """
 
     def __init__(self, parent: 'Table', groups):
@@ -320,14 +315,17 @@ class Table(ExprContainer):
                                               'step' if s.step is not None else None] if x is not None)
                     )
                 )
-
             warnings.warn('The ht[:] syntax is deprecated, and will be removed before 0.2 release.\n'
                           '  Use the following instead:\n'
                           '    ht.index_globals()\n', stacklevel=2)
             return self.index_globals()
         else:
-            exprs = item if isinstance(item, tuple) else (item,)
-            return self.index(*exprs)
+            exprs = wrap_to_tuple(item)
+            if all(isinstance(e, Expression) for e in exprs):
+                return self.index(*exprs)
+        raise ValueError(f"'Table.__getitem__' (ht[...]): Usage:\n"
+                         f"  Select a field: ht['Field name']\n"
+                         f"  index shorthand: ht[key]")
 
     @property
     def key(self) -> Optional[StructExpression]:
@@ -380,23 +378,47 @@ class Table(ExprContainer):
     def _force_count(self):
         return self._jt.forceCount()
 
-    @typecheck_method(caller=str, key_struct=nullable(expr_struct()), value_struct=nullable(expr_struct()))
-    def _select(self, caller, key_struct=None, value_struct=None):
-        if key_struct is None:
+    @typecheck_method(caller=str, key_struct=oneof(nullable(expr_struct()), exactly("default")), value_struct=nullable(expr_struct()))
+    def _select(self, caller, key_struct="default", value_struct=None):
+        def is_copy(ast, name):
+            return (isinstance(ast, Select) and
+                ast.name == name and
+                isinstance(ast.parent, TopLevelReference) and
+                ast.parent.name == 'row' and
+                ast.parent.indices.source is self
+                )
+        if isinstance(key_struct, str):
             assert value_struct is not None
-            new_key = None
+            preserved_key = preserved_key_new = new_key = list(self.key.keys()) if self.key is not None else None
             row = hl.bind(lambda v: self.key.annotate(**v), value_struct) if self.key else value_struct
-        else:
+        elif key_struct is not None:
+            if self.key is None:
+                preserved_key_pairs = []
+            else:
+                preserved_key_pairs = list(map(lambda pair: (pair[1]._ast.name, pair[0]),
+                    itertools.takewhile(
+                        lambda pair: is_copy(pair[1]._ast, pair[2]),
+                        zip(key_struct.keys(), key_struct.values(), self.key.keys()))))
+            (preserved_key, preserved_key_new) = (list(k) for k in zip(*preserved_key_pairs)) if preserved_key_pairs != [] else (None, None)
             new_key = list(key_struct.keys())
             if value_struct is None:
                 row = hl.bind(lambda k: self.row.annotate(**k), key_struct)
             else:
                 row = hl.bind(lambda k, v: hl.struct(**k, **v), key_struct, value_struct)
+        else:
+            preserved_key = preserved_key_new = new_key = None
+            row = value_struct if value_struct is not None else hl.struct()
 
         base, cleanup = self._process_joins(row)
         analyze(caller, row, self._row_indices)
 
-        t = cleanup(Table(base._jt.select(row._ast.to_hql(), new_key)))
+        jt = base._jt
+        if self.key is not None and preserved_key != list(self.key):
+            jt = jt.keyBy(preserved_key)
+        jt = jt.select(row._ast.to_hql(), preserved_key_new, len(preserved_key) if preserved_key else None)
+        if new_key != preserved_key_new:
+            jt = jt.keyBy(new_key)
+        t = cleanup(Table(jt))
         return t
 
     @typecheck_method(caller=str, s=expr_struct())
@@ -465,7 +487,7 @@ class Table(ExprContainer):
         -------
         Setting the key to the empty key using
 
-        >>> table.key_by([])
+        >>> table1.key_by([])
 
         will cause the entire table to condense into a single partition.
 
@@ -614,33 +636,24 @@ class Table(ExprContainer):
 
         Create a single field from an expression of `C1`, `C2`, and `C3`.
 
-        .. testsetup::
+        >>> table4.show()
+        +-------+------+-------+-------+-------+-------+-------+-------+
+        |     A | B.B0 | B.B1  | C     | D.cat | D.dog |   E.A |   E.B |
+        +-------+------+-------+-------+-------+-------+-------+-------+
+        | int32 | bool | str   | bool  | int32 | int32 | int32 | int32 |
+        +-------+------+-------+-------+-------+-------+-------+-------+
+        |    32 | true | hello | false |     5 |     7 |     5 |     7 |
+        +-------+------+-------+-------+-------+-------+-------+-------+
 
-            table4 = hl.import_table('data/kt_example4.tsv', impute=True,
-                                  types={'B': hl.tstruct(B0=hl.tbool, B1=hl.tstr),
-                                 'D': hl.tstruct(cat=hl.tint32, dog=hl.tint32),
-                                 'E': hl.tstruct(A=hl.tint32, B=hl.tint32)})
-
-        .. doctest::
-
-            >>> table4.show()
-            +-------+------+-------+-------+-------+-------+-------+-------+
-            |     A | B.B0 | B.B1  | C     | D.cat | D.dog |   E.A |   E.B |
-            +-------+------+-------+-------+-------+-------+-------+-------+
-            | int32 | bool | str   | bool  | int32 | int32 | int32 | int32 |
-            +-------+------+-------+-------+-------+-------+-------+-------+
-            |    32 | true | hello | false |     5 |     7 |     5 |     7 |
-            +-------+------+-------+-------+-------+-------+-------+-------+
-
-            >>> table_result = table4.transmute(F=table4.A + 2 * table4.E.B)
-            >>> table_result.show()
-            +------+-------+-------+-------+-------+-------+
-            | B.B0 | B.B1  | C     | D.cat | D.dog |     F |
-            +------+-------+-------+-------+-------+-------+
-            | bool | str   | bool  | int32 | int32 | int32 |
-            +------+-------+-------+-------+-------+-------+
-            | true | hello | false |     5 |     7 |    46 |
-            +------+-------+-------+-------+-------+-------+
+        >>> table_result = table4.transmute(F=table4.A + 2 * table4.E.B)
+        >>> table_result.show()
+        +------+-------+-------+-------+-------+-------+
+        | B.B0 | B.B1  | C     | D.cat | D.dog |     F |
+        +------+-------+-------+-------+-------+-------+
+        | bool | str   | bool  | int32 | int32 | int32 |
+        +------+-------+-------+-------+-------+-------+
+        | true | hello | false |     5 |     7 |    46 |
+        +------+-------+-------+-------+-------+-------+
 
         Notes
         -----
@@ -649,6 +662,10 @@ class Table(ExprContainer):
 
         All row-indexed top-level fields found in an expression are dropped
         after the new fields are created.
+
+        Note
+        ----
+        :meth:`transmute` will not drop key fields.
 
         Warning
         -------
@@ -911,9 +928,9 @@ class Table(ExprContainer):
             # need to drop row fields
             for f in fields_to_drop:
                 check_keys(f, self._row_indices)
-            new_row_fields = [f for f in table.row_value if
-                              f not in fields_to_drop]
-            table = table.select(*new_row_fields)
+            row_fields = set(table.row)
+            to_drop = [f for f in fields_to_drop if f in row_fields]
+            table = table._select('drop', 'default', table.row_value.drop(*to_drop))
 
         return table
 
@@ -1067,11 +1084,9 @@ class Table(ExprContainer):
         --------
         Aggregate over rows:
 
-        .. doctest::
-
-            >>> table1.aggregate(hl.struct(fraction_male=agg.fraction(table1.SEX == 'M'),
-            ...                            mean_x=agg.mean(table1.X)))
-            Struct(fraction_male=0.5, mean_x=6.5)
+        >>> table1.aggregate(hl.struct(fraction_male=agg.fraction(table1.SEX == 'M'),
+        ...                            mean_x=agg.mean(table1.X)))
+        Struct(fraction_male=0.5, mean_x=6.5)
 
         Note
         ----
@@ -1103,11 +1118,7 @@ class Table(ExprContainer):
         Examples
         --------
 
-        >>> table1.write('output/table1.kt')
-
-        Note
-        ----
-        The write path must end in ".kt".
+        >>> table1.write('output/table1.ht')
 
         Warning
         -------
@@ -1131,19 +1142,17 @@ class Table(ExprContainer):
         --------
         Show the first lines of the table:
 
-        .. doctest::
-
-            >>> table1.show()
-            +-------+-------+-----+-------+-------+-------+-------+-------+
-            |    ID |    HT | SEX |     X |     Z |    C1 |    C2 |    C3 |
-            +-------+-------+-----+-------+-------+-------+-------+-------+
-            | int32 | int32 | str | int32 | int32 | int32 | int32 | int32 |
-            +-------+-------+-----+-------+-------+-------+-------+-------+
-            |     1 |    65 | M   |     5 |     4 |     2 |    50 |     5 |
-            |     2 |    72 | M   |     6 |     3 |     2 |    61 |     1 |
-            |     3 |    70 | F   |     7 |     3 |    10 |    81 |    -5 |
-            |     4 |    60 | F   |     8 |     2 |    11 |    90 |   -10 |
-            +-------+-------+-----+-------+-------+-------+-------+-------+
+        >>> table1.show()
+        +-------+-------+-----+-------+-------+-------+-------+-------+
+        |    ID |    HT | SEX |     X |     Z |    C1 |    C2 |    C3 |
+        +-------+-------+-----+-------+-------+-------+-------+-------+
+        | int32 | int32 | str | int32 | int32 | int32 | int32 | int32 |
+        +-------+-------+-----+-------+-------+-------+-------+-------+
+        |     1 |    65 | M   |     5 |     4 |     2 |    50 |     5 |
+        |     2 |    72 | M   |     6 |     3 |     2 |    61 |     1 |
+        |     3 |    70 | F   |     7 |     3 |    10 |    81 |    -5 |
+        |     4 |    60 | F   |     8 |     2 |    11 |    90 |   -10 |
+        +-------+-------+-----+-------+-------+-------+-------+-------+
 
         Parameters
         ----------
@@ -1251,8 +1260,7 @@ class Table(ExprContainer):
             left = list(left)
             right = list(right)
             return (types_match(left, right)
-                    or (isinstance(src, MatrixTable)
-                        and len(left) == 1
+                    or (len(left) == 1
                         and len(right) == 1
                         and isinstance(left[0].dtype, tinterval)
                         and left[0].dtype.point_type == right[0].dtype))
@@ -1276,24 +1284,41 @@ class Table(ExprContainer):
 
         uid = Env.get_uid()
 
-        key_set = set(self.key)
-        new_schema = tstruct(**{f: t for f, t in self.row.dtype.items() if f not in key_set})
+        new_schema = self.row_value.dtype
 
         if isinstance(src, Table):
             for e in exprs:
                 analyze('Table.index', e, src._row_indices)
 
-            right = self.select(**{uid: self.row})
-            uids = [Env.get_uid() for i in range(len(exprs))]
+            is_key = src.key is not None and len(exprs) == len(src.key) and all(
+                expr is key_field for expr, key_field in zip(exprs, self.key.values()))
+            is_interval = (len(self.key) == 1
+                           and isinstance(self.key[0].dtype, hl.tinterval)
+                           and exprs[0].dtype == self.key[0].dtype.point_type)
+
+            if not is_key:
+                uids = [Env.get_uid() for i in range(len(exprs))]
+                all_uids = uids[:]
+            else:
+                all_uids = []
 
             def joiner(left):
-                left = Table(left._jt.select(ApplyMethod('annotate',
-                                                         left._row._ast,
-                                                         hl.struct(**dict(zip(uids, exprs)))._ast).to_hql(), None)).key_by(*uids)
-                left = Table(left._jt.join(right.distinct()._jt, 'left'))
-                return left
+                if not is_key:
+                    original_key = None if left.key is None else list(left.key)
+                    left = Table(left._jt.select(ApplyMethod('annotate',
+                                                             left._row._ast,
+                                                             hl.struct(**dict(zip(uids, exprs)))._ast).to_hql(), None, None)
+                                 ).key_by(*uids)
+                    rekey_f = lambda t: t.key_by(None) if original_key is None else t.key_by(*original_key)
+                else:
+                    rekey_f = identity
 
-            all_uids = uids[:]
+                if is_interval:
+                    left = Table(left._jt.intervalJoin(self._jt, uid))
+                else:
+                    left = Table(left._jt.join(self.select(**{uid: self.row}).distinct()._jt, 'left'))
+                return rekey_f(left)
+
             all_uids.append(uid)
             ast = Join(Select(TopLevelReference('row', src._row_indices), uid),
                        all_uids,
@@ -1311,9 +1336,9 @@ class Table(ExprContainer):
             elif indices == src._row_indices:
 
                 is_row_key = len(exprs) == len(src.row_key) and all(
-                    exprs[i] is src._fields[list(src.row_key)[i]] for i in range(len(exprs)))
+                    expr is key_field for expr, key_field in zip(exprs, src.row_key.values()))
                 is_partition_key = len(exprs) == len(src.partition_key) and all(
-                    exprs[i] is src._fields[list(src.partition_key)[i]] for i in range(len(exprs)))
+                    expr is key_field for expr, key_field in zip(exprs, src.partition_key.values()))
 
                 if is_row_key or is_partition_key:
                     # no vds_key (way faster)
@@ -1348,9 +1373,8 @@ class Table(ExprContainer):
                         vt = vt.key_by(None).drop(*uids)
                         # group by v and index by the key exprs
                         vt = (vt.group_by(*rk_uids)
-                            .aggregate(values=agg.collect(
-                            Struct(**{c: vt[c] for c in vt.row if c not in rk_uids}))))
-                        vt = vt.annotate(values=hl.index(vt.values, k_uid))
+                            .aggregate(values=agg.collect(vt.row.drop(*rk_uids))))
+                        vt = vt.annotate(values=hl.dict(vt.values.map(lambda x: hl.tuple([x[k_uid], x.drop(k_uid)]))))
 
                         jl = left._jvds.annotateRowsTable(vt._jt, uid, False)
                         key_expr = '{uid}: va.{uid}.values.get({{ {es} }})'.format(uid=uid, es=','.join(
@@ -1432,19 +1456,9 @@ class Table(ExprContainer):
         return construct_expr(ast, self.globals.dtype)
 
     def _process_joins(self, *exprs):
-        # ordered to support nested joins
-        original_key = list(self.key) if self.key is not None else None
-        broadcast_f = lambda left, data, jt: Table(left._jt.annotateGlobalJSON(data, jt))
-        left, cleanup = process_joins(self, exprs, broadcast_f)
-
-        if left is not self:
-            if original_key is not None:
-                if original_key != list(left.key):
-                    left = left.key_by(*original_key)
-            else:
-                left = left.key_by(None)
-
-        return left, cleanup
+        def broadcast_f(left, data, jt):
+            return Table(left._jt.annotateGlobalJSON(data, jt))
+        return process_joins(self, exprs, broadcast_f)
 
     def cache(self):
         """Persist this table in memory.
@@ -1586,20 +1600,18 @@ class Table(ExprContainer):
         Examples
         --------
 
-        .. doctest::
-
-            >>> table_result = table1.add_index()
-            >>> table_result.show()
-            +-------+-------+-----+-------+-------+-------+-------+-------+-------+
-            |    ID |    HT | SEX |     X |     Z |    C1 |    C2 |    C3 |   idx |
-            +-------+-------+-----+-------+-------+-------+-------+-------+-------+
-            | int32 | int32 | str | int32 | int32 | int32 | int32 | int32 | int64 |
-            +-------+-------+-----+-------+-------+-------+-------+-------+-------+
-            |     1 |    65 | M   |     5 |     4 |     2 |    50 |     5 |     0 |
-            |     2 |    72 | M   |     6 |     3 |     2 |    61 |     1 |     1 |
-            |     3 |    70 | F   |     7 |     3 |    10 |    81 |    -5 |     2 |
-            |     4 |    60 | F   |     8 |     2 |    11 |    90 |   -10 |     3 |
-            +-------+-------+-----+-------+-------+-------+-------+-------+-------+
+        >>> table_result = table1.add_index()
+        >>> table_result.show()
+        +-------+-------+-----+-------+-------+-------+-------+-------+-------+
+        |    ID |    HT | SEX |     X |     Z |    C1 |    C2 |    C3 |   idx |
+        +-------+-------+-----+-------+-------+-------+-------+-------+-------+
+        | int32 | int32 | str | int32 | int32 | int32 | int32 | int32 | int64 |
+        +-------+-------+-----+-------+-------+-------+-------+-------+-------+
+        |     1 |    65 | M   |     5 |     4 |     2 |    50 |     5 |     0 |
+        |     2 |    72 | M   |     6 |     3 |     2 |    61 |     1 |     1 |
+        |     3 |    70 | F   |     7 |     3 |    10 |    81 |    -5 |     2 |
+        |     4 |    60 | F   |     8 |     2 |    11 |    90 |   -10 |     3 |
+        +-------+-------+-----+-------+-------+-------+-------+-------+-------+
 
         Notes
         -----
@@ -1636,12 +1648,7 @@ class Table(ExprContainer):
 
         Take the union of rows from two tables:
 
-        .. testsetup::
-
-            table = hl.import_table('data/kt_example1.tsv', impute=True, key='ID')
-            other_table = table
-
-        >>> union_table = table.union(other_table)
+        >>> union_table = table1.union(other_table)
 
         Notes
         -----
@@ -1678,13 +1685,11 @@ class Table(ExprContainer):
         --------
         Take the first three rows:
 
-        .. doctest::
-
-            >>> first3 = table1.take(3)
-            >>> print(first3)
-            [Struct(HT=65, SEX=M, X=5, C3=5, C2=50, C1=2, Z=4, ID=1),
-             Struct(HT=72, SEX=M, X=6, C3=1, C2=61, C1=2, Z=3, ID=2),
-             Struct(HT=70, SEX=F, X=7, C3=-5, C2=81, C1=10, Z=3, ID=3)]
+        >>> first3 = table1.take(3)
+        >>> print(first3)
+        [Struct(HT=65, SEX=M, X=5, C3=5, C2=50, C1=2, Z=4, ID=1),
+         Struct(HT=72, SEX=M, X=6, C3=1, C2=61, C1=2, Z=3, ID=2),
+         Struct(HT=70, SEX=F, X=7, C3=-5, C2=81, C1=10, Z=3, ID=3)]
 
         Notes
         -----
@@ -1716,11 +1721,9 @@ class Table(ExprContainer):
         --------
         Subset to the first three rows:
 
-        .. doctest::
-
-            >>> table_result = table1.head(3)
-            >>> table_result.count()
-            3
+        >>> table_result = table1.head(3)
+        >>> table_result.count()
+        3
 
         Notes
         -----
@@ -1972,7 +1975,7 @@ class Table(ExprContainer):
             new_keys = {row_key_map.get(k, k): v for k, v in table.key.items()} if table.key else None
             new_values = {row_value_map.get(k, k): v for k, v in table.row_value.items()}
             table = table._select("Table.rename",
-                                  key_struct=hl.struct(**new_keys) if new_keys else None,
+                                  key_struct=hl.struct(**new_keys) if new_keys else "default",
                                   value_struct=hl.struct(**new_values))
         if global_map:
             table = table.select_globals(**{global_map.get(k, k): v for k, v in table.globals.items()})
@@ -2140,12 +2143,6 @@ class Table(ExprContainer):
 
         `people_table` is a :class:`.Table` with three fields: `Name`, `Age` and `Children`.
 
-        .. testsetup::
-
-            people_table = hl.import_table('data/explode_example.tsv', delimiter='\\s+',
-                                     types={'Age': hl.tint32, 'Children': hl.tarray(hl.tstr)})
-
-
         >>> people_table.show()
         +----------+-------+--------------------------+
         | Name     |   Age | Children                 |
@@ -2232,32 +2229,69 @@ class Table(ExprContainer):
             t = t.rename({f: name})
         return t
 
-    @typecheck_method(row_key=expr_any,
-                      col_key=expr_any,
-                      entry_exprs=expr_any)
-    def to_matrix_table(self, row_key, col_key, **entry_exprs):
+    @typecheck_method(row_key=sequenceof(str),
+                      col_key=sequenceof(str),
+                      row_fields=sequenceof(str),
+                      col_fields=sequenceof(str),
+                      partition_key=nullable(sequenceof(str)),
+                      n_partitions=nullable(int))
+    def to_matrix_table(self, row_key, col_key, row_fields=[], col_fields=[], partition_key=None, n_partitions=None):
+        """Construct a matrix table from a table in coordinate representation.
 
-        from hail.matrixtable import MatrixTable
+        Notes
+        -----
+        Any row fields in the table that do not appear in one of the arguments
+        to this method are assumed to be entry fields of the resulting matrix
+        table.
 
-        all_exprs = []
-        all_exprs.append(row_key)
-        analyze('to_matrix_table/row_key', row_key, self._row_indices)
-        all_exprs.append(col_key)
-        analyze('to_matrix_table/col_key', col_key, self._row_indices)
+        Parameters
+        ----------
+        row_key : Sequence[str]
+            Fields to be used as row key.
+        col_key : Sequence[str]
+            Fields to be used as column key.
+        row_fields : Sequence[str]
+            Fields to be stored once per row.
+        col_fields : Sequence[str]
+            Fields to be stored once per column.
+        partition_key : Sequence[str] or None
+            Fields to be used as partition key.
+        n_partitions : int or None
+            Number of partitions.
 
-        exprs = []
+        Returns
+        -------
+        :class:`.MatrixTable`
+        """
+        all_fields = list(itertools.chain(row_key, col_key, row_fields, col_fields))
+        c = Counter(all_fields)
+        row_field_set = set(self.row)
+        for k, v in c.items():
+            if k not in row_field_set:
+                raise ValueError(f"'to_matrix_table': field {repr(k)} is not a row field")
+            if v > 1:
+                raise ValueError(f"'to_matrix_table': field {repr(k)} appeared in {v} field groups")
 
-        for k, e in entry_exprs.items():
-            all_exprs.append(e)
-            analyze('to_matrix_table/entry_exprs/{}'.format(k), e, self._row_indices)
-            exprs.append('`{k}` = {v}'.format(k=k, v=e._ast.to_hql()))
+        if len(row_key) == 0:
+            raise ValueError(f"'to_matrix_table': require at least one row key field")
+        if len(col_key) == 0:
+            raise ValueError(f"'to_matrix_table': require at least one col key field")
 
-        base, cleanup = self._process_joins(*all_exprs)
+        if partition_key is None:
+            partition_key = row_key
+        else:
+            if len(partition_key) == 0:
+                raise ValueError(f"to_matrix_table': require at least one partition key field")
+            if not row_key[:len(partition_key)] == partition_key:
+                raise ValueError(f"'to_matrix_table': partition key must be a prefix of row key, "
+                                 f"found row_key={row_key} and partition_key={partition_key}")
 
-        return MatrixTable(base._jt.toMatrixTable(row_key._ast.to_hql(),
-                                                  col_key._ast.to_hql(),
-                                                  ",\n".join(exprs),
-                                                  joption(None)))
+        return hl.MatrixTable(self._jt.jToMatrixTable(row_key,
+                                                      col_key,
+                                                      row_fields,
+                                                      col_fields,
+                                                      partition_key,
+                                                      n_partitions))
 
     @property
     def globals(self) -> 'StructExpression':
@@ -2326,7 +2360,7 @@ class Table(ExprContainer):
         :class:`.StructExpression`
             Struct of all row fields.
         """
-        return self._row.drop(*self.key.keys()) if self.key else self._row
+        return self._row.drop(*self.key.keys()) if self.key is not None else self._row
 
     @staticmethod
     @typecheck(df=pyspark.sql.DataFrame,

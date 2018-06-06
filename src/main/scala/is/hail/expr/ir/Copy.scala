@@ -53,9 +53,9 @@ object Copy {
       case ArrayRange(_, _, _) =>
         val IndexedSeq(start: IR, stop: IR, step: IR) = newChildren
         ArrayRange(start, stop, step)
-      case ArraySort(_) =>
-        val IndexedSeq(a: IR) = newChildren
-        ArraySort(a)
+      case ArraySort(_, _) =>
+        val IndexedSeq(a: IR, ascending: IR) = newChildren
+        ArraySort(a, ascending)
       case ToSet(_) =>
         val IndexedSeq(a: IR) = newChildren
         ToSet(a)
@@ -120,9 +120,15 @@ object Copy {
       case GetTupleElement(_, idx) =>
         val IndexedSeq(o: IR) = newChildren
         GetTupleElement(o, idx)
+      case StringSlice(_, _, _) =>
+        val IndexedSeq(s: IR, start: IR, n: IR) = newChildren
+        StringSlice(s, start, n)
+      case StringLength(_) =>
+        val IndexedSeq(s: IR) = newChildren
+        StringLength(s)
       case In(_, _) =>
         same
-      case Die(message) =>
+      case Die(message, typ) =>
         same
       case ApplyIR(fn, args, conversion) =>
         ApplyIR(fn, newChildren.map(_.asInstanceOf[IR]), conversion)
@@ -130,6 +136,9 @@ object Copy {
         Apply(fn, newChildren.map(_.asInstanceOf[IR]))
       case ApplySpecial(fn, args) =>
         ApplySpecial(fn, newChildren.map(_.asInstanceOf[IR]))
+      case Uniroot(argname, _, _, _) =>
+        val IndexedSeq(fn: IR, min: IR, max: IR) = newChildren
+        Uniroot(argname, fn, min, max)
       // from MatrixIR
       case MatrixWrite(_, f) =>
         val IndexedSeq(child: MatrixIR) = newChildren

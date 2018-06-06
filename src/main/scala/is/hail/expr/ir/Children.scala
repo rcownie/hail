@@ -40,8 +40,8 @@ object Children {
       Array(a)
     case ArrayRange(start, stop, step) =>
       Array(start, stop, step)
-    case ArraySort(a) =>
-      Array(a)
+    case ArraySort(a, ascending) =>
+      Array(a, ascending)
     case ToSet(a) =>
       Array(a)
     case ToDict(a) =>
@@ -84,9 +84,13 @@ object Children {
       types.toIndexedSeq
     case GetTupleElement(o, idx) =>
       Array(o)
+    case StringSlice(s, start, n) =>
+      Array(s, start, n)
+    case StringLength(s) =>
+      Array(s)
     case In(i, typ) =>
       none
-    case Die(message) =>
+    case Die(message, typ) =>
       none
     case ApplyIR(_, args, _) =>
       args.toIndexedSeq
@@ -94,6 +98,8 @@ object Children {
       args.toIndexedSeq
     case ApplySpecial(_, args) =>
       args.toIndexedSeq
+    case Uniroot(_, fn, min, max) =>
+      FastIndexedSeq(fn, min, max)
     // from MatrixIR
     case MatrixWrite(child, _) => IndexedSeq(child)
     // from TableIR

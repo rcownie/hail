@@ -2,19 +2,20 @@ package is.hail.linalg
 
 import java.io._
 
-import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, _}
-import breeze.numerics.{pow => breezePow, sqrt => breezeSqrt}
+import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, sum => breezeSum, _}
+import breeze.numerics.{pow => breezePow, sqrt => breezeSqrt, log => breezeLog, abs => breezeAbs}
 import breeze.stats.distributions.{RandBasis, ThreadLocalRandomGenerator}
 import is.hail._
 import is.hail.annotations._
 import is.hail.table.Table
 import is.hail.expr.types._
-import is.hail.io.{BlockingBufferSpec, BufferSpec, LZ4BlockBufferSpec, StreamBlockBufferSpec}
+import is.hail.io._
 import is.hail.methods.UpperIndexBounds
 import is.hail.rvd.RVDContext
 import is.hail.sparkextras.ContextRDD
 import is.hail.utils._
 import is.hail.utils.richUtils.RichDenseMatrixDouble
+import org.apache.commons.lang3.StringUtils
 import org.apache.commons.math3.random.MersenneTwister
 import org.apache.spark.executor.InputMetrics
 import org.apache.spark._
@@ -30,12 +31,25 @@ object BlockMatrix {
     new BlockingBufferSpec(32 * 1024,
       new LZ4BlockBufferSpec(32 * 1024,
         new StreamBlockBufferSpec))
-
+  
+  def apply(sc: SparkContext, gp: GridPartitioner, piBlock: (GridPartitioner, Int) => ((Int, Int), BDM[Double])): BlockMatrix =
+    new BlockMatrix(
+      new RDD[((Int, Int), BDM[Double])](sc, Nil) {
+        override val partitioner = Some(gp)
+  
+        protected def getPartitions: Array[Partition] = Array.tabulate(gp.numPartitions)(pi =>
+          new Partition { def index: Int = pi } )
+  
+        def compute(split: Partition, context: TaskContext): Iterator[((Int, Int), BDM[Double])] =
+          Iterator.single(piBlock(gp, split.index))
+      }, gp.blockSize, gp.nRows, gp.nCols)
+  
   def fromBreezeMatrix(sc: SparkContext, lm: BDM[Double]): M =
     fromBreezeMatrix(sc, lm, defaultBlockSize)
 
   def fromBreezeMatrix(sc: SparkContext, lm: BDM[Double], blockSize: Int): M = {
     val gp = GridPartitioner(blockSize, lm.rows, lm.cols)
+    
     val localBlocksBc = Array.tabulate(gp.numPartitions) { pi =>
       val (i, j) = gp.blockCoordinates(pi)
       val (blockNRows, blockNCols) = gp.blockDims(pi)
@@ -44,20 +58,8 @@ object BlockMatrix {
 
       sc.broadcast(lm(iOffset until iOffset + blockNRows, jOffset until jOffset + blockNCols).copy)
     }
-
-    val blocks = new RDD[((Int, Int), BDM[Double])](sc, Nil) {
-      override val partitioner = Some(gp)
-
-      protected def getPartitions: Array[Partition] = Array.tabulate(gp.numPartitions)(pi =>
-        new Partition { def index: Int = pi } )
-
-      def compute(split: Partition, context: TaskContext): Iterator[((Int, Int), BDM[Double])] = {
-        val pi = split.index
-        Iterator((gp.blockCoordinates(pi), localBlocksBc(split.index).value))
-      }
-    }
-
-    new BlockMatrix(blocks, blockSize, lm.rows, lm.cols)
+    
+    BlockMatrix(sc, gp, (gp, pi) => (gp.blockCoordinates(pi), localBlocksBc(pi).value))
   }
 
   def fromIRM(irm: IndexedRowMatrix): M =
@@ -66,32 +68,24 @@ object BlockMatrix {
   def fromIRM(irm: IndexedRowMatrix, blockSize: Int): M =
     irm.toHailBlockMatrix(blockSize)
 
+  def fill(hc: HailContext, nRows: Long, nCols: Long, value: Double, blockSize: Int = defaultBlockSize): BlockMatrix =
+    BlockMatrix(hc.sc, GridPartitioner(blockSize, nRows, nCols), (gp, pi) => {
+      val (i, j) = gp.blockCoordinates(pi)
+      ((i, j), BDM.fill[Double](gp.blockRowNRows(i), gp.blockColNCols(j))(value))
+    })
+  
   // uniform or Gaussian
   def random(hc: HailContext, nRows: Int, nCols: Int, blockSize: Int = defaultBlockSize,
-    seed: Int = 0, gaussian: Boolean): M = {
+    seed: Int = 0, gaussian: Boolean): M =
+    BlockMatrix(hc.sc, GridPartitioner(blockSize, nRows, nCols), (gp, pi) => {
+      val (i, j) = gp.blockCoordinates(pi)
+      val blockSeed = seed + 15485863 * pi // millionth prime
 
-    val gp = GridPartitioner(blockSize, nRows, nCols)
-
-    val blocks = new RDD[((Int, Int), BDM[Double])](hc.sc, Nil) {
-      override val partitioner = Some(gp)
-
-      protected def getPartitions: Array[Partition] = Array.tabulate(gp.numPartitions)(pi =>
-        new Partition { def index: Int = pi } )
-
-      def compute(split: Partition, context: TaskContext): Iterator[((Int, Int), BDM[Double])] = {
-        val pi = split.index
-        val (i, j) = gp.blockCoordinates(pi)
-        val blockSeed = seed + pi
-
-        val randBasis: RandBasis = new RandBasis(new ThreadLocalRandomGenerator(new MersenneTwister(blockSeed)))
-        val rand = if (gaussian) randBasis.gaussian else randBasis.uniform
-
-        Iterator(((i, j), BDM.rand[Double](gp.blockRowNRows(i), gp.blockColNCols(j), rand)))
-      }
-    }
-
-    new BlockMatrix(blocks, blockSize, nRows, nCols)
-  }
+      val randBasis: RandBasis = new RandBasis(new ThreadLocalRandomGenerator(new MersenneTwister(blockSeed)))
+      val rand = if (gaussian) randBasis.gaussian else randBasis.uniform
+      
+      ((i, j), BDM.rand[Double](gp.blockRowNRows(i), gp.blockColNCols(j), rand))
+    } )
 
   def map2(f: (Double, Double) => Double)(l: M, r: M): M =
     l.map2(r, f)
@@ -101,6 +95,11 @@ object BlockMatrix {
 
   val metadataRelativePath = "/metadata.json"
 
+  def checkWriteSuccess(hc: HailContext, uri: String) {
+    if (!hc.hadoopConf.exists(uri + "/_SUCCESS"))
+      fatal(s"Error reading block matrix. Earlier write failed: no success indicator found at uri $uri")    
+  }
+  
   def readMetadata(hc: HailContext, uri: String): BlockMatrixMetadata = {
     hc.hadoopConf.readTextFile(uri + metadataRelativePath) { isr =>
       implicit val formats = defaultJSONFormats
@@ -109,10 +108,7 @@ object BlockMatrix {
   }
 
   def read(hc: HailContext, uri: String): M = {
-    val hadoopConf = hc.hadoopConf
-
-    if (!hadoopConf.exists(uri + "/_SUCCESS"))
-      fatal("Write failed: no success indicator found")
+    checkWriteSuccess(hc, uri)
 
     val BlockMatrixMetadata(blockSize, nRows, nCols, maybeFiltered, partFiles) = readMetadata(hc, uri)
 
@@ -146,6 +142,153 @@ object BlockMatrix {
     } else {
       None
     }
+  }
+
+  // rectangles checked in Python
+  def exportRectangles(
+    hc: HailContext,
+    input: String,
+    output: String,
+    flattenedRectangles: Array[Long],
+    delimiter: String,
+    nPartitions: Int): Unit = {
+    require(flattenedRectangles.length % 4 == 0)
+
+    checkWriteSuccess(hc, input)
+
+    val BlockMatrixMetadata(blockSize, nRows, nCols, maybeFiltered, partFiles) = BlockMatrix.readMetadata(hc, input)
+    val gp = GridPartitioner(blockSize, nRows, nCols, maybeFiltered)
+
+    val rectangles = flattenedRectangles.grouped(4).toArray    
+    val dRect = digitsNeeded(rectangles.length)
+
+    val sHadoopBc = hc.sc.broadcast(new SerializableHadoopConfiguration(hc.hadoopConf))
+    val partFilesBc = hc.sc.broadcast(partFiles)
+
+    val rdd = hc.sc.parallelize(rectangles.zipWithIndex, numSlices = nPartitions).map { case (r, index) =>
+      val partFiles = partFilesBc.value
+      val data = new Array[Double](blockSize)
+      val sb = new StringBuilder(blockSize << 2)
+      val paddedIndex = StringUtils.leftPad(index.toString, dRect, "0")
+      val outputFile = output + "/rect-" + paddedIndex + "_" + r.mkString("-")
+
+      val osw = new OutputStreamWriter(sHadoopBc.value.value.unsafeWriter(outputFile))
+      try {
+        val startRow = r(0)
+        val stopRow = r(1)
+        val startCol = r(2)
+        val stopCol = r(3)
+
+        val nonEmpty = startRow < stopRow && startCol < stopCol
+
+        if (nonEmpty) {
+          val startRowOffset = gp.indexBlockOffset(startRow)
+
+          val startBlockCol = gp.indexBlockIndex(startCol)
+          val startColOffset = gp.indexBlockOffset(startCol)
+
+          val stopBlockCol = gp.indexBlockIndex(stopCol - 1) + 1
+          val stopColOffset = gp.indexBlockOffset(stopCol - 1) + 1
+
+          val startColByteOffset = startColOffset << 3
+          val stopColByteDeficit = (gp.blockColNCols(stopBlockCol - 1) - stopColOffset) << 3
+
+          val inPerBlockCol = new Array[InputBuffer](stopBlockCol - startBlockCol)
+          try {
+            var i = startRow
+            while (i < stopRow) {
+              if (i == startRow || gp.indexBlockOffset(i) == 0) {
+                val blockRow = gp.indexBlockIndex(i)
+                val nRowsInBlock = gp.blockRowNRows(blockRow)
+
+                var blockCol = startBlockCol
+                while (blockCol < stopBlockCol) {
+                  val pi = gp.coordinatesPart(blockRow, blockCol)
+                  if (pi < 0)
+                    fatal(s"block ($blockRow, $blockCol) missing for rectangle $index " +
+                      s"with bounds ${ r.mkString("[", ", ", "]") }")
+
+                  val is = sHadoopBc.value.value.unsafeReader(input + "/parts/" + partFiles(pi))
+                  val in = BlockMatrix.bufferSpec.buildInputBuffer(is)
+
+                  val nColsInBlock = gp.blockColNCols(blockCol)
+
+                  assert(in.readInt() == nRowsInBlock)
+                  assert(in.readInt() == nColsInBlock)
+                  val isTranspose = in.readBoolean()
+                  if (!isTranspose)
+                    fatal("BlockMatrix must be stored row major on disk in order to export rectangular regions.")
+
+                  if (i == startRow) {
+                    val skip = startRowOffset * (nColsInBlock << 3)
+                    in.skipBytes(skip)
+                  }
+
+                  inPerBlockCol(blockCol - startBlockCol) = in
+
+                  blockCol += 1
+                }
+              }
+
+              inPerBlockCol.head.skipBytes(startColByteOffset)
+
+              var blockCol = startBlockCol
+              while (blockCol < stopBlockCol) {
+                val startColOffsetInBlock =
+                  if (blockCol > startBlockCol)
+                    0
+                  else
+                    startColOffset
+
+                val stopColOffsetInBlock =
+                  if (blockCol < stopBlockCol - 1)
+                    blockSize
+                  else
+                    stopColOffset
+
+                val n = stopColOffsetInBlock - startColOffsetInBlock
+
+                inPerBlockCol(blockCol - startBlockCol).readDoubles(data, 0, n)
+
+                sb.clear()
+                var k = 0
+                while (k < n - 1) {
+                  sb.append(data(k))
+                  sb.append(delimiter)
+                  k += 1
+                }
+                sb.append(data(n - 1))
+                if (blockCol < stopBlockCol)
+                  sb.append(delimiter)
+                else
+                  sb.append("\n")
+
+                osw.write(sb.result())
+
+                blockCol += 1
+              }
+              i += 1
+
+              inPerBlockCol.last.skipBytes(stopColByteDeficit)
+
+              if (i % blockSize == 0 && i < stopRow)
+                inPerBlockCol.foreach(_.close())
+            }
+          } finally {
+            inPerBlockCol.foreach(in => if (in != null) in.close())
+          }
+        }
+      } finally {
+        osw.close()
+      }
+      
+      1
+    }
+
+    val nFiles = rdd.reduce(_ + _)
+    assert(nFiles == rectangles.length)
+    
+    info(s"wrote $nFiles rectangular regions to files")
   }
 
   object ops {
@@ -190,68 +333,146 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
 
   val gp: GridPartitioner = blocks.partitioner.get.asInstanceOf[GridPartitioner]
   
-  val isFiltered: Boolean = gp.maybeSparse.isDefined
+  require(gp.blockSize == blockSize && gp.nRows == nRows && gp.nCols == nCols)
+  
+  val isSparse: Boolean = gp.maybeBlocks.isDefined
   
   def requireDense(name: String): Unit =
-    if (isFiltered)
-      fatal(s"$name is not supported for block-filtered block matrices.")
+    if (isSparse)
+      fatal(s"$name is not supported for block-sparse matrices.")
+
+  def densify(): BlockMatrix =
+    if (isSparse) {
+      require(gp.maxNBlocks <= Int.MaxValue)
+      realizeBlocks(None)
+    } else
+      this
   
-  def filterBlocks(maybeBlocksToKeep: Option[Array[Int]]): BlockMatrix =
-    maybeBlocksToKeep match {
-      case Some(blocksToKeep) => filterBlocks(blocksToKeep)
-      case None => this
-    }
-  
-  def filterBlocks(blocksToKeep: Array[Int]): BlockMatrix = {
-    val (filteredGP, partsToKeep) = gp.filterBlocks(blocksToKeep)
+  // if Some(bis), unrealized blocks in bis are replaced with zero blocks
+  // if None, all unrealized blocks are replaced with zero blocks
+  def realizeBlocks(maybeBlocksToRealize: Option[Array[Int]]): BlockMatrix = {    
+    val realizeGP = gp.copy(maybeBlocks =
+      if (maybeBlocksToRealize.exists(_.length == gp.maxNBlocks)) None else maybeBlocksToRealize)
+
+    val newGP = gp.union(realizeGP)
     
-    if (gp.numPartitions == filteredGP.numPartitions)
+    if (newGP.numPartitions == gp.numPartitions)
+      this
+    else {
+      def newPIPartition(pi: Int): Iterator[((Int, Int), BDM[Double])] = {
+        val bi = newGP.partBlock(pi)
+        val lm = (BDM.zeros[Double] _).tupled(newGP.blockDims(bi))
+        Iterator.single((newGP.blockCoordinates(bi), lm))
+      }
+      val oldToNewPI = gp.maybeBlocks.get.map(newGP.blockPart)
+      val newBlocks = blocks.supersetPartitions(oldToNewPI, newGP.numPartitions, newPIPartition, Some(newGP))
+
+      new BlockMatrix(newBlocks, blockSize, nRows, nCols)
+    }
+  }
+
+  def filterBlocks(blocksToKeep: Array[Int]): BlockMatrix =
+    if (blocksToKeep.length == gp.maxNBlocks)
       this
     else
-      new BlockMatrix(blocks.subsetPartitions(partsToKeep, Some(filteredGP)), blockSize, nRows, nCols)
+      subsetBlocks(gp.intersect(gp.copy(maybeBlocks = Some(blocksToKeep))))
+    
+  // assumes subsetGP blocks are subset of gp blocks, as with subsetGP = gp.intersect(gp2)
+  def subsetBlocks(subsetGP: GridPartitioner): BlockMatrix = {
+    if (subsetGP.numPartitions == gp.numPartitions)
+      this
+    else {
+      assert(subsetGP.maybeBlocks.isDefined)
+      new BlockMatrix(blocks.subsetPartitions(subsetGP.maybeBlocks.get.map(gp.blockPart), Some(subsetGP)),
+        blockSize, nRows, nCols)
+    }
+  }
+  
+  // filter to blocks overlapping diagonal band of all elements with lower <= jj - ii <= upper
+  // if not blocksOnly, also zero out all remaining elements outside band
+  def filterBand(lower: Long, upper: Long, blocksOnly: Boolean): BlockMatrix = {
+    require(lower <= upper)
+
+    val filteredBM = filterBlocks(gp.bandBlocks(lower, upper))
+
+    if (blocksOnly)
+      filteredBM
+    else
+      filteredBM.zeroBand(lower, upper)
+  }
+  
+  def zeroBand(lower: Long, upper: Long): BlockMatrix = {    
+    val zeroedBlocks = blocks.mapPartitions( { it =>
+      assert(it.hasNext)
+      val ((i, j), lm0) = it.next()
+      assert(!it.hasNext)
+      
+      val nRowsInBlock = lm0.rows
+      val nColsInBlock = lm0.cols
+
+      val diagIndex = (j - i).toLong * blockSize
+      val lowestDiagIndex = diagIndex - (nRowsInBlock - 1)
+      val highestDiagIndex = diagIndex + (nColsInBlock - 1)
+      
+      if (lowestDiagIndex >= lower && highestDiagIndex <= upper)
+        Iterator.single(((i, j), lm0))
+      else {
+        val lm = lm0.copy // avoidable?
+        
+        if (lower > lowestDiagIndex) {
+          val iiLeft = math.max(diagIndex - lower, 0).toInt
+          val iiRight = math.min(diagIndex - lower + nColsInBlock, nRowsInBlock).toInt
+
+          var ii = iiLeft
+          var jj = math.max(lower - diagIndex, 0).toInt
+          while (ii < iiRight) {
+            lm(ii to ii, 0 until jj) := 0.0
+            ii += 1
+            jj += 1
+          }
+          
+          lm(iiRight until nRowsInBlock, ::) := 0.0
+        }
+        
+        if (upper < highestDiagIndex) {
+          val iiLeft = math.max(diagIndex - upper, 0).toInt
+          val iiRight = math.min(diagIndex - upper + nColsInBlock, nRowsInBlock).toInt
+
+          lm(0 until iiLeft, ::) := 0.0
+          
+          var ii = iiLeft
+          var jj = math.max(upper - diagIndex, 0).toInt + 1
+          while (ii < iiRight) {
+            lm(ii to ii, jj until nColsInBlock) := 0.0
+            ii += 1
+            jj += 1
+          }
+        }
+        Iterator.single(((i, j), lm))
+      }
+    }, preservesPartitioning = true)
+    
+    new BlockMatrix(zeroedBlocks, blockSize, nRows, nCols)
   }
   
   // for row i, filter to indices [starts[i], stops[i]) by dropping non-overlapping blocks
   // if not blocksOnly, also zero out elements outside ranges in overlapping blocks
+  // checked in Python: start >= 0 && start <= stop && stop <= nCols
   def filterRowIntervals(starts: Array[Long], stops: Array[Long], blocksOnly: Boolean): BlockMatrix = {
     require(nRows <= Int.MaxValue)
     require(starts.length == nRows)
     require(stops.length == nRows)
-    
-    val rectangles = starts.grouped(blockSize).zip(stops.grouped(blockSize))
-      .zipWithIndex
-      .flatMap { case ((startsInBlockRow, stopsInBlockRow), blockRow) =>
-        val nRowsInBlockRow = gp.blockRowNRows(blockRow)
-        var minStart = Long.MaxValue
-        var maxStop = Long.MinValue
-        var ii = 0
-        while (ii < nRowsInBlockRow) {
-          val start = startsInBlockRow(ii)
-          val stop = stopsInBlockRow(ii)
-          assert(start >= 0 && start <= stop && stop <= nCols) // require start <= stop?
-          if (start < stop) {
-            minStart = minStart min start
-            maxStop = maxStop max stop
-          }
-          ii += 1
-        }
-        if (minStart < maxStop) {
-          val row = blockRow * blockSize
-          Some(Array(row, row, minStart, maxStop - 1))
-        } else
-          None
-      }.toArray
 
-    val filteredBM = filterBlocks(gp.rectangularBlocks(rectangles))
+    val filteredBM = filterBlocks(gp.rowIntervalsBlocks(starts, stops))
 
     if (blocksOnly)
-       filteredBM
+      filteredBM
     else
-       filteredBM.zeroRowIntervals(starts, stops)
+      filteredBM.zeroRowIntervals(starts, stops)
   }
-  
+
   def zeroRowIntervals(starts: Array[Long], stops: Array[Long]): BlockMatrix = {    
-    val sc = blocks.sparkContext    
+    val sc = blocks.sparkContext
     val startBlockIndexBc = sc.broadcast(starts.map(gp.indexBlockIndex))
     val stopBlockIndexBc = sc.broadcast(stops.map(stop => (stop / blockSize).toInt))
     val startBlockOffsetBc = sc.broadcast(starts.map(gp.indexBlockOffset))
@@ -263,12 +484,12 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
       assert(!it.hasNext)
 
       val lm = lm0.copy // avoidable?
-      
+
       val startBlockIndex = startBlockIndexBc.value
       val stopBlockIndex = stopBlockIndexBc.value
       val startBlockOffset = startBlockOffsetBc.value
       val stopBlockOffset = stopBlockOffsetsBc.value
-      
+
       val nRowsInBlock = lm.rows
       val nColsInBlock = lm.cols
 
@@ -295,6 +516,13 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
     new BlockMatrix(zeroedBlocks, blockSize, nRows, nCols)
   }
   
+  def filterRectangles(flattenedRectangles: Array[Long]): BlockMatrix = {
+    require(flattenedRectangles.length % 4 == 0)
+    val rectangles = flattenedRectangles.grouped(4).toArray
+    
+    filterBlocks(gp.rectanglesBlocks(rectangles))
+  }
+  
   // element-wise ops
   def unary_+(): M = this
   
@@ -302,89 +530,109 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
     "negation",
     reqDense = false)
 
-  def add(that: M): M = blockMap2(that, _ + _,
-    "addition",
-    reqDense = false) // still requires matched blocks
+  def add(that: M): M =
+    if (sameBlocks(that)) {
+      blockMap2(that, _ + _,
+        "addition",
+        reqDense = false)
+    } else {
+      val addBlocks = new BlockMatrixUnionOpRDD(this, that,
+        _ match {
+          case (Some(a), Some(b)) => a + b
+          case (Some(a), None) => a
+          case (None, Some(b)) => b
+          case (None, None) => fatal("not possible for union")
+        }
+      )
+      new BlockMatrix(addBlocks, blockSize, nRows, nCols)
+    }
   
-  def sub(that: M): M = blockMap2(that, _ - _,
-    "subtraction",
-    reqDense = false) // still requires matched blocks
+  def sub(that: M): M =
+    if (sameBlocks(that)) {
+      blockMap2(that, _ - _,
+        "subtraction",
+        reqDense = false)
+    } else {
+      val subBlocks = new BlockMatrixUnionOpRDD(this, that,
+        _ match {
+          case (Some(a), Some(b)) => a - b
+          case (Some(a), None) => a
+          case (None, Some(b)) => -b
+          case (None, None) => fatal("not possible for union")
+        }
+      )
+      new BlockMatrix(subBlocks, blockSize, nRows, nCols)
+    }
   
   def mul(that: M): M = {
-    val maybeIntersection: Option[Array[Int]] = gp.intersectBlocks(that.gp)
-    filterBlocks(maybeIntersection).blockMap2(
-      that.filterBlocks(maybeIntersection), _ *:* _,
+    val newGP = gp.intersect(that.gp)
+    subsetBlocks(newGP).blockMap2(
+      that.subsetBlocks(newGP), _ *:* _,
       "element-wise multiplication",
       reqDense = false)
   }
   
   def div(that: M): M = blockMap2(that, _ /:/ _,
     "element-wise division")
-
-  private val badDivSet: Set[Double] = Set(0.0, Double.NaN, Double.NegativeInfinity, Double.PositiveInfinity)
   
   // row broadcast
-  def rowVectorAdd(a: Array[Double]): M = rowVectorOp((lm, lv) => lm(*, ::) + lv,
+  def rowVectorAdd(a: Array[Double]): M = densify().rowVectorOp((lm, lv) => lm(*, ::) + lv,
     "broadcasted addition of row-vector")(a)
   
-  def rowVectorSub(a: Array[Double]): M = rowVectorOp((lm, lv) => lm(*, ::) - lv,
+  def rowVectorSub(a: Array[Double]): M = densify().rowVectorOp((lm, lv) => lm(*, ::) - lv,
     "broadcasted subtraction of row-vector")(a)
   
   def rowVectorMul(a: Array[Double]): M = rowVectorOp((lm, lv) => lm(*, ::) *:* lv,
-    "broadcasted multiplication by row-vector",
-    reqDense = false)(a)
+    "broadcasted multiplication by row-vector containing nan, or infinity",
+    reqDense = a.exists(i => i.isNaN | i.isInfinity))(a)
   
   def rowVectorDiv(a: Array[Double]): M = rowVectorOp((lm, lv) => lm(*, ::) /:/ lv, 
     "broadcasted division by row-vector containing zero, nan, or infinity",
-    reqDense = a.exists(badDivSet))(a)
+    reqDense = a.exists(i => i == 0.0 | i.isNaN | i.isInfinity))(a)
 
-  def reverseRowVectorSub(a: Array[Double]): M = rowVectorOp((lm, lv) => lm(*, ::).map(lv - _),
+  def reverseRowVectorSub(a: Array[Double]): M = densify().rowVectorOp((lm, lv) => lm(*, ::).map(lv - _),
     "broadcasted row-vector minus block matrix")(a)
  
   def reverseRowVectorDiv(a: Array[Double]): M = rowVectorOp((lm, lv) => lm(*, ::).map(lv /:/ _),
     "broadcasted row-vector divided by block matrix")(a)
   
   // column broadcast
-  def colVectorAdd(a: Array[Double]): M = colVectorOp((lm, lv) => lm(::, *) + lv,
+  def colVectorAdd(a: Array[Double]): M = densify().colVectorOp((lm, lv) => lm(::, *) + lv,
     "broadcasted addition of column-vector")(a)
   
-  def colVectorSub(a: Array[Double]): M = colVectorOp((lm, lv) => lm(::, *) - lv,
+  def colVectorSub(a: Array[Double]): M = densify().colVectorOp((lm, lv) => lm(::, *) - lv,
     "broadcasted subtraction of column-vector")(a)
   
   def colVectorMul(a: Array[Double]): M = colVectorOp((lm, lv) => lm(::, *) *:* lv,
-    "broadcasted multiplication by column-vector",
-    reqDense = false)(a)
+    "broadcasted multiplication column-vector containing nan or infinity",
+    reqDense = a.exists(i => i.isNaN | i.isInfinity))(a)
   
   def colVectorDiv(a: Array[Double]): M = colVectorOp((lm, lv) => lm(::, *) /:/ lv,
-    "broadcasted division by column-vector containing zero",
-    reqDense = a.exists(badDivSet))(a)
+    "broadcasted division by column-vector containing zero, nan, or infinity",
+    reqDense = a.exists(i => i == 0.0 | i.isNaN | i.isInfinity))(a)
 
-  def reverseColVectorSub(a: Array[Double]): M = colVectorOp((lm, lv) => lm(::, *).map(lv - _),
+  def reverseColVectorSub(a: Array[Double]): M = densify().colVectorOp((lm, lv) => lm(::, *).map(lv - _),
     "broadcasted column-vector minus block matrix")(a)
 
   def reverseColVectorDiv(a: Array[Double]): M = colVectorOp((lm, lv) => lm(::, *).map(lv /:/ _),
     "broadcasted column-vector divided by block matrix")(a)
 
   // scalar
-  def scalarAdd(i: Double): M = blockMap(_ + i,
+  def scalarAdd(i: Double): M = densify().blockMap(_ + i,
     "scalar addition")
   
-  def scalarSub(i: Double): M = blockMap(_ - i,
+  def scalarSub(i: Double): M = densify().blockMap(_ - i,
     "scalar subtraction")
   
   def scalarMul(i: Double): M = blockMap(_ *:* i,
-    "scaler multiplication",
-    reqDense = false)
+      s"multiplication by scalar $i",
+      reqDense = i.isNaN | i.isInfinity)
   
-  def scalarDiv(i: Double): M = {
-    if (badDivSet(i))
-      fatal(s"cannot divide block matrix by scalar $i")
-    blockMap(_ /:/ i,
-      "scalar division",
-      reqDense = false)
-  }
+  def scalarDiv(i: Double): M = blockMap(_ /:/ i,
+      s"division by scalar $i",
+      reqDense = i == 0.0 | i.isNaN | i.isInfinity)
   
-  def reverseScalarSub(i: Double): M = blockMap(i - _,
+  def reverseScalarSub(i: Double): M = densify().blockMap(i - _,
     s"scalar minus block matrix")
   
   def reverseScalarDiv(i: Double): M = blockMap(i /:/ _,
@@ -396,8 +644,15 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
     reqDense = false)
 
   def pow(exponent: Double): M = blockMap(breezePow(_, exponent),
-    s"exponentiation by negative power",
+    s"exponentiation by negative power $exponent",
     reqDense = exponent < 0)
+  
+  def log(): M = blockMap(breezeLog(_),
+    "natural logarithm")
+
+  def abs(): M = blockMap(breezeAbs(_),
+    "absolute value",
+    reqDense = false)
   
   // matrix ops
   def dot(that: M): M = new BlockMatrix(new BlockMatrixMultiplyRDD(this, that), blockSize, nRows, that.nCols)
@@ -409,6 +664,12 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
   }
 
   def transpose(): M = new BlockMatrix(new BlockMatrixTransposeRDD(this), blockSize, nCols, nRows)
+
+  def sum(): Double = reduce(lm => breezeSum(lm * BDV.ones[Double](lm.cols)), _ + _)
+
+  def rowSum(): BlockMatrix = rowReduce(lm => lm.t * BDV.ones[Double](lm.rows), _ + _)
+
+  def colSum(): BlockMatrix = colReduce(lm => lm * BDV.ones[Double](lm.cols), _ + _)
 
   def diagonal(): Array[Double] = {
     val nDiagElements = {
@@ -454,7 +715,7 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
     hadoop.writeDataFile(uri + metadataRelativePath) { os =>
       implicit val formats = defaultJSONFormats
       jackson.Serialization.write(
-        BlockMatrixMetadata(blockSize, nRows, nCols, gp.maybeSparse, partFiles),
+        BlockMatrixMetadata(blockSize, nRows, nCols, gp.maybeBlocks, partFiles),
         os)
     }
 
@@ -526,7 +787,7 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
   }
   
   private def sameBlocks(that: M): Boolean = {
-    (gp.maybeSparse, that.gp.maybeSparse) match {
+    (gp.maybeBlocks, that.gp.maybeBlocks) match {
       case (Some(bis), Some(bis2)) => bis sameElements bis2
       case (None, None) => true
       case _ => false
@@ -821,6 +1082,27 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
       }, name, reqDense = reqDense)
   }
 
+  def reduce(blockOp: BDM[Double] => Double, scalarOp: (Double, Double) => Double): Double =
+      blocks
+        .map { case ((i, j), lm) => blockOp(lm) }
+        .fold(0.0)(scalarOp)
+
+  def rowReduce(blockOp: BDM[Double] => BDV[Double], vectorOp: (BDV[Double], BDV[Double]) => BDV[Double]): BlockMatrix =
+    new BlockMatrix(
+      blocks
+        .map { case ((i, j), lm) => ((0, j), blockOp(lm)) }
+        .reduceByKey(GridPartitioner(blockSize, 1, nCols, gp.maybeBlockCols()), vectorOp)
+        .mapValues(v => new BDM[Double](1, v.length, v.data)),
+      blockSize, 1, nCols)
+  
+  def colReduce(blockOp: BDM[Double] => BDV[Double], vectorOp: (BDV[Double], BDV[Double]) => BDV[Double]): BlockMatrix =    
+    new BlockMatrix(
+      blocks
+        .map { case ((i, j), lm) => ((i, 0), blockOp(lm)) }
+        .reduceByKey(GridPartitioner(blockSize, nRows, 1, gp.maybeBlockRows()), vectorOp)
+        .mapValues(v => new BDM[Double](v.length, 1, v.data)),
+      blockSize, nRows, 1)
+  
   def toIndexedRowMatrix(): IndexedRowMatrix = {
     require(nCols <= Integer.MAX_VALUE)
     val nColsInt = nCols.toInt
@@ -870,18 +1152,15 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
   }
   
   def filterRows(keep: Array[Long]): BlockMatrix = {
-    requireDense("filter_rows")
     transpose().filterCols(keep).transpose()
   }
 
   def filterCols(keep: Array[Long]): BlockMatrix = {
-    requireDense("filter_cols")
-    new BlockMatrix(new BlockMatrixFilterColsRDD(this, keep), blockSize, nRows, keep.length)
+    new BlockMatrix(new BlockMatrixFilterColsRDD(densify(), keep), blockSize, nRows, keep.length)
   }
 
   def filter(keepRows: Array[Long], keepCols: Array[Long]): BlockMatrix = {
-    requireDense("filter")
-    new BlockMatrix(new BlockMatrixFilterRDD(this, keepRows, keepCols),
+    new BlockMatrix(new BlockMatrixFilterRDD(densify(), keepRows, keepCols),
       blockSize, keepRows.length, keepCols.length)
   }
 
@@ -909,11 +1188,11 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
         }
     }
 
-    new Table(hc, entriesRDD, rvRowType)
+    new Table(hc, entriesRDD, rvRowType, Some(Array("i", "j")))
   }
-
-  // positions is an ordered table with one value field of type int32, which will be grouped by key field(s) if present
-  /* returns the entry table of the block matrix, filtered to pairs (i, j) such that i <= j, key[i] == key[j], 
+  
+  /* positions is an ordered table with one value field of type int32, which will be grouped by key field(s) if present.
+  returns the entry table of the block matrix, filtered to pairs (i, j) such that i <= j, key[i] == key[j], 
   and position[j] - position[i] <= radius. If includeDiagonal=false, require i < j rather than i <= j.*/
   def filteredEntriesTable(positions: Table, radius: Int, includeDiagonal: Boolean): Table = {
     val blocksToKeep = UpperIndexBounds.computeCoverByUpperTriangularBlocks(positions, gp, radius, includeDiagonal)
@@ -982,10 +1261,9 @@ object BlockMatrixFilterRDD {
   }
 }
 
+// checked in Python: keepRows and keepCols non-empty, increasing, valid range
 private class BlockMatrixFilterRDD(bm: BlockMatrix, keepRows: Array[Long], keepCols: Array[Long])
   extends RDD[((Int, Int), BDM[Double])](bm.blocks.sparkContext, Nil) {
-  require(keepRows.nonEmpty && keepRows.isIncreasing && keepRows.head >= 0 && keepRows.last < bm.nRows)
-  require(keepCols.nonEmpty && keepCols.isIncreasing && keepCols.head >= 0 && keepCols.last < bm.nCols)
   
   private val gp = bm.gp
   private val blockSize = gp.blockSize
@@ -1070,9 +1348,9 @@ private class BlockMatrixFilterRDD(bm: BlockMatrix, keepRows: Array[Long], keepC
 
 case class BlockMatrixFilterColsRDDPartition(index: Int, blockColRanges: Array[(Int, Array[Int], Array[Int])]) extends Partition
 
+// checked in Python: keep non-empty, increasing, valid range
 private class BlockMatrixFilterColsRDD(bm: BlockMatrix, keep: Array[Long])
   extends RDD[((Int, Int), BDM[Double])](bm.blocks.sparkContext, Nil) {
-  require(keep.nonEmpty && keep.isIncreasing && keep.head >= 0 && keep.last < bm.nCols)
 
   private val gp = bm.gp
   private val blockSize = gp.blockSize
@@ -1135,7 +1413,7 @@ private class BlockMatrixTransposeRDD(bm: BlockMatrix)
   extends RDD[((Int, Int), BDM[Double])](bm.blocks.sparkContext, Nil) {
 
   private val (newGP, inverseTransposePI) = bm.gp.transpose
-  
+
   override def getDependencies: Seq[Dependency[_]] = Array[Dependency[_]](
     new NarrowDependency(bm.blocks) {
       def getParents(partitionId: Int): Seq[Int] = Array(inverseTransposePI(partitionId))
@@ -1154,6 +1432,47 @@ private class BlockMatrixTransposeRDD(bm: BlockMatrix)
   @transient override val partitioner: Option[Partitioner] = Some(newGP)
 }
 
+private class BlockMatrixUnionOpRDD(
+  l: BlockMatrix,
+  r: BlockMatrix,
+  op: ((Option[BDM[Double]], Option[BDM[Double]])) => BDM[Double])
+  extends RDD[((Int, Int), BDM[Double])](l.blocks.sparkContext, Nil) {
+
+  import BlockMatrix.block
+
+  require(l.blockSize == r.blockSize)
+  require(l.nRows == r.nRows)
+  require(l.nCols == r.nCols)
+
+  private val lGP = l.gp
+  private val rGP = r.gp
+  private val gp = lGP.union(rGP)
+
+  private val lParts = l.blocks.partitions
+  private val rParts = r.blocks.partitions
+  
+  override def getDependencies: Seq[Dependency[_]] =
+    Array[Dependency[_]](
+      new NarrowDependency(l.blocks) {
+        def getParents(partitionId: Int): Seq[Int] = Array(lGP.blockPart(gp.partBlock(partitionId))).filter(_ >= 0)
+      },
+      new NarrowDependency(r.blocks) {
+        def getParents(partitionId: Int): Seq[Int] = Array(rGP.blockPart(gp.partBlock(partitionId))).filter(_ >= 0)
+      })
+
+  def compute(split: Partition, context: TaskContext): Iterator[((Int, Int), BDM[Double])] = {
+    val (i, j) = gp.partCoordinates(split.index)
+    val lm = op(block(l, lParts, lGP, context, i, j), block(r, rParts, rGP, context, i, j))
+    
+    Iterator.single(((i, j), lm))
+  }
+
+  protected def getPartitions: Array[Partition] = Array.tabulate(gp.numPartitions)(pi =>
+    new Partition { def index: Int = pi } )
+
+  @transient override val partitioner: Option[Partitioner] = Some(gp)
+}
+
 private class BlockMatrixMultiplyRDD(l: BlockMatrix, r: BlockMatrix)
   extends RDD[((Int, Int), BDM[Double])](l.blocks.sparkContext, Nil) {
 
@@ -1165,11 +1484,12 @@ private class BlockMatrixMultiplyRDD(l: BlockMatrix, r: BlockMatrix)
     s"blocks must be same size, but actually were ${ l.blockSize }x${ l.blockSize } and ${ r.blockSize }x${ r.blockSize }")
 
   private val lGP = l.gp
-  private val lParts = l.blocks.partitions
   private val rGP = r.gp
+  private val gp = GridPartitioner(l.blockSize, l.nRows, r.nCols)
+  
+  private val lParts = l.blocks.partitions
   private val rParts = r.blocks.partitions
   private val nProducts = lGP.nBlockCols
-  private val gp = GridPartitioner(l.blockSize, l.nRows, r.nCols)
 
   override def getDependencies: Seq[Dependency[_]] =
     Array[Dependency[_]](
@@ -1204,8 +1524,7 @@ private class BlockMatrixMultiplyRDD(l: BlockMatrix, r: BlockMatrix)
   protected def getPartitions: Array[Partition] = Array.tabulate(gp.numPartitions)(pi =>
     new Partition { def index: Int = pi } )
 
-  @transient override val partitioner: Option[Partitioner] =
-    Some(gp)
+  @transient override val partitioner: Option[Partitioner] = Some(gp)
 }
 
 // On compute, WriteBlocksRDDPartition writes the block row with index `index`

@@ -120,13 +120,24 @@ final class Region() extends NativeBase() {
 
   final def appendBinary(v: Array[Byte]): Long = {
     val len: Int = v.length
-    val grain = TBinary.contentAlignment
-    val addr = if (grain <= 4)
-      allocate(4, 4*(1+len))
-    else
-      allocate(grain, grain*(1+len)) + grain-4
+    val grain = if (TBinary.contentAlignment < 4) 4 else TBinary.contentAlignment
+    val addr = allocate(grain, 4+len) + (grain-4)
     storeInt(addr, len)
     storeBytes(addr+4, v)
+    addr
+  }
+  
+  final def appendBinarySlice(
+    fromRegion: Region,
+    fromOff: Long,
+    start: Int,
+    len: Int
+  ): Long = {
+    assert(len >= 0)
+    val grain = if (TBinary.contentAlignment < 4) 4 else TBinary.contentAlignment
+    val addr = allocate(grain, 4+len) + (grain-4)
+    storeInt(addr, len)
+    copyFrom(fromRegion, TBinary.bytesOffset(fromOff) + start, addr+4, len)
     addr
   }
 
@@ -171,7 +182,11 @@ final class Region() extends NativeBase() {
     Memory.storeByte(a, v)
     a
   }
-  final def appendString(v: String): Long = appendBinary(v.getBytes)
+  final def appendString(v: String): Long =
+    appendBinary(v.getBytes)
+  
+  final def appendStringSlice(fromRegion: Region, fromOff: Long, start: Int, n: Int): Long =
+    appendBinarySlice(fromRegion, fromOff, start, n)
 
   def visit(t: Type, off: Long, v: ValueVisitor) {
     t match {
