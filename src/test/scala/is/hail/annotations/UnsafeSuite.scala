@@ -327,5 +327,5 @@ class UnsafeSuite extends SparkSuite {
   
   // Tests for Region serialization have been removed since an off-heap Region
   // contains absolute addresses and can't be serialized/deserialized without 
-  // knowing the RegionValue Type.
+  // knowing its Type.
 }
