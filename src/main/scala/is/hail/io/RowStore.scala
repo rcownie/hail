@@ -110,6 +110,8 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
   // def buildDecoder(t: Type)(in: InputStream): Decoder = new PackDecoder(t, child.buildInputBuffer(in))
 
   def buildDecoder(t: Type, requestedType: Type): (InputStream) => Decoder = {
+    System.err.println("DEBUG: PackCodecSpec using CompiledPackDecoder")
+    throw new IllegalArgumentException("getting out")
     val f = EmitPackDecoder(t, requestedType)
     (in: InputStream) => new CompiledPackDecoder(child.buildInputBuffer(in), f)
   }
@@ -907,9 +909,15 @@ object NativeDecode {
           mainCode.append(s"   if (!decodeFloat(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
         case t: TFloat64 =>
           mainCode.append(s"   if (!decodeDouble(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
+        case t: TBinary =>
+          // TBinary - usually a string - has an int length, followed by that number of bytes
+          mainCode.append(s"   if (!decodeInt(${stateVar}))")
         case t: TArray =>
-
+          // 
         case t: TBaseStruct =>
+          if (t.nMissingBytes > 0) {
+          }
+          
       }
     }
 
@@ -917,24 +925,33 @@ object NativeDecode {
 
     sb.append("#include \"hail/hail.h\"\n")
     sb.append("#include \"hail/PackCodec.h\"\n")
+    sb.append("#include \"hail/Region.h\"\n")
+    sb.append("#include <cstdint>\n")
     sb.append("\n")
     sb.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
-    sb.append("class Decoder : public PackDecoderBase {\n")
+    sb.append("class Decoder : public NativeDecoderBase {\n")
     sb.append("public:\n")
     sb.append(stateDefs)
     sb.append("\n")
-    sb.append("virtual long decodeUntilDoneOrNeedPush(RegionObj* region, long pushSize) {\n")
+    sb.append("virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) {\n")
     sb.append(localDefs)
     sb.append("  switch (state) {\n")
     sb.append(entryCode)
     sb.append("  }\n")
     sb.append(mainCode)
-    sb.append("  return(0);\n")
+    sb.append("  return 0;\n")
     sb.append("needpush:\n")
     sb.append(flushCode)
-    sb.append("  return prepareForPush();\n")
+    sb.append("  return prepare_for_push();\n")
     sb.append("}\n")
     sb.append("};\n")
+    sb.append("\n")
+    sb.append("NativeObjPtr make_decoder() { return std::make_shared<Decoder>(); }\n")
+    sb.append("\n")
+    sb.append("ssize_t decode_until_done_or_need_push(long decoder, long region, long push_size) {\n")
+    sb.append("  return ((Decoder*)decoder)->decode_until_done_or_need_push((Region*)region, push_size);")
+    sb.append("}\n")
+    sb.append("\n")
     sb.append("NAMESPACE_HAIL_MODULE_END\n")
   }
 }
