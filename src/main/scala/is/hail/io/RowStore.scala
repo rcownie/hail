@@ -853,35 +853,47 @@ object NativeDecode {
     var seen = new ArrayBuffer[Int]()
     val stateDefs = new StringBuilder()
     val localDefs = new StringBuilder()
+    val resumeCode = new StringBuilder()
     val flushCode = new StringBuilder()
     val entryCode = new StringBuilder()
     val mainCode = new StringBuilder()
+    
+    def stateVarType(name: String): String = {
+      name match {
+        case "s" => "int"
+        case "len" => "ssize_t"
+        case "idx" => "ssize_t"
+        case "addr" => "char*"
+        case _ => "unknown"
+      }
+    }
 
     def stateVar(name: String, depth: Int): String = {
       var d = if (name.equals("s")) 0 else depth
       val bit = name match {
-        case "s"   => 0x1
-        case "len" => 0x2
-        case "idx" => 0x4
-        case "off" => 0x8
+        case "s"    => 0x1
+        case "len"  => 0x2
+        case "idx"  => 0x4
+        case "addr" => 0x8
       }
       if (seen.length <= d) seen = seen.padTo(d, 0)
       val result = s"${name}${depth}"
       if ((seen(d) & bit) == 0) {
         seen(d) = (seen(d) | bit)
-        stateDefs.append(s"  long ${result}_ = 0;\n")
-        localDefs.append(s"    long ${result} = ${result}_;\n")
+        val typ = stateVarType(name)
+        stateDefs.append(s"  ${typ} ${result}_ = 0;\n")
+        localDefs.append(s"    ${typ} ${result} = ${result}_;\n")
         flushCode.append(s"    ${result}_ = ${result};\n")
       }
       result
     }
 
     var numStates = 0
-    def allocState(): Int = {
+    def allocState(name: String): Int = {
       val s = numStates
       numStates += 1
-      sb.append(entryCode, s"    case ${s}: goto resume${s};\n")
-      s
+      resumeCode.append(s"    case ${s}: goto resume${s};\n")
+      mainCode.append(s".   resume${s}: // ${name}\n")
     }
 
     def isResumePoint(t: Type): Boolean = {
@@ -893,30 +905,51 @@ object NativeDecode {
     }
 
     def scan(depth: Int, name: String, typ: Type) {
-      var here = -1
-      if (isResumePoint(typ)) {
-        here = allocState()
-        mainCode.append(s"    resume${here}: // ${name}\n")
-      }
+      val r1 = if (isResumePoint(typ)) allocState(name) else -1
+      val addr = stateVar("addr", depth)
       typ match {
         case t: TBoolean =>
-          mainCode.append(s"   if (!decodeByte(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
+          mainCode.append(s"   if (!decode_byte((int8_t*)${addr}) { s = ${r1}; goto needpush; }\n")
         case t: TInt32 =>
-          mainCode.append(s"   if (!decodeInt(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
+          mainCode.append(s"   if (!decode_int((int32_t*)${addr}) { s = ${r1}; goto needpush; }\n")
         case t: TInt64 =>
-          mainCode.append(s"   if (!decodeLong(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
+          mainCode.append(s"   if (!decode_long((int64_t*)${addr}) { s = ${r1}; goto needpush; }\n")
         case t: TFloat32 =>
-          mainCode.append(s"   if (!decodeFloat(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
+          mainCode.append(s"   if (!decode_float((float*)${addr}) { s = ${r1}; goto needpush; }\n")
         case t: TFloat64 =>
-          mainCode.append(s"   if (!decodeDouble(${stateVar("off", depth)}) { s = ${here}; goto needpush; }\n")
+          mainCode.append(s"   if (!decode_double((double*)${addr}) { s = ${r1}; goto needpush; }\n")
         case t: TBinary =>
           // TBinary - usually a string - has an int length, followed by that number of bytes
-          mainCode.append(s"   if (!decodeInt(${stateVar}))")
+          val len = stateVar("len", depth)
+          val idx = stateVar("idx", depth)
+          mainCode.append(s"   if (!decode_length(&${len})) { s = ${r1}; goto needpush; }\n")
+          mainCode.append(s".   ${addr} = region->allocate(4, 4+${len});\n")
+          mainCode.append(s"    *(int32_t*)${addr} = ${len};\n")
+          mainCode.append(s".   ${addr} += sizeof(int32_t);\n")
+          mainCode.append(s"    for (${idx} = 0; ${idx} < ${len};) {\n")
+          val r2 = allocState();
+          mainCode.append(s".     auto ngot = decode_bytes(${addr}+${idx}, ${len}-${idx});")
+          mainCode.append(s".     if (ngot <= 0) { s = ${r2}; goto needpush; }\n")
+          mainCode.append(s".     ${idx} += ngot;\n")
+          mainCode.append(s"    }\n")
         case t: TArray =>
-          // 
+          val len = stateVar("len", depth)
+          val idx = stateVar("idx", depth)
+          mainCode.append(s"   if (!decode_length(&${len})) { s = ${r1}; goto needpush; }\n")
+          val grain = if (t.elementType.alignment > 4) t.elementType.alignment else 4
+          val esize = t.elementType.byteSize
+          mainCode.append(s".   ${addr} = region->allocate(${grain}+${esize}*${len}) + (${grain}-4);\n");
+          mainCode.append(s"    *(int32_t*)${addr} = ${len};\n")
+          mainCode.append(s".   ${addr} += sizeof(int32_t);\n")
+          mainCode.append(s"    for (${idx} = 0; ${idx} < ${len};) {\n}")
+          mainCode.append(s"")
+          mainCode.append(s".   }\n")
         case t: TBaseStruct =>
+          mainCode.
           if (t.nMissingBytes > 0) {
+            
           }
+          val r2 = allocState()
           
       }
     }
@@ -924,7 +957,7 @@ object NativeDecode {
     scan(0, "root", rowType)
 
     sb.append("#include \"hail/hail.h\"\n")
-    sb.append("#include \"hail/PackCodec.h\"\n")
+    sb.append("#include \"hail/PackDecoder.h\"\n")
     sb.append("#include \"hail/Region.h\"\n")
     sb.append("#include <cstdint>\n")
     sb.append("\n")

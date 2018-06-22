@@ -37,6 +37,22 @@ public:
     return -1;
   }
   
+  static ssize_t round_up_align(ssize_t n, ssize_t align) {
+    return ((n + (align-1)) & ~(align-1));
+  }
+  
+  static ssize_t missing_bytes(ssize_t nbits) {
+    return ((nbits + 7) >> 3);
+  }
+  
+  static ssize_t elements_offset(ssize_t n, bool required, ssize_t align) {
+    return round_up_align(sizeof(int32_t) + (required ? 0 : missing_bytes(n)), align);
+  }
+  
+  static bool is_missing(char* missing_base, ssize_t idx) {
+    return (bool)((missing_base[idx>>3] >> (idx&7)) & 0x1);
+  }
+  
   //
   // Return values:
   //   0  => have a complete RegionValue
@@ -54,29 +70,15 @@ public:
   //
   // Decode methods for primitive types
   //
-  bool decode_byte(ssize_t off) {
+  bool decode_byte(int8_t* addr) {
     ssize_t pos = pos_;
     if (pos > size_) return false;
-    region->asByte(off) = *(int8_t*)(buf_+pos);
+    *addr = *(int8_t*)(buf_+pos);
     pos_ = ++pos
     return true;
   }
   
-  bool decode_length(ssize_t off) {
-    ssize_t pos = pos_;
-    int val = 0;
-    for (int shift = 0;; shift += 7) {
-      if (pos >= size_) return false;
-      int8_t b = mem_[pos++];
-      val |= ((b & 0x7f) << shift);
-      if ((b & 0x80) == 0) break;
-    }
-    *len = val;
-    pos_ = pos;
-    return true;
-  }
-  
-  inline bool decodeInt(ssize_t off) {
+  bool decode_int(int32_t* addr) {
     ssize_t pos = pos_;
     int val = 0;
     for (int shift = 0;; shift += 7) {
@@ -85,12 +87,16 @@ public:
       val |= ((b & 0x7f) << shift);
       if ((b & 0x80) == 0) break;
     }
-    region_->asInt(off) = val;
+    *addr = val;
     pos_ = pos;
     return true;
   }
   
-  inline bool decodeLong(ssize_t off) {
+  bool decode_length(int32_t* addr) {
+    return decode_int(addr);
+  }
+  
+  bool decode_long(int64_t* addr) {
     ssize_t pos = pos_;
     ssize_t val = 0;
     for (int shift = 0;; shift += 7) {
@@ -99,32 +105,32 @@ public:
       val |= ((b & 0x7f) << shift);
       if ((b & 0x80) == 0) break;
     }
-    region_->asLong(off) = val;
+    *addr = val;
     pos_ = pos;
     return true;
   }
   
-  inline bool decodeFloat(ssize_t off) {
+  bool decode_float(float* addr) {
     ssize_t pos = pos_;
     if (pos+4 > size_) return false;
-    region_->asFloat(off) = *(float*)(buf_+pos);
+    *addr = *(float*)(buf_+pos);
     pos_ = (pos+4);
     return true;
   }
   
-  inline bool decodeDouble(ssize_t off) {
+  bool decode_double(double* addr) {
     ssize_t pos = pos_;
     if (pos+8 > size_) return false;
-    region_->asDouble(off) = *(double*)(buf_+pos);
+    *addr = *(double*)(buf_+pos);
     pos_ = (pos+8);
     return true;
   }
   
-  inline ssize_t decodeBytes(ssize_t off, ssize_t n) {
+  ssize_t decode_bytes(char* addr, ssize_t n) {
     ssize_t pos = pos_;
     if (n > size_-pos) n = size_-pos;
     if (n > 0) {
-      memcpy(region->asCharStar(off), buf_+pos, n);
+      memcpy(addr, buf_+pos, n);
       pos_ = (pos + n);
     }
     return n;
