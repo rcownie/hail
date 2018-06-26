@@ -111,6 +111,9 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
 
   def buildDecoder(t: Type, requestedType: Type): (InputStream) => Decoder = {
     System.err.println("DEBUG: PackCodecSpec using CompiledPackDecoder")
+    val sb = new StringBuilder()
+    NativeDecode.appendCode(sb, t)
+    System.err.println("DEBUG: NativeDecode ${sb}")
     throw new IllegalArgumentException("getting out")
     val f = EmitPackDecoder(t, requestedType)
     (in: InputStream) => new CompiledPackDecoder(child.buildInputBuffer(in), f)
@@ -853,7 +856,6 @@ object NativeDecode {
     var seen = new ArrayBuffer[Int]()
     val stateDefs = new StringBuilder()
     val localDefs = new StringBuilder()
-    val resumeCode = new StringBuilder()
     val flushCode = new StringBuilder()
     val entryCode = new StringBuilder()
     val mainCode = new StringBuilder()
@@ -892,13 +894,14 @@ object NativeDecode {
     def allocState(name: String): Int = {
       val s = numStates
       numStates += 1
-      resumeCode.append(s"    case ${s}: goto resume${s};\n")
+      entryCode.append(s"    case ${s}: goto resume${s};\n")
       mainCode.append(s".   resume${s}: // ${name}\n")
+      s
     }
 
     def isResumePoint(t: Type): Boolean = {
       t match {
-        case s: TBaseStruct => false
+        case _: TBaseStruct => false
         case _ => true
       }
     }
@@ -927,7 +930,7 @@ object NativeDecode {
           mainCode.append(s".   ${ptr} = region->allocate(4, 4+${len});\n")
           mainCode.append(s"    *(int32_t*)${ptr} = ${len};\n")
           mainCode.append(s"    for (${idx} = 0; ${idx} < ${len};) {\n")
-          val r2 = allocState();
+          val r2 = allocState(s"${name}.bytes");
           mainCode.append(s".     auto ngot = decode_bytes(${ptr}+4+${idx}, ${len}-${idx});")
           mainCode.append(s".     if (ngot <= 0) { s = ${r2}; goto pull; }\n")
           mainCode.append(s".     ${idx} += ngot;\n")
@@ -937,29 +940,33 @@ object NativeDecode {
           val ptr = stateVar("ptr", depth)
           val len = stateVar("len", depth)
           val idx = stateVar("idx", depth)
+          val elt0 = stateVar("elt0", depth)
           mainCode.append(s"   if (!decode_length(&${len})) { s = ${r1}; goto pull; }\n")
           val grain = if (t.elementType.alignment > 4) t.elementType.alignment else 4
           val esize = t.elementType.byteSize
           val req = if (t.elementType.required) "true" else "false"
-          mainCode.append(s".   ssize_t size = elements_offset(${len}, ${req}, ${grain}) + ${t.elementType.byteSize}*${len};\n")
-          mainCode.append(s".   ${ptr} = region->allocate(${grain}, ${size});\n");
-          mainCode.append(s".   ${elt0} = ${ptr} + elements_offset(${len}, ${req}, ${grain});\n")
+          mainCode.append(s".   { ssize_t elt0_offset = elements_offset(${len}, ${req}, ${grain})")
+          mainCode.append(s".     ssize_t size = elt0_offset + ${esize}*${len};\n")
+          mainCode.append(s".     ${ptr} = region->allocate(${grain}, size);\n");
+          mainCode.append(s".     ${elt0} = ${ptr} + elt0_offset;\n")
+          mainCode.append(s".   }\n")
           mainCode.append(s".   *(char**)${addr} = ${ptr};\n")
           mainCode.append(s"    *(int32_t*)${ptr} = ${len};\n")
           if (!t.elementType.required) {
             mainCode.append(s".   for (${idx} = 0; ${idx} < missing_bytes(${len});) {\n")
-            val r2 = allocState();
+            val r2 = allocState(s"${name}.missing");
             mainCode.append(s".     auto ngot = decode_bytes(${ptr}+4+${idx}, missing_bytes(${len})-${idx});\n")
             mainCode.append(s".     if (ngot <= 0) { s = ${r2}; goto pull; }\n")
             mainCode.append(s".     ${idx} += ngot;\n")
             mainCode.append(s".   }\n")
           }
           mainCode.append(s"    for (${idx} = 0; ${idx} < ${len};) {\n}")
-          if (!req) {
+          if (!t.elementType.required) {
             mainCode.append(s".     if (is_missing(${ptr}+4, ${idx})) continue;\n")
           }
           mainCode.append(s".     ${stateVar("addr", depth+1)} = ${elt0} + ${t.elementType.byteSize}*${idx};\n")
           scan(depth+1, s"${name}(${idx})", t.elementType)
+          mainCode.append(s".   }\n")
           mainCode.append(s".   }\n")
 
         case t: TBaseStruct =>
@@ -969,7 +976,7 @@ object NativeDecode {
           if (t.nMissingBytes > 0) {
             val idx = stateVar("idx", depth)
             mainCode.append(s".   for (${idx} = 0; ${idx} < ${t.nMissingBytes};) {\n}")
-            val r2 = allocState()
+            val r2 = allocState(s"${name}.missing")
             mainCode.append(s".     auto ngot = decode_bytes(${ptr}+${idx}, ${t.nMissingBytes}-${idx});\n")
             mainCode.append(s".     if (ngot <= 0) { s = ${r2}; goto pull; }\n")
             mainCode.append(s".     ${idx} += ngot;\n")
@@ -989,10 +996,9 @@ object NativeDecode {
               mainCode.append(s".     ${stateVar("addr", depth+1)} = ${ptr} + ${fieldOffset};\n")
               scan(depth+1, s"${name}.${field.name}", field.typ)
             }
-            $fieldIdx += 1
+            fieldIdx += 1
           }
-          
-          
+                   
       }
     }
 
