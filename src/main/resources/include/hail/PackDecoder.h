@@ -72,10 +72,16 @@ public:
   //
   bool decode_byte(int8_t* addr) {
     ssize_t pos = pos_;
-    if (pos > size_) return false;
+    if (pos >= size_) return false;
     *addr = *(int8_t*)(buf_+pos);
-    pos_ = ++pos
+    pos_ = (pos+1);
     return true;
+  }
+  
+  bool skip_byte() {
+    if (pos_ >= size_) return false;
+    pos_ += 1;
+    return false;
   }
   
   bool decode_int(int32_t* addr) {
@@ -83,11 +89,20 @@ public:
     int val = 0;
     for (int shift = 0;; shift += 7) {
       if (pos >= size_) return false;
-      int b = mem_[pos++];
+      int b = buf_[pos++];
       val |= ((b & 0x7f) << shift);
       if ((b & 0x80) == 0) break;
     }
     *addr = val;
+    pos_ = pos;
+    return true;
+  }
+  
+  bool skip_int() {
+    ssize_t pos = pos_;
+    do {
+      if (pos >= size_) return false;
+    } while ((buf_[pos++] & 0x80) != 0);
     pos_ = pos;
     return true;
   }
@@ -101,11 +116,20 @@ public:
     ssize_t val = 0;
     for (int shift = 0;; shift += 7) {
       if (pos >= size_) return false;
-      ssize_t b = mem_[pos++];
+      ssize_t b = buf_[pos++];
       val |= ((b & 0x7f) << shift);
       if ((b & 0x80) == 0) break;
     }
     *addr = val;
+    pos_ = pos;
+    return true;
+  }
+  
+  bool skip_long() {
+    ssize_t pos = pos_;
+    do {
+      if (pos >= size_) return false;
+    } while ((buf_[pos++] & 0x80) != 0);
     pos_ = pos;
     return true;
   }
@@ -118,6 +142,13 @@ public:
     return true;
   }
   
+  bool skip_float() {
+    ssize_t pos = pos_ + sizeof(float);
+    if (pos > size_) return false;
+    pos_ = pos;
+    return true;
+  }
+  
   bool decode_double(double* addr) {
     ssize_t pos = pos_;
     if (pos+8 > size_) return false;
@@ -126,6 +157,13 @@ public:
     return true;
   }
   
+  bool skip_double() {
+    ssize_t pos = pos_ + sizeof(double);
+    if (pos > size_) return false;
+    pos_ = pos;
+    return true;
+  }
+    
   ssize_t decode_bytes(char* addr, ssize_t n) {
     ssize_t pos = pos_;
     if (n > size_-pos) n = size_-pos;
@@ -133,6 +171,13 @@ public:
       memcpy(addr, buf_+pos, n);
       pos_ = (pos + n);
     }
+    return n;
+  }
+  
+  ssize skip_bytes(ssize_t n) {
+    ssize_t pos = pos_;
+    if (n > size_-pos) n = size_-pos;
+    pos_ = pos + n;
     return n;
   }
 };
