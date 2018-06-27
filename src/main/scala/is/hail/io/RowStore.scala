@@ -877,6 +877,7 @@ object NativeDecode {
         case "addr" => 0x04
         case "ptr"  => 0x08
         case "data" => 0x10
+        case "miss" => 0x20
       }
       if (seen.length <= d) seen = seen.padTo(d+1, 0)
       val result = s"${name}${depth}"
@@ -909,7 +910,7 @@ object NativeDecode {
 
     def scan(depth: Int, numIndent: Int, name: String, typ: Type, wantType: Type, skip: Boolean) {
       val r1 = if (isResumePoint(typ)) allocState(name) else -1
-      val addr = stateVar("addr", depth)
+      val addr = if (skip) "addr_undefined" else stateVar("addr", depth)
       val ind = "  " * numIndent
       typ.fundamentalType match {
         case t: TBoolean =>
@@ -968,8 +969,9 @@ object NativeDecode {
           val idx = stateVar("idx", depth)
           val data = if (skip) "data_undefined" else stateVar("data", depth)
           mainCode.append(s"${ind}  if (!decode_length(&${len})) { s = ${r1}; goto pull; }\n")
-          val grain = if (t.elementType.alignment > 4) t.elementType.alignment else 4
-          val esize = t.elementType.byteSize
+          val wantArray = wantType.asInstanceOf[TArray]
+          val grain = if (wantArray.elementType.alignment > 4) t.elementType.alignment else 4
+          val esize = wantArray.elementType.byteSize
           val req = if (t.elementType.required) "true" else "false"          
           mainCode.append(s"${ind}  { ssize_t data_offset = elements_offset(${len}, ${req}, ${grain});\n")
           var haveTmpMissing = false
@@ -1000,38 +1002,45 @@ object NativeDecode {
             mainCode.append(s"${ind}    if (is_missing(${ptr}+4, ${idx})) continue;\n")
           }
           if (!skip) {
-            mainCode.append(  s"${ind}    ${stateVar("addr", depth+1)} = ${data} + ${t.elementType.byteSize}*${idx};\n")
+            mainCode.append(  s"${ind}    ${stateVar("addr", depth+1)} = ${data} + ${idx}*${esize};\n")
           }
-          val wantElType = 
-            if (wantType.isInstanceOf[TArray]) wantType.asInstanceOf[TArray].elementType else t.elementType
-          scan(depth+1, numIndent+1, s"${name}(${idx})", t.elementType, wantElType, skip)
+          scan(depth+1, numIndent+1, s"${name}(${idx})", t.elementType, wantArray.elementType, skip)
           mainCode.append(  s"${ind}  }\n")
           if (haveTmpMissing) {
             mainCode.append(s"${ind}  free(${ptr});\n")
           }
 
         case t: TBaseStruct =>
+          val wantStruct = wantType.fundamentalType.asInstanceOf[TBaseStruct];
           val ptr = stateVar("ptr", depth)
+          var miss = if (t.nMissingBytes == 0) "miss_undefined" else stateVar("miss", depth)
           var haveTmpMissing = false
           if (skip) {
             if (t.nMissingBytes > 0) {
-              mainCode.append(s"  ${ptr} = (char*)malloc(${t.nMissingBytes});\n")
+              mainCode.append(s"${ind}  ${miss} = (char*)malloc(${t.nMissingBytes});\n")
               haveTmpMissing = true
             }
           } else {
-            mainCode.append(s"${ind}  ${ptr} = region->allocate(${t.alignment}, ${t.byteSize});\n")
+            mainCode.append(s"${ind}  ${ptr} = region->allocate(${wantStruct.alignment}, ${wantStruct.byteSize});\n")
             mainCode.append(s"${ind}  *(char**)${addr} = ${ptr};\n")
+            if (wantStruct.fields.length != t.fields.length) {
+              mainCode.append(s"${ind}  memset(${ptr}, 0xff, ${wantStruct.nMissingBytes});\n")
+              mainCode.append(s"${ind}  ${miss} = (char*)malloc(${t.nMissingBytes});\n")
+              haveTmpMissing = true
+            } else {
+              miss = ptr
+            }
           }
           if (t.nMissingBytes > 0) {
+            // Ack! We have to read this missing bytes, but shuffle bits needed for wantStruct
             val idx = stateVar("idx", depth)
             mainCode.append(s"${ind}  for (${idx} = 0; ${idx} < ${t.nMissingBytes};) {\n")
             val r2 = allocState(s"${name}.missing")
-            mainCode.append(s"${ind}    auto ngot = decode_bytes(${ptr}+${idx}, ${t.nMissingBytes}-${idx});\n")
+            mainCode.append(s"${ind}    auto ngot = decode_bytes(${miss}+${idx}, ${t.nMissingBytes}-${idx});\n")
             mainCode.append(s"${ind}    if (ngot <= 0) { s = ${r2}; goto pull; }\n")
             mainCode.append(s"${ind}    ${idx} += ngot;\n")
             mainCode.append(s"${ind}  }\n")
           }
-          val wantStruct = wantType.fundamentalType.asInstanceOf[TBaseStruct];
           var fieldIdx = 0
           while (fieldIdx < t.fields.length) {
             val field = t.fields(fieldIdx)
@@ -1049,9 +1058,14 @@ object NativeDecode {
             val wantType = if (fieldSkip) fieldType else wantStruct.types(wantIdx)
             if (!t.fieldRequired(fieldIdx)) {
               val m = t.missingIdx(fieldIdx)
-              mainCode.append(s"${ind}  if (!is_missing(${ptr}, ${m})) {\n")
+              mainCode.append(s"${ind}  if (!is_missing(${miss}, ${m})) {\n")
               if (!fieldSkip) {
-                mainCode.append(s"${ind}    ${stateVar("addr", depth+1)} = ${ptr} + ${fieldOffset};\n")
+                if (haveTmpMissing) {
+                  val mbit = wantStruct.missingIdx(wantIdx)
+                  mainCode.append(s"${ind}    ${ptr}[${mbit>>3}] &= ~(1<<${mbit&0x7});\n")
+                }
+                val wantOffset = wantStruct.byteOffsets(wantIdx)
+                mainCode.append(s"${ind}    ${stateVar("addr", depth+1)} = ${ptr} + ${wantOffset};\n")
               }
               scan(depth+1, numIndent+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
               mainCode.append(s"${ind}  }\n")
@@ -1064,7 +1078,7 @@ object NativeDecode {
             fieldIdx += 1
           }
           if (haveTmpMissing) {
-            mainCode.append(s"  free(${ptr});\n")
+            mainCode.append(s"  free(${miss});\n")
           }
         
         case _ =>
@@ -1080,6 +1094,7 @@ object NativeDecode {
     sb.append("#include \"hail/PackDecoder.h\"\n")
     sb.append("#include \"hail/Region.h\"\n")
     sb.append("#include <cstdint>\n")
+    sb.append("#include <cstring>\n")
     sb.append("\n")
     sb.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
     sb.append("\n")
@@ -1087,7 +1102,7 @@ object NativeDecode {
     sb.append("public:\n")
     sb.append(stateDefs)
     sb.append("\n")
-    sb.append(". virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) {\n")
+    sb.append("  virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) {\n")
     sb.append(localDefs)
     sb.append("    switch (state) {\n")
     sb.append(entryCode)
