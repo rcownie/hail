@@ -42,10 +42,11 @@ std::string hash_two_strings(const std::string& a, const std::string& b) {
   auto hashA = std::hash<std::string>()(a);
   auto hashB = std::hash<std::string>()(b);
   hashA ^= (0x3ac5*hashB);
+  hashB &= 0xffff;
   char buf[128];
   char* out = buf;
   for (int pos = 80; (pos -= 4) >= 0;) {
-    long nibble = ((pos >= 64) ? (hashB >> (pos-64)) : (hashA >> pos)) & 0xf;
+    int64_t nibble = ((pos >= 64) ? (hashB >> (pos-64)) : (hashA >> pos)) & 0xf;
     *out++ = ((nibble < 10) ? nibble+'0' : nibble-10+'a');
   }
   *out = 0;
@@ -434,8 +435,12 @@ static std::string to_qualified_name(
 ) {
   JString name(env, nameJ);
   char argTypeCodes[32];
-  for (int j = 0; j < numArgs; ++j) argTypeCodes[j] = 'l';
-  argTypeCodes[numArgs] = 0;  
+  if ((numArgs == 0) && !is_longfunc) {
+    strcpy(argTypeCodes, "v"); // No args at all needs "v" for void
+  } else {
+    for (int j = 0; j < numArgs; ++j) argTypeCodes[j] = 'l';
+    argTypeCodes[numArgs] = 0;
+  }
   char buf[512];
   if (is_global) {
     // No name-mangling for global func names
