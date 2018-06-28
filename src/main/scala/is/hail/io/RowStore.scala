@@ -4,6 +4,7 @@ import is.hail.annotations._
 import is.hail.expr.JSONAnnotationImpex
 import is.hail.expr.types._
 import is.hail.io.compress.LZ4Utils
+import is.hail.nativecode._
 import is.hail.rvd.{OrderedRVDPartitioner, OrderedRVDSpec, RVDContext, RVDSpec, UnpartitionedRVDSpec}
 import is.hail.sparkextras._
 import is.hail.utils._
@@ -103,6 +104,7 @@ trait CodecSpec extends Serializable {
 }
 
 final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
+
   def buildEncoder(t: Type): (OutputStream) => Encoder = { out: OutputStream =>
     new PackEncoder(t, child.buildOutputBuffer(out))
   }
@@ -113,6 +115,17 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
     System.err.println("DEBUG: PackCodecSpec using CompiledPackDecoder")
     val sb = new StringBuilder()
     NativeDecode.appendCode(sb, t, requestedType)
+    val mod = new NativeModule("", sb.toString(), false)
+    val st = new NativeStatus()
+    mod.findOrBuild(st)
+    if (st.fail) System.err.println("findOrBuild ${st}")
+    st.clear()
+    val makeDecoder = mod.findPtrFuncL0(st, "make_decoder")
+    if (st.fail) System.err.println("make_decoder ${st}")
+    st.clear()
+    val decodeFunc = mod.findLongFuncL2(st, "decode_until_done_or_need_push")
+    if (st.fail) System.err.println("decode_until_done_or_need_push")
+    mod.close()
     System.err.println(s"DEBUG: NativeDecode ${sb}")
     throw new IllegalArgumentException("getting out")
     val f = EmitPackDecoder(t, requestedType)
@@ -862,7 +875,6 @@ object NativeDecode {
     
     def stateVarType(name: String): String = {
       name match {
-        case "s" => "int"
         case "len" => "ssize_t"
         case "idx" => "ssize_t"
         case _ => "char*"
@@ -870,7 +882,6 @@ object NativeDecode {
     }
 
     def stateVar(name: String, depth: Int): String = {
-      var d = if (name.equals("s")) 0 else depth
       val bit = name match {
         case "len"  => 0x01
         case "idx"  => 0x02
@@ -879,10 +890,10 @@ object NativeDecode {
         case "data" => 0x10
         case "miss" => 0x20
       }
-      if (seen.length <= d) seen = seen.padTo(d+1, 0)
+      if (seen.length <= depth) seen = seen.padTo(depth+1, 0)
       val result = s"${name}${depth}"
-      if ((seen(d) & bit) == 0) {
-        seen(d) = (seen(d) | bit)
+      if ((seen(depth) & bit) == 0) {
+        seen(depth) = (seen(depth) | bit)
         val typ = stateVarType(name)
         val initVal = if (typ.equals("char*")) "nullptr" else "0"
         stateDefs.append(s"  ${typ} ${result}_ = ${initVal};\n")
@@ -914,30 +925,20 @@ object NativeDecode {
       val ind = "  " * numIndent
       typ.fundamentalType match {
         case t: TBoolean =>
-          if (skip)
-            mainCode.append(s"${ind}  if (!skip_byte()) { s = ${r1}; goto pull; }\n")
-          else
-            mainCode.append(s"${ind}  if (!decode_byte((int8_t*)${addr}) { s = ${r1}; goto pull; }\n")
+          val call = if (skip) "skip_byte()" else s"decode_byte((int8_t*)${addr})"
+          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
         case t: TInt32 =>
-          if (skip)
-            mainCode.append(s"${ind}  if (!skip_int()) { s = ${r1}; goto pull; }\n")
-          else 
-            mainCode.append(s"${ind}  if (!decode_int((int32_t*)${addr}) { s = ${r1}; goto pull; }\n")
+          val call = if (skip) "skip_int()" else s"decode_int((int32_t*)${addr})"
+          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
         case t: TInt64 =>
-          if (skip)
-            mainCode.append(s"${ind}  if (!skip_long()) { s = ${r1}; goto pull; }\n")
-          else 
-            mainCode.append(s"${ind}  if (!decode_long((int64_t*)${addr}) { s = ${r1}; goto pull; }\n")
+          val call = if (skip) "skip_long()" else s"decode_long((int64_t*)${addr})"
+          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
         case t: TFloat32 =>
-          if (skip)
-            mainCode.append(s"${ind}  if (!skip_float()) { s = ${r1}; goto pull; }\n")
-          else 
-            mainCode.append(s"${ind}  if (!decode_float((float*)${addr}) { s = ${r1}; goto pull; }\n")
+          val call = if (skip) "skip_float()" else s"decode_float((float*)${addr})"
+          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
         case t: TFloat64 =>
-          if (skip)
-            mainCode.append(s"${ind}  if (!skip_double()) { s = ${r1}; goto pull; }\n")
-          else 
-            mainCode.append(s"${ind}  if (!decode_double((double*)${addr}) { s = ${r1}; goto pull; }\n")
+          val call = if (skip) "skip_double()" else s"decode_double((double*)${addr})"
+          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
 
         case t: TBinary =>
           // TBinary - usually a string - has an int length, followed by that number of bytes
@@ -1092,6 +1093,7 @@ object NativeDecode {
 
     sb.append("#include \"hail/hail.h\"\n")
     sb.append("#include \"hail/PackDecoder.h\"\n")
+    sb.append("#include \"hail/NativeStatus.h\"\n")
     sb.append("#include \"hail/Region.h\"\n")
     sb.append("#include <cstdint>\n")
     sb.append("#include <cstring>\n")
@@ -1100,24 +1102,27 @@ object NativeDecode {
     sb.append("\n")
     sb.append("class Decoder : public NativeDecoderBase {\n")
     sb.append("public:\n")
+    sb.append("  int s_ = 0;\n")
     sb.append(stateDefs)
     sb.append("\n")
     sb.append("  virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) {\n")
+    sb.append("    int s = s_;\n")
     sb.append(localDefs)
-    sb.append("    switch (state) {\n")
+    sb.append("    switch (s) {\n")
     sb.append(entryCode)
     sb.append("    }\n")
     sb.append(mainCode)
     sb.append("    return 0;\n")
     sb.append("  pull:\n")
+    sb.append("    s_ = s;\n")
     sb.append(flushCode)
     sb.append("    return prepare_for_push();\n")
     sb.append("  }\n")
     sb.append("};\n")
     sb.append("\n")
-    sb.append("NativeObjPtr make_decoder() { return std::make_shared<Decoder>(); }\n")
+    sb.append("NativeObjPtr make_decoder(NativeStatus*) { return std::make_shared<Decoder>(); }\n")
     sb.append("\n")
-    sb.append("ssize_t decode_until_done_or_need_push(long decoder, long region, long push_size) {\n")
+    sb.append("ssize_t decode_until_done_or_need_push(NativeStatus*, long decoder, long region, long push_size) {\n")
     sb.append("  return ((Decoder*)decoder)->decode_until_done_or_need_push((Region*)region, push_size);\n")
     sb.append("}\n")
     sb.append("\n")

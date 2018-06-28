@@ -130,6 +130,13 @@ std::string get_java_home() {
   }
 }
 
+std::string strip_suffix(const std::string& s, const char* suffix) {
+  size_t len = s.length();
+  size_t n = strlen(suffix);
+  if ((n > len) || (strncmp(&s[len-n], suffix, n) != 0)) return s;
+  return std::string(s, 0, len-n);
+}
+
 std::string get_cxx_name() {
   char* p = ::getenv("CXX");
   if (p) return std::string(p);
@@ -256,8 +263,9 @@ private:
     const char* cxxstd = (strstr(config.cxx_name_.c_str(), "clang") ? "-std=c++17" : "-std=c++11");
     fprintf(f, "CXXFLAGS  := \\\n");
     fprintf(f, "  %s -fPIC -march=native -fno-strict-aliasing -Wall -Werror \\\n", cxxstd);
-    fprintf(f, "  -I%s/include \\\n", config.java_home_.c_str());
-    fprintf(f, "  -I%s/include/%s \\\n", config.java_home_.c_str(), config.java_md_.c_str());
+    auto java_include = strip_suffix(config.java_home_, "/jre") + "/include";
+    fprintf(f, "  -I%s \\\n", java_include.c_str());
+    fprintf(f, "  -I%s/%s \\\n", java_include.c_str(), config.java_md_.c_str());
     fprintf(f, "  -I%s \\\n", include_.c_str());
     bool have_oflag = (strstr(options_.c_str(), "-O") != nullptr);
     fprintf(f, "  %s%s \\\n", have_oflag ? "" : "-O3", options_.c_str());
