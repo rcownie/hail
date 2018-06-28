@@ -5,7 +5,7 @@
 #include "hail/Region.h"
 #include <cstdint>
 
-NAMESPACE_BEGIN(hail)
+namespace hail {
 
 class PackDecoderBase : public NativeObj {
 private:
@@ -17,9 +17,9 @@ public:
   ssize_t size_;
   
 public:
-  PackDecoderBase(ssize_t bufCapacity) :
+  PackDecoderBase(ssize_t bufCapacity = 0) :
     capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
-    buf_(malloc(capacity_)),
+    buf_((char*)malloc(capacity_)),
     pos_(0),
     size_(0) {
   }
@@ -61,6 +61,13 @@ public:
   //   -1 => no more RegionValue's and no more data
   //
   virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) = 0;
+  
+  ssize_t prepare_for_push() {
+    if (pos_ < size_) memcpy(buf_, buf_+pos_, size_-pos_);
+    size_ -= pos_;
+    pos_ = 0;
+    return (capacity_ - size_);
+  }
   
   int64_t decode_one_byte() {
     if (pos_ >= size_) return -1;
@@ -108,8 +115,11 @@ public:
     return true;
   }
   
-  bool decode_length(int32_t* addr) {
-    return decode_int(addr);
+  bool decode_length(ssize_t* addr) {
+    int32_t len = 0;
+    if (!decode_int(&len)) return false;
+    *addr = (ssize_t)len;
+    return true;
   }
   
   bool decode_long(int64_t* addr) {
@@ -175,7 +185,7 @@ public:
     return n;
   }
   
-  ssize skip_bytes(ssize_t n) {
+  ssize_t skip_bytes(ssize_t n) {
     ssize_t pos = pos_;
     if (n > size_-pos) n = size_-pos;
     pos_ = pos + n;
@@ -183,6 +193,6 @@ public:
   }
 };
 
-NAMESPACE_END(hail)
+} // end hail
 
 #endif

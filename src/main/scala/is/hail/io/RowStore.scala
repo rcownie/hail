@@ -1100,7 +1100,7 @@ object NativeDecode {
     sb.append("\n")
     sb.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
     sb.append("\n")
-    sb.append("class Decoder : public NativeDecoderBase {\n")
+    sb.append("class Decoder : public PackDecoderBase {\n")
     sb.append("public:\n")
     sb.append("  int s_ = 0;\n")
     sb.append(stateDefs)
