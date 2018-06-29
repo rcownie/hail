@@ -54,12 +54,10 @@ public:
     return (bool)((missing_base[idx>>3] >> (idx&7)) & 0x1);
   }
   
-  //
   // Return values:
   //   0  => have a complete RegionValue
   //   >0 => need push of more data
   //   -1 => no more RegionValue's and no more data
-  //
   virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) = 0;
   
   ssize_t prepare_for_push() {
@@ -69,10 +67,14 @@ public:
     return (capacity_ - size_);
   }
   
-  int64_t decode_one_byte() {
-    if (pos_ >= size_) return -1;
-    int64_t b = (buf_[pos_++] & 0xff);
-    return b;
+  ssize_t decode_one_byte(ssize_t push_size) {
+    size_ += push_size;
+    if (pos_ >= size_) {
+      pos_ = 0;
+      size_ = 0;
+      return capacity_;
+    }
+    return (buf_[pos_++] & 0xff);
   }
   
   //
