@@ -372,7 +372,7 @@ NativeObjPtr nativePtrFuncTestObjA3(NativeStatus*, int64_t a0, int64_t a1, int64
   return std::make_shared<TestObjA>(a0, a1, a2);
 }
 
-NativeObjPtr nativePtrFuncTestObjA4(NativeStatus*,, int64_t a0, int64_t a1, int64_t a2, int64_t a3) {
+NativeObjPtr nativePtrFuncTestObjA4(NativeStatus*, int64_t a0, int64_t a1, int64_t a2, int64_t a3) {
   return std::make_shared<TestObjA>(a0, a1, a2, a3);
 }
 

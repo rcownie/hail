@@ -17,11 +17,7 @@ NativeFunc* to_NativeFunc(JNIEnv* env, jobject thisJ) {
 
 } // end anon
 
-<<<<<<< HEAD
 NATIVEMETHOD(jlong, NativeLongFuncL0, nativeApply)(
-=======
-NATIVEMETHOD(jlong, NativeLongFuncL0, apply)(
->>>>>>> master
   JNIEnv* env,
   jobject thisJ,
   jlong st
@@ -32,11 +28,7 @@ NATIVEMETHOD(jlong, NativeLongFuncL0, apply)(
   return f->func_(status);
 }
 
-<<<<<<< HEAD
 NATIVEMETHOD(jlong, NativeLongFuncL1, nativeApply)(
-=======
-NATIVEMETHOD(jlong, NativeLongFuncL1, apply)(
->>>>>>> master
   JNIEnv* env,
   jobject thisJ,
   jlong st,
@@ -48,11 +40,7 @@ NATIVEMETHOD(jlong, NativeLongFuncL1, apply)(
   return f->func_(status, a0);
 }
 
-<<<<<<< HEAD
 NATIVEMETHOD(jlong, NativeLongFuncL2, nativeApply)(
-=======
-NATIVEMETHOD(jlong, NativeLongFuncL2, apply)(
->>>>>>> master
   JNIEnv* env,
   jobject thisJ,
   jlong st,
@@ -65,11 +53,7 @@ NATIVEMETHOD(jlong, NativeLongFuncL2, apply)(
   return f->func_(status, a0, a1);
 }
 
-<<<<<<< HEAD
 NATIVEMETHOD(jlong, NativeLongFuncL3, nativeApply)(
-=======
-NATIVEMETHOD(jlong, NativeLongFuncL3, apply)(
->>>>>>> master
   JNIEnv* env,
   jobject thisJ,
   jlong st,
@@ -84,11 +68,7 @@ NATIVEMETHOD(jlong, NativeLongFuncL3, apply)(
   return f->func_(status, a0, a1, a2);
 }
 
-<<<<<<< HEAD
 NATIVEMETHOD(jlong, NativeLongFuncL4, nativeApply)(
-=======
-NATIVEMETHOD(jlong, NativeLongFuncL4, apply)(
->>>>>>> master
   JNIEnv* env,
   jobject thisJ,
   jlong st,
@@ -103,11 +83,7 @@ NATIVEMETHOD(jlong, NativeLongFuncL4, apply)(
   return f->func_(status, a0, a1, a2, a3);
 }
 
-<<<<<<< HEAD
 NATIVEMETHOD(jlong, NativeLongFuncL5, nativeApply)(
-=======
-NATIVEMETHOD(jlong, NativeLongFuncL5, apply)(
->>>>>>> master
   JNIEnv* env,
   jobject thisJ,
   jlong st,
@@ -123,11 +99,7 @@ NATIVEMETHOD(jlong, NativeLongFuncL5, apply)(
   return f->func_(status, a0, a1, a2, a3, a4);
 }
 
-<<<<<<< HEAD
 NATIVEMETHOD(jlong, NativeLongFuncL6, nativeApply)(
-=======
-NATIVEMETHOD(jlong, NativeLongFuncL6, apply)(
->>>>>>> master
   JNIEnv* env,
   jobject thisJ,
   jlong st,
@@ -144,11 +116,7 @@ NATIVEMETHOD(jlong, NativeLongFuncL6, apply)(
   return f->func_(status, a0, a1, a2, a3, a4, a5);
 }
 
-<<<<<<< HEAD
 NATIVEMETHOD(jlong, NativeLongFuncL7, nativeApply)(
-=======
-NATIVEMETHOD(jlong, NativeLongFuncL7, apply)(
->>>>>>> master
   JNIEnv* env,
   jobject thisJ,
   jlong st,
@@ -166,11 +134,7 @@ NATIVEMETHOD(jlong, NativeLongFuncL7, apply)(
   return f->func_(status, a0, a1, a2, a3, a4, a5, a6);
 }
 
-<<<<<<< HEAD
 NATIVEMETHOD(jlong, NativeLongFuncL8, nativeApply)(
-=======
-NATIVEMETHOD(jlong, NativeLongFuncL8, apply)(
->>>>>>> master
   JNIEnv* env,
   jobject thisJ,
   jlong st,
