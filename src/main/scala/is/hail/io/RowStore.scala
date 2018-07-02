@@ -1137,6 +1137,49 @@ object NativeDecode {
   }
 }
 
+final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decoder {
+  var st = new NativeStatus()
+  val make_decoder = mod.findPtrFuncL0(st, "make_decoder")
+  val decode_until_done_or_need_push = mod.findLongFuncL3(st, "decode_until_done_or_need_push")
+  val decode_one_byte = mod.findLongFuncL1(st, "decode_one_byte")
+  val decoder = new NativePtr(makeDecoder, st)
+  val bufOffset = decoder.getFieldOffset(8, "buf_")
+  val sizeOffset = decoder.getFieldOffset(8, "size_")
+  st.close()
+  mod.close()
+
+  def close(): Unit = {
+    in.close()
+    make_decoder.close()
+    decode_until_done_or_need_push.close()
+    decode_one_byte.close()
+  }
+
+  def pushData(size: Long): Long = {
+
+  }
+
+  def readByte(): Byte = {
+    var rc = 0L
+    var done = false
+    while (!done) {
+      rc = decode_one_byte(st, decoder.get())
+      if (rc >= 0x100) pushData(rc) else done = true
+    }
+    val result: Byte = rc
+    result
+  }
+
+  def readRegionValue(region: Region): Long = {
+    var rc = 0L
+    var done = false
+    while (!done) {
+      rc = decode_until_done_or_need_push(st, decoder.get(), region.get(), )
+    }
+  }
+
+}
+
 final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, InputBuffer, Long]) extends Decoder {
   def close() {
     in.close()
