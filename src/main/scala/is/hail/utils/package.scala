@@ -185,6 +185,16 @@ package object utils extends Logging
   def D_>=(a: Double, b: Double, tolerance: Double = defaultTolerance): Boolean =
     (a == b) || a - b >= -D_epsilon(a, b, tolerance)
 
+  def D0_==(x: Double, y: Double, tolerance: Double = defaultTolerance): Boolean =
+    if (x.isNaN)
+      y.isNaN
+    else if (x.isPosInfinity)
+      y.isPosInfinity
+    else if (x.isNegInfinity)
+      y.isNegInfinity
+    else
+      D_==(x, y, tolerance)
+
   def flushDouble(a: Double): Double =
     if (math.abs(a) < java.lang.Double.MIN_NORMAL) 0.0 else a
 
@@ -612,6 +622,23 @@ package object utils extends Logging
       "\\" + s
     else
       s
+  }
+
+  def toMapIfUnique[K, K2, V](
+    kvs: Traversable[(K, V)]
+  )(keyBy: K => K2
+  ): Either[Map[K2, Traversable[K]], Map[K2, V]] = {
+    val grouped = kvs.groupBy(x => keyBy(x._1))
+
+    val dupes = grouped.filter { case (k, m) => m.size != 1 }
+
+    if (dupes.nonEmpty) {
+      Left(dupes.map { case (k, m) => k -> m.map(_._1) })
+    } else {
+      Right(grouped
+        .map { case (k, m) => k -> m.map(_._2).head }
+        .toMap)
+    }
   }
 }
 

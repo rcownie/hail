@@ -4,7 +4,6 @@ import is.hail.annotations.{Region, UnsafeOrdering, _}
 import is.hail.asm4s.Code
 import is.hail.check.Arbitrary._
 import is.hail.check.Gen
-import is.hail.expr.IntNumericConversion
 import is.hail.expr.ir.EmitMethodBuilder
 import is.hail.utils._
 
@@ -19,7 +18,6 @@ class TInt32(override val required: Boolean) extends TIntegral {
   override def pyString(sb: StringBuilder): Unit = {
     sb.append("int32")
   }
-  val conv = IntNumericConversion
 
   def _typeCheck(a: Any): Boolean = a.isInstanceOf[Int]
 
@@ -36,9 +34,11 @@ class TInt32(override val required: Boolean) extends TIntegral {
   val ordering: ExtendedOrdering =
     ExtendedOrdering.extendToNull(implicitly[Ordering[Int]])
 
-  def codeOrdering(mb: EmitMethodBuilder): CodeOrdering =
+  def codeOrdering(mb: EmitMethodBuilder, other: Type): CodeOrdering = {
+    assert(other isOfType this)
     new CodeOrdering {
       type T = Int
+
       def compareNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Int] =
         Code.invokeStatic[java.lang.Integer, Int, Int, Int]("compare", x, y)
 
@@ -57,6 +57,7 @@ class TInt32(override val required: Boolean) extends TIntegral {
       override def equivNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
         x.ceq(y)
     }
+  }
 
   override def byteSize: Long = 4
 }

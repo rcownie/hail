@@ -45,7 +45,7 @@ object TypeCheck {
         assert(x.typ == body.typ)
       case x@Ref(name, _) =>
         val expected = env.lookup(x)
-        assert(x.typ == expected, s"$name ${ x.typ.parsableString() } ${ expected.parsableString() }")
+        assert(x.typ == expected, s"type mismatch:\n  name: $name\n  actual: ${ x.typ.parsableString() }\n  expect: ${ expected.parsableString() }")
       case x@ApplyBinaryPrimOp(op, l, r) =>
         check(l)
         check(r)
@@ -56,8 +56,8 @@ object TypeCheck {
       case x@ApplyComparisonOp(op, l, r) =>
         check(l)
         check(r)
-        assert(l.typ.fundamentalType == r.typ.fundamentalType)
-        assert(op.typ.fundamentalType == l.typ.fundamentalType)
+        assert(op.t1.fundamentalType == l.typ.fundamentalType)
+        assert(op.t2.fundamentalType == r.typ.fundamentalType)
         assert(x.typ == TBoolean())
       case x@MakeArray(args, typ) =>
         if (args.length == 0)
@@ -83,10 +83,11 @@ object TypeCheck {
         assert(a.typ.isOfType(TInt32()))
         assert(b.typ.isOfType(TInt32()))
         assert(c.typ.isOfType(TInt32()))
-      case x@ArraySort(a, ascending) =>
+      case x@ArraySort(a, ascending, onKey) =>
         check(a)
         check(ascending)
         assert(a.typ.isInstanceOf[TArray])
+        assert(!onKey || coerce[TArray](a.typ).elementType.isInstanceOf[TBaseStruct])
         assert(ascending.typ.isOfType(TBoolean()))
       case x@ToSet(a) =>
         check(a)

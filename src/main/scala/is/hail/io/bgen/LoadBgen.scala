@@ -4,11 +4,12 @@ import is.hail.HailContext
 import is.hail.annotations._
 import is.hail.expr.types._
 import is.hail.io.vcf.LoadVCF
-import is.hail.io.{HadoopFSDataBinaryReader, IndexBTree}
+import is.hail.io._
 import is.hail.rvd.{OrderedRVD, RVDContext}
 import is.hail.sparkextras.ContextRDD
 import is.hail.utils._
 import is.hail.variant._
+import org.apache.commons.codec.binary.Base64
 import org.apache.hadoop.io.LongWritable
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.Row
@@ -18,9 +19,16 @@ import scala.io.Source
 case class BgenHeader(compressed: Boolean, nSamples: Int, nVariants: Int,
   headerLength: Int, dataStart: Int, hasIds: Boolean, version: Int)
 
-case class BgenResult[T <: BgenRecord](file: String, nSamples: Int, nVariants: Int, rdd: RDD[(LongWritable, T)])
+case class BgenResult(
+  file: String,
+  nSamples: Int,
+  nVariants: Int,
+  rdd: RDD[(LongWritable, BgenRecordV12)]
+)
 
 object LoadBgen {
+  private[bgen] val includedVariantsPositionsHadoopPrefix = "__includedVariantsPositions__"
+  private[bgen] val includedVariantsIndicesHadoopPrefix = "__includedVariantsIndices__"
 
   def load(hc: HailContext,
     files: Array[String],
@@ -28,10 +36,15 @@ object LoadBgen {
     includeGT: Boolean,
     includeGP: Boolean,
     includeDosage: Boolean,
+    includeLid: Boolean,
+    includeRsid: Boolean,
+    includeFileRowIdx: Boolean,
     nPartitions: Option[Int] = None,
     rg: Option[ReferenceGenome] = Some(ReferenceGenome.defaultReference),
     contigRecoding: Map[String, String] = Map.empty[String, String],
-    skipInvalidLoci: Boolean = false): MatrixTable = {
+    skipInvalidLoci: Boolean = false,
+    includedVariantsPerFile: Map[String, Seq[Int]] = Map.empty[String, Seq[Int]]
+  ): MatrixTable = {
 
     require(files.nonEmpty)
     val hadoop = hc.hadoopConf
@@ -46,10 +59,27 @@ object LoadBgen {
     hadoop.setBoolean("includeGT", includeGT)
     hadoop.setBoolean("includeGP", includeGP)
     hadoop.setBoolean("includeDosage", includeDosage)
+    hadoop.setBoolean("includeLid", includeLid)
+    hadoop.setBoolean("includeRsid", includeRsid)
 
     val sc = hc.sc
     val results = files.map { file =>
       val bState = readState(sc.hadoopConfiguration, file)
+
+      includedVariantsPerFile.get(file) match {
+        case Some(indices) =>
+          val variantPositions =
+            using(new OnDiskBTreeIndexToValue(file + ".idx", hadoop)) { index =>
+              index.positionOfVariants(indices.toArray)
+            }
+          hadoop.set(includedVariantsPositionsHadoopPrefix + file, encodeLongs(variantPositions))
+          hadoop.set(includedVariantsIndicesHadoopPrefix + file, encodeInts(indices.toArray))
+        case None =>
+          // if import_bgen was previously called, we must clear the old
+          // configuration
+          hadoop.unset(includedVariantsPositionsHadoopPrefix + file)
+          hadoop.unset(includedVariantsIndicesHadoopPrefix + file)
+      }
 
       bState.version match {
         case 2 =>
@@ -63,13 +93,13 @@ object LoadBgen {
     if (unequalSamples.length > 0)
       fatal(
         s"""The following BGEN files did not contain the expected number of samples $nSamples:
-           |  ${ unequalSamples.map(x => s"""(${ x._2 } ${ x._1 }""").mkString("\n  ") }""".stripMargin)
+            |  ${ unequalSamples.map(x => s"""(${ x._2 } ${ x._1 }""").mkString("\n  ") }""".stripMargin)
 
     val noVariants = results.filter(_.nVariants == 0).map(_.file)
     if (noVariants.length > 0)
       fatal(
         s"""The following BGEN files did not contain at least 1 variant:
-           |  ${ noVariants.mkString("\n  ") })""".stripMargin)
+            |  ${ noVariants.mkString("\n  ") })""".stripMargin)
 
     val nVariants = results.map(_.nVariants).sum
 
@@ -77,10 +107,15 @@ object LoadBgen {
     info(s"Number of samples in BGEN files: $nSamples")
     info(s"Number of variants across all BGEN files: $nVariants")
 
-    val signature = TStruct("locus" -> TLocus.schemaFromRG(rg),
-      "alleles" -> TArray(TString()),
-      "rsid" -> TString(),
-      "varid" -> TString())
+    val rowFields = Array(
+      (true, "locus" -> TLocus.schemaFromRG(rg)),
+      (true, "alleles" -> TArray(TString())),
+      (includeRsid, "rsid" -> TString()),
+      (includeLid, "varid" -> TString()),
+      (includeFileRowIdx, "file_row_idx" -> TInt64()))
+      .withFilter(_._1).map(_._2)
+
+    val signature = TStruct(rowFields: _*)
 
     val entryFields = Array(
       (includeGT, "GT" -> TCall()),
@@ -108,7 +143,9 @@ object LoadBgen {
       val rv = RegionValue(region)
 
       it.flatMap { case (_, record) =>
-        val (contig, pos, alleles) = record.getKey
+        val contig = record.getContig
+        val pos = record.getPosition
+        val alleles = record.getAlleles
         val contigRecoded = contigRecoding.getOrElse(contig, contig)
 
         if (skipInvalidLoci && !rg.forall(_.isValidLocus(contigRecoded, pos)))
@@ -134,16 +171,15 @@ object LoadBgen {
       }
     }))
 
-    val loadEntries = entryFields.length > 0
-
     val rdd2 = ContextRDD.union(sc, crdds.map(_.cmapPartitions { (ctx, it) =>
       val region = ctx.region
       val rvb = new RegionValueBuilder(region)
       val rv = RegionValue(region)
 
       it.flatMap { case (_, record) =>
-        val (contig, pos, alleles) = record.getKey
-        val va = record.getAnnotation.asInstanceOf[Row]
+        val contig = record.getContig
+        val pos = record.getPosition
+        val alleles = record.getAlleles
 
         val contigRecoded = contigRecoding.getOrElse(contig, contig)
 
@@ -162,22 +198,16 @@ object LoadBgen {
             i += 1
           }
           rvb.endArray()
-          rvb.addAnnotation(rowType.types(2), va.get(0))
-          rvb.addAnnotation(rowType.types(3), va.get(1))
-          if (loadEntries)
-            record.getValue(rvb) // gs
-          else {
-            rvb.startArray(nSamples)
-            var j = 0
-            while (j < nSamples) {
-              rvb.startStruct()
-              rvb.endStruct()
-              j += 1
-            }
-            rvb.endArray()
-          }
-          rvb.endStruct()
 
+          if (includeRsid)
+            rvb.addString(record.getRsid)
+          if (includeLid)
+            rvb.addString(record.getLid)
+          if (includeFileRowIdx)
+            rvb.addLong(record.getFileRowIdx)
+          record.getValue(rvb) // gs
+
+          rvb.endStruct()
           rv.setOffset(rvb.end())
           Some(rv)
         }
@@ -319,5 +349,69 @@ object LoadBgen {
 
     val hasIds = (flags >> 31 & 1) != 0
     BgenHeader(isCompressed, nSamples, nVariants, headerLength, dataStart, hasIds, version)
+  }
+
+  private[bgen] def encodeInts(a: Array[Int]): String = {
+    val b = new Array[Byte](a.length * 4)
+    var i = 0
+    while (i < a.length) {
+      b(4 * i) = (a(i) & 0xff).asInstanceOf[Byte]
+      b(4 * i + 1) = ((a(i) >>> 8) & 0xff).asInstanceOf[Byte]
+      b(4 * i + 2) = ((a(i) >>> 16) & 0xff).asInstanceOf[Byte]
+      b(4 * i + 3) = ((a(i) >>> 24) & 0xff).asInstanceOf[Byte]
+      i += 1
+    }
+    Base64.encodeBase64String(b)
+  }
+
+  private[bgen] def decodeInts(a: String): Array[Int] = {
+    val b = Base64.decodeBase64(a)
+    val c = new Array[Int](b.length / 4)
+    var i = 0
+    while (i < c.length) {
+      c(i) =
+        ((b(i * 4 + 3) & 0xff).asInstanceOf[Int] << 24) |
+        ((b(i * 4 + 2) & 0xff).asInstanceOf[Int] << 16) |
+        ((b(i * 4 + 1) & 0xff).asInstanceOf[Int] << 8) |
+        (b(i * 4).asInstanceOf[Int] & 0xff)
+      i += 1
+    }
+    c
+  }
+
+  private[bgen] def encodeLongs(a: Array[Long]): String = {
+    val b = new Array[Byte](a.length * 8)
+    var i = 0
+    while (i < a.length) {
+      b(8 * i) = (a(i) & 0xff).asInstanceOf[Byte]
+      b(8 * i + 1) = ((a(i) >>> 8) & 0xff).asInstanceOf[Byte]
+      b(8 * i + 2) = ((a(i) >>> 16) & 0xff).asInstanceOf[Byte]
+      b(8 * i + 3) = ((a(i) >>> 24) & 0xff).asInstanceOf[Byte]
+      b(8 * i + 4) = ((a(i) >>> 32) & 0xff).asInstanceOf[Byte]
+      b(8 * i + 5) = ((a(i) >>> 40) & 0xff).asInstanceOf[Byte]
+      b(8 * i + 6) = ((a(i) >>> 48) & 0xff).asInstanceOf[Byte]
+      b(8 * i + 7) = ((a(i) >>> 56) & 0xff).asInstanceOf[Byte]
+      i += 1
+    }
+    Base64.encodeBase64String(b)
+  }
+
+  private[bgen] def decodeLongs(a: String): Array[Long] = {
+    val b = Base64.decodeBase64(a)
+    val c = new Array[Long](b.length / 8)
+    var i = 0
+    while (i < c.length) {
+      c(i) =
+        ((b(i * 8 + 7) & 0xff).asInstanceOf[Long] << 56) |
+        ((b(i * 8 + 6) & 0xff).asInstanceOf[Long] << 48) |
+        ((b(i * 8 + 5) & 0xff).asInstanceOf[Long] << 40) |
+        ((b(i * 8 + 4) & 0xff).asInstanceOf[Long] << 32) |
+        ((b(i * 8 + 3) & 0xff).asInstanceOf[Long] << 24) |
+        ((b(i * 8 + 2) & 0xff).asInstanceOf[Long] << 16) |
+        ((b(i * 8 + 1) & 0xff).asInstanceOf[Long] << 8) |
+        (b(i * 8).asInstanceOf[Long] & 0xff)
+      i += 1
+    }
+    c
   }
 }

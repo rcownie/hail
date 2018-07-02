@@ -17,12 +17,12 @@ object Infer {
       case ApplyUnaryPrimOp(op, v) =>
         UnaryOp.getReturnType(op, v.typ)
       case ApplyComparisonOp(op, l, r) =>
-        assert(l.typ == r.typ)
+        assert(l.typ isOfType r.typ, s"${l.typ.parsableString()} vs ${r.typ.parsableString()}")
         TBoolean()
       case ArrayRef(a, i) =>
         assert(i.typ.isOfType(TInt32()))
         -coerce[TArray](a.typ).elementType
-      case ArraySort(a, ascending) =>
+      case ArraySort(a, ascending, _) =>
         assert(ascending.typ.isOfType(TBoolean()))
         a.typ
       case ToSet(a) =>
@@ -36,7 +36,7 @@ object Infer {
         val elt = coerce[TBaseStruct](coerce[TArray](collection.typ).elementType)
         TDict(elt.types(0), TArray(elt.types(1)))
       case ArrayMap(a, name, body) =>
-        TArray(-body.typ)
+        TArray(-body.typ, a.typ.required)
       case ArrayFilter(a, name, cond) =>
         a.typ
       case ArrayFlatMap(a, name, body) =>
@@ -61,7 +61,6 @@ object Infer {
                 case Some(f2) => t2.updateKey(name, f2.index, a.typ)
                 case None => t2.appendKey(name, a.typ)
               }
-            case _ => TStruct(name -> a.typ)
           }
         }.asInstanceOf[TStruct]
       case GetField(o, name) =>

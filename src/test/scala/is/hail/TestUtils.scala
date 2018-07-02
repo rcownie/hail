@@ -192,9 +192,9 @@ object TestUtils {
   def computeRRM(hc: HailContext, vds: MatrixTable): KinshipMatrix = {
     var mt = vds
     mt = mt.selectEntries("{gt: g.GT.nNonRefAlleles()}")
-      .annotateRowsExpr("AC" -> "AGG.map(g => g.gt).sum()",
-                        "ACsq" -> "AGG.map(g => g.gt * g.gt).sum()",
-                        "nCalled" -> "AGG.filter(g => isDefined(g.gt)).count().toInt32")
+      .annotateRowsExpr("AC" -> "AGG.map(g => g.gt.toInt64()).sum().toInt32()",
+                        "ACsq" -> "AGG.map(g => (g.gt * g.gt).toInt64()).sum().toInt32()",
+                        "nCalled" -> "AGG.filter(g => isDefined(g.gt)).count().toInt32()")
       .filterRowsExpr("(va.AC > 0) && (va.AC < 2 * va.nCalled) && ((va.AC != va.nCalled) || (va.ACsq != va.nCalled))")
     
     val (nVariants, nSamples) = mt.count()
@@ -287,10 +287,10 @@ object TestUtils {
           val argsOff = rvb.end()
 
           // aggregate
+          i = 0
           rvAggs.foreach(_.clear())
           initOps()(region, rvAggs, argsOff, false)
-          i = 0
-          while (i < aggElements.length) {
+          while (i < (aggElements.length / 2)) {
             // FIXME use second region for elements
             rvb.start(aggType)
             rvb.addAnnotation(aggType, aggElements(i))
@@ -300,6 +300,22 @@ object TestUtils {
 
             i += 1
           }
+
+          val rvAggs2 = rvAggs.map(_.newInstance())
+          rvAggs2.foreach(_.clear())
+          initOps()(region, rvAggs2, argsOff, false)
+          while (i < aggElements.length) {
+            // FIXME use second region for elements
+            rvb.start(aggType)
+            rvb.addAnnotation(aggType, aggElements(i))
+            val aggElementOff = rvb.end()
+
+            seqOps()(region, rvAggs2, argsOff, false, aggElementOff, false)
+
+            i += 1
+          }
+
+          rvAggs.zip(rvAggs2).foreach{ case(agg1, agg2) => agg1.combOp(agg2) }
 
           // build aggregation result
           rvb.start(aggResultType)
@@ -414,5 +430,17 @@ object TestUtils {
 
   def assertFatal(x: IR, env: Env[(Any, Type)], args: IndexedSeq[(Any, Type)], agg: Option[(IndexedSeq[Row], TStruct)], regex: String) {
     assertThrows[HailException](x, env, args, agg, regex)
+  }
+
+  def assertCompiledThrows[E <: Throwable : Manifest](x: IR, env: Env[(Any, Type)], args: IndexedSeq[(Any, Type)], agg: Option[(IndexedSeq[Row], TStruct)], regex: String) {
+    interceptException[E](regex)(eval(x, env, args, agg))
+  }
+
+  def assertCompiledThrows[E <: Throwable : Manifest](x: IR, regex: String) {
+    assertCompiledThrows[E](x, Env.empty[(Any, Type)], FastIndexedSeq.empty[(Any, Type)], None, regex)
+  }
+
+  def assertCompiledFatal(x: IR, regex: String) {
+    assertCompiledThrows[HailException](x, regex)
   }
 }

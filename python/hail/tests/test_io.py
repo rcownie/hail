@@ -2,6 +2,7 @@ import hail as hl
 from .utils import resource, doctest_resource, startTestHailContext, stopTestHailContext
 from hail.utils import new_temp_file, FatalError, run_command, uri_path
 import unittest
+import os
 
 setUpModule = startTestHailContext
 tearDownModule = stopTestHailContext
@@ -502,6 +503,91 @@ class BGENTests(unittest.TestCase):
         self.assertTrue(et.all(
             (hl.is_missing(et.dosage) & hl.is_missing(et.gp_dosage)) |
             (hl.abs(et.dosage - et.gp_dosage) < 1e-6)))
+
+    def test_import_bgen_row_fields(self):
+        default_row_fields = hl.import_bgen(resource('example.8bits.bgen'),
+                                            entry_fields=['dosage'],
+                                            contig_recoding={'01': '1'},
+                                            reference_genome='GRCh37')
+        self.assertEqual(default_row_fields.row.dtype,
+                         hl.tstruct(locus=hl.tlocus('GRCh37'),
+                                    alleles=hl.tarray(hl.tstr),
+                                    rsid=hl.tstr,
+                                    varid=hl.tstr))
+        no_row_fields = hl.import_bgen(resource('example.8bits.bgen'),
+                                       entry_fields=['dosage'],
+                                       contig_recoding={'01': '1'},
+                                       reference_genome='GRCh37',
+                                       _row_fields=[])
+        self.assertEqual(no_row_fields.row.dtype,
+                         hl.tstruct(locus=hl.tlocus('GRCh37'),
+                                    alleles=hl.tarray(hl.tstr)))
+        varid_only = hl.import_bgen(resource('example.8bits.bgen'),
+                                    entry_fields=['dosage'],
+                                    contig_recoding={'01': '1'},
+                                    reference_genome='GRCh37',
+                                    _row_fields=['varid'])
+        self.assertEqual(varid_only.row.dtype,
+                         hl.tstruct(locus=hl.tlocus('GRCh37'),
+                                    alleles=hl.tarray(hl.tstr),
+                                    varid=hl.tstr))
+        rsid_only = hl.import_bgen(resource('example.8bits.bgen'),
+                                   entry_fields=['dosage'],
+                                   contig_recoding={'01': '1'},
+                                   reference_genome='GRCh37',
+                                   _row_fields=['rsid'])
+        self.assertEqual(rsid_only.row.dtype,
+                         hl.tstruct(locus=hl.tlocus('GRCh37'),
+                                    alleles=hl.tarray(hl.tstr),
+                                    rsid=hl.tstr))
+
+        self.assertTrue(default_row_fields.drop('varid')._same(rsid_only))
+        self.assertTrue(default_row_fields.drop('rsid')._same(varid_only))
+        self.assertTrue(
+            default_row_fields.drop('varid', 'rsid')._same(no_row_fields))
+
+    def test_import_bgen_row_fields(self):
+        mt = hl.import_bgen(resource('example.8bits.bgen'),
+                            entry_fields=['dosage'],
+                            contig_recoding={'01': '1'},
+                            reference_genome='GRCh37',
+                            _row_fields=['rsid', 'file_row_idx'])
+        self.assertEqual(mt.file_row_idx.take(10), [99, 0, 100, 1, 101, 2, 102, 3, 103, 4])
+
+        # the rsids are numbered 2 to 200 and corresond to the order of the
+        # variants in the file (the loci are out of order in this file)
+        #
+        # the rsids look like: "RSID_99"
+        rsids = mt.rsid.collect()
+        self.assertEqual(mt.file_row_idx.collect(),
+                         [int(rsid[5:]) - 2 for rsid in rsids])
+
+    def test_import_bgen_variant_filtering(self):
+        desired_variant_indexes = [1,2,3,5,7,9,11,13,17,198]
+        actual = hl.import_bgen(resource('example.8bits.bgen'),
+                                ['GT'],
+                                contig_recoding={'01': '1'},
+                                reference_genome=None,
+                                min_partitions=10,
+                                _row_fields=['file_row_idx'],
+                                _variants_per_file={ resource('example.8bits.bgen') : desired_variant_indexes})
+        # doing the expected import_bgen second catches the case where the
+        # hadoop configuraiton is polluted with old data from the
+        # _variants_per_file
+        everything = hl.import_bgen(resource('example.8bits.bgen'),
+                                    ['GT'],
+                                    contig_recoding={'01': '1'},
+                                    reference_genome=None,
+                                    _row_fields=['file_row_idx'])
+        self.assertEqual(everything.count(), (199, 500))
+
+        expected = everything.filter_rows(
+            hl.set(desired_variant_indexes).contains(hl.int32(everything.file_row_idx)))
+
+        self.assertTrue(expected._same(actual))
+        self.assertEqual((hl.str(actual.locus.contig) + ":" + hl.str(actual.locus.position)).collect(),
+                         ['1:3000', '1:4000', '1:5000', '1:7000', '1:9000',
+                          '1:11000', '1:13000', '1:15000', '1:19000', '1:100001'])
 
 
 class GENTests(unittest.TestCase):

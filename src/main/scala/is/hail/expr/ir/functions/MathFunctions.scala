@@ -1,12 +1,12 @@
 package is.hail.expr.ir.functions
 
-import is.hail.annotations.Region
+import is.hail.annotations.{Region, StagedRegionValueBuilder}
 import is.hail.asm4s.{AsmFunction3, Code}
 import is.hail.expr.ir._
 import is.hail.expr.types._
 import org.apache.commons.math3.special.Gamma
-import is.hail.expr.ir.coerce
-import is.hail.stats.uniroot
+import is.hail.stats.{uniroot, entropy, chisqStruct, fetStruct, hweStruct}
+
 import is.hail.utils.fatal
 
 object MathFunctions extends RegistryFunctions {
@@ -46,8 +46,6 @@ object MathFunctions extends RegistryFunctions {
 
   def floorDiv(x: Double, y: Double): Double = math.floor(x / y)
 
-  def isnan(d: Double): Boolean = d.isNaN
-
   def pcoin(p: Double): Boolean = math.random < p
 
   def runif(min: Double, max: Double): Double = min + (max - min) * math.random
@@ -69,12 +67,17 @@ object MathFunctions extends RegistryFunctions {
     else
       r.get
   }
+  
+  def irentropy(s: String): Double = entropy(s)
 
   def registerAll() {
     val thisClass = getClass
     val mathPackageClass = Class.forName("scala.math.package$")
     val statsPackageClass = Class.forName("is.hail.stats.package$")
     val jMathClass = classOf[java.lang.Math]
+    val jIntegerClass = classOf[java.lang.Integer]
+    val jFloatClass = classOf[java.lang.Float]
+    val jDoubleClass = classOf[java.lang.Double]    
 
     // numeric conversions
     registerIR("toInt32", tnum("T"))(x => Cast(x, TInt32()))
@@ -109,7 +112,19 @@ object MathFunctions extends RegistryFunctions {
     registerScalaFunction("qnorm", TFloat64(), TFloat64())(statsPackageClass, "qnorm")
 
     registerScalaFunction("rpois", TFloat64(), TFloat64())(statsPackageClass, "rpois", isDeterministic = false)
-    // other rpois returns an array
+    registerCode("rpois", TInt32(), TFloat64(), TArray(TFloat64()), isDeterministic = false){ (mb, n, lambda) => 
+      val res = mb.newLocal[Array[Double]]
+      val srvb = new StagedRegionValueBuilder(mb, TArray(TFloat64()))
+      Code(
+        res := Code.invokeScalaObject[Int, Double, Array[Double]](statsPackageClass, "rpois", n, lambda),
+        srvb.start(res.length()),
+        Code.whileLoop(srvb.arrayIdx < res.length(),
+          srvb.addDouble(res(srvb.arrayIdx)),
+          srvb.advance()
+        ),
+        srvb.offset
+      )
+    }
 
     registerScalaFunction("dpois", TFloat64(), TFloat64(), TFloat64())(statsPackageClass, "dpois")
     registerScalaFunction("dpois", TFloat64(), TFloat64(), TBoolean(), TFloat64())(statsPackageClass, "dpois")
@@ -137,21 +152,73 @@ object MathFunctions extends RegistryFunctions {
     registerScalaFunction("%", TFloat32(), TFloat32(), TFloat32())(thisClass, "mod")
     registerScalaFunction("%", TFloat64(), TFloat64(), TFloat64())(thisClass, "mod")
 
-    registerScalaFunction("isnan", TFloat64(), TBoolean())(thisClass, "isnan")
+    registerJavaStaticFunction("isnan", TFloat32(), TBoolean())(jFloatClass, "isNaN")
+    registerJavaStaticFunction("isnan", TFloat64(), TBoolean())(jDoubleClass, "isNaN")
+  
+    registerJavaStaticFunction("sign", TInt32(), TInt32())(jIntegerClass, "signum")
+    registerScalaFunction("sign", TInt64(), TInt64())(mathPackageClass, "signum")
+    registerJavaStaticFunction("sign", TFloat32(), TFloat32())(jMathClass, "signum")
+    registerJavaStaticFunction("sign", TFloat64(), TFloat64())(jMathClass, "signum")
 
-    registerCodeWithMissingness("&&", TBoolean(), TBoolean(), TBoolean()) { (_, l, r) =>
-      EmitTriplet(
-        Code(l.setup, r.setup),
-        l.m || (coerce[Boolean](l.v) && r.m),
-        coerce[Boolean](l.v) && coerce[Boolean](r.v)
+    registerWrappedScalaFunction("entropy", TString(), TFloat64())(thisClass, "irentropy")
+
+    registerCode("fet", TInt32(), TInt32(), TInt32(), TInt32(), fetStruct){ case (mb, a, b, c, d) =>
+      val res = mb.newLocal[Array[Double]]
+      val srvb = new StagedRegionValueBuilder(mb, fetStruct)
+      Code(
+        res := Code.invokeScalaObject[Int, Int, Int, Int, Array[Double]](statsPackageClass, "fisherExactTest", a, b, c, d),
+        srvb.start(),
+        srvb.addDouble(res(0)),
+        srvb.advance(),
+        srvb.addDouble(res(1)),
+        srvb.advance(),
+        srvb.addDouble(res(2)),
+        srvb.advance(),
+        srvb.addDouble(res(3)),
+        srvb.advance(),
+        srvb.offset
+      )
+    }
+    
+    registerCode("chisq", TInt32(), TInt32(), TInt32(), TInt32(), chisqStruct){ case (mb, a, b, c, d) =>
+      val res = mb.newLocal[Array[Double]]
+      val srvb = new StagedRegionValueBuilder(mb, chisqStruct)
+      Code(
+        res := Code.invokeScalaObject[Int, Int, Int, Int, Array[Double]](statsPackageClass, "chisqTest", a, b, c, d),
+        srvb.start(),
+        srvb.addDouble(res(0)),
+        srvb.advance(),
+        srvb.addDouble(res(1)),
+        srvb.advance(),
+        srvb.offset
       )
     }
 
-    registerCodeWithMissingness("||", TBoolean(), TBoolean(), TBoolean()) { (_, l, r) =>
-      EmitTriplet(
-        Code(l.setup, r.setup),
-        l.m || (!coerce[Boolean](l.v) && r.m),
-        coerce[Boolean](l.v) || coerce[Boolean](r.v)
+    registerCode("ctt", TInt32(), TInt32(), TInt32(), TInt32(), TInt32(), chisqStruct){ case (mb, a, b, c, d, min_cell_count) =>
+      val res = mb.newLocal[Array[Double]]
+      val srvb = new StagedRegionValueBuilder(mb, chisqStruct)
+      Code(
+        res := Code.invokeScalaObject[Int, Int, Int, Int, Int, Array[Double]](statsPackageClass, "contingencyTableTest", a, b, c, d, min_cell_count),
+        srvb.start(),
+        srvb.addDouble(res(0)),
+        srvb.advance(),
+        srvb.addDouble(res(1)),
+        srvb.advance(),
+        srvb.offset
+      )
+    }
+
+    registerCode("hwe", TInt32(), TInt32(), TInt32(), hweStruct){ case (mb, nHomRef, nHet, nHomVar) =>
+      val res = mb.newLocal[Array[Double]]
+      val srvb = new StagedRegionValueBuilder(mb, hweStruct)
+      Code(
+        res := Code.invokeScalaObject[Int, Int, Int, Array[Double]](statsPackageClass, "hweTest", nHomRef, nHet, nHomVar),
+        srvb.start(),
+        srvb.addDouble(res(0)),
+        srvb.advance(),
+        srvb.addDouble(res(1)),
+        srvb.advance(),
+        srvb.offset
       )
     }
   }

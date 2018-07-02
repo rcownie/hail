@@ -127,7 +127,9 @@ class CollectionExpression(Expression):
                 raise TypeError("'find' expects 'f' to return an expression of type 'bool', found '{}'".format(t))
             return self._type.element_type
 
-        return self._bin_lambda_method("find", f, self._type.element_type, unify_ret)
+        # FIXME make more efficient when we can call ArrayFold
+        return hl.bind(lambda fa: hl.cond(hl.len(fa) > 0, fa[0], hl.null(self._type.element_type)),
+                       hl.array(self.filter(f)))
 
     @typecheck_method(f=func_spec(1, expr_any))
     def flatmap(self, f):
@@ -2407,7 +2409,7 @@ class CallExpression(Expression):
         :class:`.ArrayInt32Expression`
             An array of summed one-hot encodings of allele indices.
         """
-        return self._method("oneHotAlleles", tarray(tint32), alleles)
+        return self._method("oneHotAlleles", tarray(tint32), hl.len(alleles))
 
     def unphased_diploid_gt_index(self):
         """Return the genotype index for unphased, diploid calls.
@@ -2464,6 +2466,43 @@ class LocusExpression(Expression):
             This locus's position along its chromosome.
         """
         return self._field("position", tint32)
+
+    def global_position(self):
+        """Returns a zero-indexed absolute position along the reference genome.
+
+        The global position is computed as :py:attr:`~position` - 1 plus the sum
+        of the lengths of all the contigs that precede this locus's :py:attr:`~contig`
+        in the reference genome's ordering of contigs.
+
+        See also :func:`.locus_from_global_position`.
+
+        Examples
+        --------
+        A locus with position 1 along chromosome 1 will have a global position of 0 along
+        the reference genome GRCh37.
+
+        >>> hl.locus('1', 1).global_position().value
+        0
+
+        A locus with position 1 along chromosome 2 will have a global position of (1-1) + 249250621,
+        where 249250621 is the length of chromosome 1 on GRCh37.
+
+        >>> hl.locus('2', 1).global_position().value
+        249250621
+
+        A different reference genome than the default results in a different global position.
+
+        >>> hl.locus('chr2', 1, 'GRCh38').global_position().value
+        248956422
+
+        Returns
+        -------
+        :class:`.Expression` of type :py:data:`.tint64`
+            Global base position of locus along the reference genome.
+        """
+        reference_genome = self.dtype.reference_genome
+        return construct_expr(ApplyMethod('locusToGlobalPos({})'.format(reference_genome), self._ast),
+                              tint64, self._indices, self._aggregations)
 
     def in_x_nonpar(self):
         """Returns ``True`` if the locus is in a non-pseudoautosomal

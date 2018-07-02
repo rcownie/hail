@@ -105,10 +105,11 @@ object HailContext {
 
     val problems = new ArrayBuffer[String]
 
-    val serializer = conf.get("spark.serializer")
+    val serializer = conf.getOption("spark.serializer")
     val kryoSerializer = "org.apache.spark.serializer.KryoSerializer"
-    if (serializer != kryoSerializer)
-      problems += s"Invalid configuration property spark.serializer: required $kryoSerializer.  Found: $serializer."
+    if (!serializer.contains(kryoSerializer))
+      problems += s"Invalid configuration property spark.serializer: required $kryoSerializer.  " +
+        s"Found: ${ serializer.getOrElse("empty parameter") }."
 
     if (!conf.getOption("spark.kryo.registrator").exists(_.split(",").contains("is.hail.kryo.HailKryoRegistrator")))
       problems += s"Invalid config parameter: spark.kryo.registrator must include is.hail.kryo.HailKryoRegistrator." +
@@ -297,12 +298,26 @@ class HailContext private(val sc: SparkContext,
     includeGT: Boolean,
     includeGP: Boolean,
     includeDosage: Boolean,
+    includeLid: Boolean,
+    includeRsid: Boolean,
+    includeFileRowIdx: Boolean = false,
     nPartitions: Option[Int] = None,
     rg: Option[ReferenceGenome] = Some(ReferenceGenome.defaultReference),
     contigRecoding: Option[Map[String, String]] = None,
-    skipInvalidLoci: Boolean = false): MatrixTable = {
-    importBgens(List(file), sampleFile, includeGT, includeGP, includeDosage, nPartitions, rg,
-      contigRecoding, skipInvalidLoci)
+    skipInvalidLoci: Boolean = false,
+    includedVariantsPerFile: Map[String, Seq[Int]] = Map.empty[String, Seq[Int]]
+  ): MatrixTable = {
+    importBgens(List(file), sampleFile, includeGT, includeGP, includeDosage, includeLid, includeRsid, includeFileRowIdx,
+      nPartitions, rg, contigRecoding, skipInvalidLoci, includedVariantsPerFile)
+  }
+
+  private[this] def absolutePath(rel: String): String = {
+    val matches = hadoopConf.glob(rel)
+    if (matches.length != 1)
+      fatal(s"""found more than one match for variant filter path: $rel:
+                 |${matches.mkString(",")}""".stripMargin)
+    val abs = matches(0).getPath.toString
+    abs
   }
 
   def importBgens(files: Seq[String],
@@ -310,10 +325,15 @@ class HailContext private(val sc: SparkContext,
     includeGT: Boolean = true,
     includeGP: Boolean = true,
     includeDosage: Boolean = false,
+    includeLid: Boolean = true,
+    includeRsid: Boolean = true,
+    includeFileRowIdx: Boolean = false,
     nPartitions: Option[Int] = None,
     rg: Option[ReferenceGenome] = Some(ReferenceGenome.defaultReference),
     contigRecoding: Option[Map[String, String]] = None,
-    skipInvalidLoci: Boolean = false): MatrixTable = {
+    skipInvalidLoci: Boolean = false,
+    includedVariantsPerUnresolvedFilePath: Map[String, Seq[Int]] = Map.empty[String, Seq[Int]]
+  ): MatrixTable = {
 
     val inputs = hadoopConf.globAll(files).flatMap { file =>
       if (!file.endsWith(".bgen"))
@@ -327,13 +347,26 @@ class HailContext private(val sc: SparkContext,
         Array(file)
     }
 
+    val includedVariantsPerFile = toMapIfUnique(
+      includedVariantsPerUnresolvedFilePath
+    )(absolutePath _
+    ) match {
+      case Left(duplicatedPaths) =>
+        fatal(s"""some relative paths in the import_bgen _variants_per_file
+                 |parameter have resolved to the same absolute path
+                 |$duplicatedPaths""".stripMargin)
+      case Right(m) =>
+        log.info(s"variant filters per file after path resolution is $m")
+        m
+    }
+
     if (inputs.isEmpty)
       fatal(s"arguments refer to no files: '${ files.mkString(",") }'")
 
     rg.foreach(ref => contigRecoding.foreach(ref.validateContigRemap))
 
-    LoadBgen.load(this, inputs, sampleFile, includeGT: Boolean, includeGP: Boolean, includeDosage: Boolean,
-      nPartitions, rg, contigRecoding.getOrElse(Map.empty[String, String]), skipInvalidLoci)
+    LoadBgen.load(this, inputs, sampleFile, includeGT, includeGP, includeDosage, includeLid, includeRsid, includeFileRowIdx,
+      nPartitions, rg, contigRecoding.getOrElse(Map.empty[String, String]), skipInvalidLoci, includedVariantsPerFile)
   }
 
   def importGen(file: String,

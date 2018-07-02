@@ -25,8 +25,8 @@ object Simplify {
            _: MakeStruct |
            _: MakeTuple |
            _: IsNA |
-           ApplyComparisonOp(EQWithNA(_), _, _) |
-           ApplyComparisonOp(NEQWithNA(_), _, _) |
+           ApplyComparisonOp(EQWithNA(_, _), _, _) |
+           ApplyComparisonOp(NEQWithNA(_, _), _, _) |
            _: I32 | _: I64 | _: F32 | _: F64 | True() | False() => true
       case _ => false
     }
@@ -155,23 +155,23 @@ object Simplify {
       // optimize MatrixIR
 
       // Equivalent rewrites for the new Filter{Cols,Rows}IR
-      case MatrixFilterRowsIR(MatrixRead(typ, partitionCounts, dropCols, _, f), False() | NA(_)) =>
-        MatrixRead(typ, partitionCounts, dropCols, dropRows = true, f)
+      case MatrixFilterRows(MatrixRead(typ, partitionCounts, dropCols, _, reader), False() | NA(_)) =>
+        MatrixRead(typ, partitionCounts, dropCols, dropRows = true, reader)
 
-      case FilterColsIR(MatrixRead(typ, partitionCounts, _, dropRows, f), False() | NA(_)) =>
-        MatrixRead(typ, partitionCounts, dropCols = true, dropRows, f)
+      case MatrixFilterCols(MatrixRead(typ, partitionCounts, _, dropRows, reader), False() | NA(_)) =>
+        MatrixRead(typ, partitionCounts, dropCols = true, dropRows, reader)
 
       // Ignore column or row data that is immediately dropped
-      case MatrixRowsTable(MatrixRead(typ, partitionCounts, false, dropRows, f)) =>
-        MatrixRowsTable(MatrixRead(typ, partitionCounts, dropCols = true, dropRows, f))
+      case MatrixRowsTable(MatrixRead(typ, partitionCounts, false, dropRows, reader)) =>
+        MatrixRowsTable(MatrixRead(typ, partitionCounts, dropCols = true, dropRows, reader))
 
-      case MatrixColsTable(MatrixRead(typ, partitionCounts, dropCols, false, f)) =>
-        MatrixColsTable(MatrixRead(typ, partitionCounts, dropCols, dropRows = true, f))
+      case MatrixColsTable(MatrixRead(typ, partitionCounts, dropCols, false, reader)) =>
+        MatrixColsTable(MatrixRead(typ, partitionCounts, dropCols, dropRows = true, reader))
 
       // Keep all rows/cols = do nothing
-      case MatrixFilterRowsIR(m, True()) => m
+      case MatrixFilterRows(m, True()) => m
 
-      case FilterColsIR(m, True()) => m
+      case MatrixFilterCols(m, True()) => m
     })
   }
 }

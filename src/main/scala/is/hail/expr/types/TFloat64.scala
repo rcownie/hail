@@ -4,7 +4,6 @@ import is.hail.annotations._
 import is.hail.asm4s.Code
 import is.hail.check.Arbitrary._
 import is.hail.check.Gen
-import is.hail.expr.DoubleNumericConversion
 import is.hail.expr.ir.EmitMethodBuilder
 import is.hail.utils._
 
@@ -19,8 +18,6 @@ class TFloat64(override val required: Boolean) extends TNumeric {
   override def pyString(sb: StringBuilder): Unit = {
     sb.append("float64")
   }
-
-  val conv = DoubleNumericConversion
 
   def _typeCheck(a: Any): Boolean = a.isInstanceOf[Double]
 
@@ -52,25 +49,29 @@ class TFloat64(override val required: Boolean) extends TNumeric {
   val ordering: ExtendedOrdering =
     ExtendedOrdering.extendToNull(implicitly[Ordering[Double]])
 
-  def codeOrdering(mb: EmitMethodBuilder): CodeOrdering = new CodeOrdering {
-    type T = Double
-    def compareNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Int] =
-      Code.invokeStatic[java.lang.Double, Double, Double, Int]("compare", x, y)
+  def codeOrdering(mb: EmitMethodBuilder, other: Type): CodeOrdering = {
+    assert(other isOfType this)
+    new CodeOrdering {
+      type T = Double
 
-    override def ltNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
-      x < y
+      def compareNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Int] =
+        Code.invokeStatic[java.lang.Double, Double, Double, Int]("compare", x, y)
 
-    override def lteqNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
-      x <= y
+      override def ltNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
+        x < y
 
-    override def gtNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
-      x > y
+      override def lteqNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
+        x <= y
 
-    override def gteqNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
-      x >= y
+      override def gtNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
+        x > y
 
-    override def equivNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
-      x.ceq(y)
+      override def gteqNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
+        x >= y
+
+      override def equivNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
+        x.ceq(y)
+    }
   }
 
   override def byteSize: Long = 8

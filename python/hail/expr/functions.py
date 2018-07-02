@@ -337,16 +337,22 @@ def bind(f: Callable, *exprs):
 
 @typecheck(c1=expr_int32, c2=expr_int32, c3=expr_int32, c4=expr_int32)
 def chisq(c1, c2, c3, c4) -> StructExpression:
-    """Calculates p-value (Chi-square approximation) and odds ratio for a 2x2 table.
+    """Performs chi-squared test of independence on a 2x2 contingency table.
 
     Examples
     --------
 
     >>> hl.chisq(10, 10, 10, 10).value
-    Struct(odds_ratio=1.0, p_value=1.0)
+    Struct(p_value=1.0, odds_ratio=1.0)
 
-    >>> hl.chisq(30, 30, 50, 10).value
-    Struct(odds_ratio=0.2, p_value=0.000107511176729)
+    >>> hl.chisq(51, 43, 22, 92).value
+    Struct(p_value=1.4626257805267089e-07, odds_ratio=4.959830866807611)
+
+    Notes
+    -----
+    The odds ratio is given by ``(c1 / c2) / (c3 / c4)``.
+
+    Returned fields may be ``nan`` or ``inf``.
 
     Parameters
     ----------
@@ -371,21 +377,24 @@ def chisq(c1, c2, c3, c4) -> StructExpression:
 
 @typecheck(c1=expr_int32, c2=expr_int32, c3=expr_int32, c4=expr_int32, min_cell_count=expr_int32)
 def ctt(c1, c2, c3, c4, min_cell_count) -> StructExpression:
-    """Calculates p-value and odds ratio for 2x2 table.
+    """Performs chi-squared or Fisher's exact test of independence on a 2x2
+    contingency table.
 
     Examples
     --------
 
-    >>> hl.ctt(10, 10, 10, 10, min_cell_count=15).value
-    Struct(odds_ratio=1.0, p_value=1.0)
+    >>> hl.ctt(51, 43, 22, 92, min_cell_count=22).value
+    Struct(p_value=1.4626257805267089e-07, odds_ratio=4.959830866807611)
 
-    >>> hl.ctt(30, 30, 50, 10, min_cell_count=15).value
-    Struct(odds_ratio=0.202874620964, p_value=0.000190499944324)
+    >>> hl.ctt(51, 43, 22, 92, min_cell_count=23).value
+    Struct(p_value=2.1564999740157304e-07, odds_ratio=4.918058171469967)
 
     Notes
     -----
-     If any cell is lower than `min_cell_count`, Fisher's exact test is used. Otherwise, faster
-     chi-squared approximation is used.
+    If all cell counts are at least `min_cell_count`, the chi-squared test is
+    used. Otherwise, Fisher's exact test is used.
+
+    Returned fields may be ``nan`` or ``inf``.
 
     Parameters
     ----------
@@ -398,7 +407,7 @@ def ctt(c1, c2, c3, c4, min_cell_count) -> StructExpression:
     c4 : int or :class:`.Expression` of type :py:data:`.tint32`
         Value for cell 4.
     min_cell_count : int or :class:`.Expression` of type :py:data:`.tint32`
-        Minimum cell count for chi-squared approximation.
+        Minimum count in every cell to use the chi-squared test.
 
     Returns
     -------
@@ -526,7 +535,8 @@ def exp(x) -> Float64Expression:
 
 @typecheck(c1=expr_int32, c2=expr_int32, c3=expr_int32, c4=expr_int32)
 def fisher_exact_test(c1, c2, c3, c4) -> StructExpression:
-    """Calculates the p-value, odds ratio, and 95% confidence interval with Fisher's exact test for a 2x2 table.
+    """Calculates the p-value, odds ratio, and 95% confidence interval using
+    Fisher's exact test for a 2x2 table.
 
     Examples
     --------
@@ -535,15 +545,17 @@ def fisher_exact_test(c1, c2, c3, c4) -> StructExpression:
     Struct(p_value=1.0000000000000002, odds_ratio=1.0,
            ci_95_lower=0.24385796914260355, ci_95_upper=4.100747675033819)
 
-    >>> hl.fisher_exact_test(30, 30, 50, 10).value
-    Struct(p_value=0.00019049994432397886, odds_ratio=0.20287462096407916,
-           ci_95_lower=0.07687933053900567, ci_95_upper=0.4987032678214519)
+    >>> hl.fisher_exact_test(51, 43, 22, 92).value
+    Struct(p_value=2.1564999740157304e-07, odds_ratio=4.918058171469967,
+           ci_95_lower=2.5659373368248444, ci_95_upper=9.677929632035475)
 
     Notes
     -----
     This method is identical to the version implemented in
     `R <https://stat.ethz.ch/R-manual/R-devel/library/stats/html/fisher.test.html>`_ with default
     parameters (two-sided, alpha = 0.05, null hypothesis that the odds ratio equals 1).
+
+    Returned fields may be ``nan`` or ``inf``.
 
     Parameters
     ----------
@@ -615,30 +627,37 @@ def ceil(x):
 
 @typecheck(n_hom_ref=expr_int32, n_het=expr_int32, n_hom_var=expr_int32)
 def hardy_weinberg_p(n_hom_ref, n_het, n_hom_var) -> StructExpression:
-    """Compute Hardy-Weinberg Equilbrium p-value and heterozygosity ratio.
+    """Performs test of Hardy-Weinberg equilibrium.
 
     Examples
     --------
 
-    >>> hl.hardy_weinberg_p(20, 50, 26).value
-    Struct(r_expected_het_freq=0.500654450262, p_hwe=0.762089599352)
+    >>> hl.hardy_weinberg_p(250, 500, 250).value
+    Struct(r_expected_het_freq=0.5002501250625313, p_hwe=0.9747844394217698)
 
     >>> hl.hardy_weinberg_p(37, 200, 85).value
-    Struct(r_expected_het_freq=0.489649643074, p_hwe=1.13372103832e-06)
+    Struct(r_expected_het_freq=0.48964964307448583, p_hwe=1.1337210383168987e-06)
 
     Notes
     -----
-    For more information, see the
-    `Wikipedia page <https://en.wikipedia.org/wiki/Hardy%E2%80%93Weinberg_principle>`__
+    This method performs a two-sided exact test with mid-p-value correction of
+    `Hardy-Weinberg equilibrium <https://en.wikipedia.org/wiki/Hardy%E2%80%93Weinberg_principle>`__
+    via an efficient implementation of the
+    `Levene-Haldane distribution <https://hail.is/docs/devel/LeveneHaldane.pdf>`__,
+    which models the number of heterozygous individuals under equilibrium.
+
+    The mean of this distribution is ``(n_hom_ref * n_hom_var) / (2n - 1)`` where
+    ``n = n_hom_ref + n_het + n_hom_var``. So the expected frequency of heterozygotes
+    under equilibrium, `r_expected_het_freq`, is this mean divided by ``n``.
 
     Parameters
     ----------
     n_hom_ref : int or :class:`.Expression` of type :py:data:`.tint32`
-        Homozygous reference count.
+        Number of homozygous reference genotypes.
     n_het : int or :class:`.Expression` of type :py:data:`.tint32`
-        Heterozygote count.
+        Number of heterozygous genotypes.
     n_hom_var : int or :class:`.Expression` of type :py:data:`.tint32`
-        Homozygous alternate count.
+        Number of homozygous variant genotypes.
 
     Returns
     -------
@@ -698,6 +717,39 @@ def locus(contig, pos, reference_genome: Union[str, ReferenceGenome] = 'default'
     indices, aggregations = unify_all(contig, pos)
     return construct_expr(ApplyMethod('Locus({})'.format(reference_genome.name), contig._ast, pos._ast),
                           tlocus(reference_genome), indices, aggregations)
+
+
+@typecheck(global_pos=expr_int64,
+           reference_genome=reference_genome_type)
+def locus_from_global_position(global_pos,
+                               reference_genome: Union[str, ReferenceGenome] = 'default') -> LocusExpression:
+    """Constructs a locus expression from a global position and a reference genome.
+    The inverse of :meth:`.LocusExpression.global_position`.
+
+    Examples
+    --------
+    >>> hl.locus_from_global_position(0).value
+    Locus(contig=1, position=1, reference_genome=GRCh37)
+
+    >>> hl.locus_from_global_position(2824183054).value
+    Locus(contig=21, position=42584230, reference_genome=GRCh37)
+
+    >>> hl.locus_from_global_position(2824183054, 'GRCh38').value
+    Locus(contig=22, position=1, reference_genome=GRCh38)
+
+    Parameters
+    ----------
+    global_pos : int or :class:`.Expression` of type :py:data:`.tint64`
+        Global base position along the reference genome.
+    reference_genome : :obj:`str` or :class:`.ReferenceGenome`
+        Reference genome to use for converting the global position to a contig and local position.
+
+    Returns
+    -------
+    :class:`.LocusExpression`
+    """
+    return construct_expr(ApplyMethod('globalPosToLocus({})'.format(reference_genome.name), global_pos._ast),
+                          tlocus(reference_genome), global_pos._indices, global_pos._aggregations)
 
 
 @typecheck(s=expr_str,
@@ -1138,7 +1190,7 @@ def is_missing(expression) -> BooleanExpression:
 
 @typecheck(x=expr_oneof(expr_float32, expr_float64))
 def is_nan(x) -> BooleanExpression:
-    """Returns ``True`` if the argument is ``NaN`` (not a number).
+    """Returns ``True`` if the argument is ``nan`` (not a number).
 
     Examples
     --------
@@ -1154,7 +1206,7 @@ def is_nan(x) -> BooleanExpression:
 
     Notes
     -----
-    Note that :meth:`.is_missing` will return ``False`` on ``NaN`` since ``NaN``
+    Note that :meth:`.is_missing` will return ``False`` on ``nan`` since ``nan``
     is a defined value. Additionally, this method will return missing if `x` is
     missing.
 
@@ -1166,7 +1218,7 @@ def is_nan(x) -> BooleanExpression:
     Returns
     -------
     :class:`.BooleanExpression`
-        ``True`` if `x` is ``NaN``, ``False`` otherwise.
+        ``True`` if `x` is ``nan``, ``False`` otherwise.
     """
     return _func("isnan", tbool, x)
 
@@ -2128,6 +2180,43 @@ def hamming(s1, s2) -> Int32Expression:
     return _func("hamming", tint32, s1, s2)
 
 
+@typecheck(s=expr_str)
+def entropy(s) -> Float64Expression:
+    r"""Returns the `Shannon entropy <https://en.wikipedia.org/wiki/Entropy_(information_theory)>`__
+    of the character distribution defined by the string.
+
+    Examples
+    --------
+
+    >>> hl.entropy('ac').value
+    1.0
+
+    >>> hl.entropy('accctg').value
+    1.79248
+
+    Notes
+    -----
+    For a string of length :math:`n` with :math:`k` unique characters
+    :math:`\{ c_1, \dots, c_k \}`, let :math:`p_i` be the probability that
+    a randomly chosen character is :math:`c_i`, e.g. the number of instances
+    of :math:`c_i` divided by :math:`n`. Then the base-2 Shannon entropy is
+    given by
+
+    .. math::
+
+        H = \sum_{i=1}^k p_i \log_2(p_i).
+
+    Parameters
+    ----------
+    s : :class:`.StringExpression`
+
+    Returns
+    -------
+    :class:`.Expression` of type :py:data:`.tfloat64`
+    """
+    return _func("entropy", tfloat64, s)
+
+
 @typecheck(x=expr_any)
 def str(x) -> StringExpression:
     """Returns the string representation of `x`.
@@ -2377,9 +2466,7 @@ def find(f: Callable, collection):
         Expression whose type is the element type of the collection.
     """
 
-    return collection._bin_lambda_method("find", f,
-                                         collection.dtype.element_type,
-                                         lambda _: collection.dtype.element_type)
+    return collection.find(f)
 
 
 @typecheck(f=func_spec(1, expr_any),
@@ -2719,23 +2806,27 @@ def abs(x):
 
 
 @typecheck(x=expr_oneof(expr_numeric, expr_array(expr_numeric)))
-def signum(x):
-    """Returns the sign (1, 0, or -1) of a numeric value or array.
+def sign(x):
+    """Returns the sign of a numeric value or array.
 
     Examples
     --------
 
-    >>> hl.signum(-1.23).value
-    -1
+    >>> hl.sign(-1.23).value
+    -1.0
 
-    >>> hl.signum(555).value
-    1
+    >>> hl.sign([-4, 0, 5]).value
+    [-1, 0, 1]
 
-    >>> hl.signum(0.0).value
-    0
+    >>> hl.sign([0.0, 3.14]).value
+    [0.0, 1.0]
 
-    >>> hl.signum([1, -5, 0, -125]).value
-    [1, -1, 0, -1]
+    >>> hl.sign(float('nan')).value  # doctest: +SKIP
+    nan
+
+    Notes
+    -----
+    The sign function preserves type and maps ``nan`` to ``nan``.
 
     Parameters
     ----------
@@ -2743,12 +2834,12 @@ def signum(x):
 
     Returns
     -------
-    :class:`.Int32Expression` or :class:`.ArrayNumericExpression`.
+    :class:`.NumericExpression` or :class:`.ArrayNumericExpression`.
     """
     if isinstance(x.dtype, tarray):
-        return map(signum, x)
+        return map(sign, x)
     else:
-        return x._method('signum', tint32)
+        return x._method('sign', x.dtype)
 
 
 @typecheck(collection=expr_oneof(expr_set(expr_numeric), expr_array(expr_numeric)))

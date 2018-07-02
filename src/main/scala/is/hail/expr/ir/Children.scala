@@ -1,6 +1,5 @@
 package is.hail.expr.ir
 
-import is.hail.expr.BaseIR
 import is.hail.utils.{FastIndexedSeq, FastSeq}
 
 object Children {
@@ -40,7 +39,7 @@ object Children {
       Array(a)
     case ArrayRange(start, stop, step) =>
       Array(start, stop, step)
-    case ArraySort(a, ascending) =>
+    case ArraySort(a, ascending, _) =>
       Array(a, ascending)
     case ToSet(a) =>
       Array(a)

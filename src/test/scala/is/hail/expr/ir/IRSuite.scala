@@ -1,14 +1,17 @@
 package is.hail.expr.ir
 
+import is.hail.SparkSuite
 import is.hail.expr.types._
 import is.hail.TestUtils._
-import is.hail.expr.TableRange
+import is.hail.annotations.BroadcastRow
+import is.hail.expr.Parser
+import is.hail.table.Table
 import is.hail.utils._
+import is.hail.variant.MatrixTable
 import org.apache.spark.sql.Row
-import org.testng.annotations.Test
-import org.scalatest.testng.TestNGSuite
+import org.testng.annotations.{DataProvider, Test}
 
-class IRSuite extends TestNGSuite {
+class IRSuite extends SparkSuite {
   @Test def testI32() {
     assertEvalsTo(I32(5), 5)
   }
@@ -186,22 +189,6 @@ class IRSuite extends TestNGSuite {
       false)
   }
 
-  @Test def testDictGet() {
-    val t = TDict(TInt32(), TString())
-    assertEvalsTo(invoke("get", NA(t), I32(2)), null)
-
-    val d = Map(1 -> "a", 2 -> null, (null, "c"))
-    assertEvalsTo(invoke("get", In(0, t), NA(TInt32())),
-      FastIndexedSeq((d, t)),
-      "c")
-    assertEvalsTo(invoke("get", In(0, t), I32(2)),
-      FastIndexedSeq((d, t)),
-      null)
-    assertEvalsTo(invoke("get", In(0, t), I32(0)),
-      FastIndexedSeq((d, t)),
-      null)
-  }
-
   @Test def testArrayMap() {
     val naa = NA(TArray(TInt32()))
     val a = MakeArray(Seq(I32(3), NA(TInt32()), I32(7)), TArray(TInt32()))
@@ -281,5 +268,170 @@ class IRSuite extends TestNGSuite {
     val collection1 = groupby(tuple("foo", 0), tuple("bar", 4), tuple("foo", -1), tuple("bar", 0), tuple("foo", 10), tuple("", 0))
 
     assertEvalsTo(collection1, Map("" -> FastIndexedSeq(0), "bar" -> FastIndexedSeq(4, 0), "foo" -> FastIndexedSeq(0, -1, 10)))
+  }
+
+  @DataProvider(name="compareDifferentTypes")
+  def compareDifferentTypesData(): Array[Array[Any]] = Array(
+    Array(FastIndexedSeq(0.0, 0.0), TArray(+TFloat64()), TArray(TFloat64())),
+    Array(Set(0, 1), TSet(+TInt32()), TSet(TInt32())),
+    Array(Map(0L -> 5, 3L -> 20), TDict(+TInt64(), TInt32()), TDict(TInt64(), +TInt32())),
+    Array(Interval(1, 2, includesStart = false, includesEnd = true), TInterval(+TInt32()), TInterval(TInt32())),
+    Array(Row("foo", 0.0), TStruct("a" -> +TString(), "b" -> +TFloat64()), TStruct("a" -> TString(), "b" -> TFloat64())),
+    Array(Row("foo", 0.0), TTuple(TString(), +TFloat64()), TTuple(+TString(), +TFloat64())),
+    Array(Row(FastIndexedSeq("foo"), 0.0), TTuple(+TArray(TString()), +TFloat64()), TTuple(TArray(+TString()), +TFloat64()))
+  )
+
+  @Test(dataProvider="compareDifferentTypes")
+  def testComparisonOpDifferentTypes(a: Any, t1: Type, t2: Type) {
+    assertEvalsTo(ApplyComparisonOp(EQ(t1, t2), In(0, t1), In(1, t2)), IndexedSeq(a -> t1, a -> t2), true)
+    assertEvalsTo(ApplyComparisonOp(LT(t1, t2), In(0, t1), In(1, t2)), IndexedSeq(a -> t1, a -> t2), false)
+    assertEvalsTo(ApplyComparisonOp(GT(t1, t2), In(0, t1), In(1, t2)), IndexedSeq(a -> t1, a -> t2), false)
+    assertEvalsTo(ApplyComparisonOp(LTEQ(t1, t2), In(0, t1), In(1, t2)), IndexedSeq(a -> t1, a -> t2), true)
+    assertEvalsTo(ApplyComparisonOp(GTEQ(t1, t2), In(0, t1), In(1, t2)), IndexedSeq(a -> t1, a -> t2), true)
+    assertEvalsTo(ApplyComparisonOp(NEQ(t1, t2), In(0, t1), In(1, t2)), IndexedSeq(a -> t1, a -> t2), false)
+    assertEvalsTo(ApplyComparisonOp(EQWithNA(t1, t2), In(0, t1), In(1, t2)), IndexedSeq(a -> t1, a -> t2), true)
+    assertEvalsTo(ApplyComparisonOp(NEQWithNA(t1, t2), In(0, t1), In(1, t2)), IndexedSeq(a -> t1, a -> t2), false)
+  }
+
+  @DataProvider(name = "valueIRs")
+  def valueIRs(): Array[Array[IR]] = {
+    val b = True()
+    val c = Ref("c", TBoolean())
+    val i = I32(5)
+    val j = I32(7)
+    val str = Str("Hail")
+    val a = Ref("a", TArray(TInt32()))
+    val aa = Ref("aa", TArray(TArray(TInt32())))
+    val da = Ref("da", TArray(TTuple(TInt32(), TString())))
+    val v = Ref("v", TInt32())
+    val s = Ref("s", TStruct("x" -> TInt32(), "y" -> TInt64(), "z" -> TFloat64()))
+    val t = Ref("t", TTuple(TInt32(), TInt64(), TFloat64()))
+
+    val call = Ref("call", TCall())
+
+    val collectSig = AggSignature(Collect(), TInt32(), Seq(), None, Seq())
+
+    val callStatsSig = AggSignature(CallStats(), TCall(), Seq(), Some(Seq(TInt32())), Seq())
+
+    val histSig = AggSignature(Histogram(), TFloat64(), Seq(TFloat64(), TFloat64(), TInt32()), None, Seq())
+
+    val takeBySig = AggSignature(TakeBy(), TFloat64(), Seq(TInt32()), None, Seq(TInt32()))
+
+    val irs = Array(
+      i, I64(5), F32(3.14f), F64(3.14), str, True(), False(), Void(),
+      Cast(i, TFloat64()),
+      NA(TInt32()), IsNA(i),
+      If(b, i, j),
+      Let("v", i, v),
+      Ref("x", TInt32()),
+      ApplyBinaryPrimOp(Add(), i, j),
+      ApplyUnaryPrimOp(Negate(), i),
+      ApplyComparisonOp(EQ(TInt32()), i, j),
+      ApplyBinaryPrimOp(Add(), i, j),
+      MakeArray(FastSeq(I32(5), NA(TInt32()), I32(-3)), TArray(TInt32())),
+      ArrayRef(a, i),
+      ArrayLen(a),
+      ArrayRange(I32(0), I32(5), I32(1)),
+      ArraySort(a, b),
+      ToSet(a),
+      ToDict(da),
+      ToArray(a),
+      LowerBoundOnOrderedCollection(a, i, onKey = true),
+      GroupByKey(da),
+      ArrayMap(a, "v", v),
+      ArrayFilter(a, "v", b),
+      ArrayFlatMap(aa, "v", v),
+      ArrayFold(a, I32(0), "x", "v", v),
+      ArrayFor(a, "v", Void()),
+      ApplyAggOp(I32(0), FastIndexedSeq.empty, None, collectSig),
+      ApplyAggOp(F64(-2.11), FastIndexedSeq(F64(-5.0), F64(5.0), I32(100)), None, histSig),
+      ApplyAggOp(call, FastIndexedSeq.empty, Some(FastIndexedSeq(I32(2))), callStatsSig),
+      ApplyAggOp(F64(-2.11), FastIndexedSeq(I32(10)), None, takeBySig),
+      InitOp(I32(0), FastIndexedSeq(I32(2)), callStatsSig),
+      SeqOp(i, I32(0), collectSig, FastIndexedSeq.empty),
+      SeqOp(F64(-2.11), I32(0), takeBySig, FastIndexedSeq(I32(17))),
+      Begin(IndexedSeq(Void())),
+      MakeStruct(Seq("x" -> i)),
+      SelectFields(s, Seq("x", "z")),
+      InsertFields(s, Seq("x" -> i)),
+      GetField(s, "x"),
+      MakeTuple(Seq(i, b)),
+      GetTupleElement(t, 1),
+      StringSlice(str, I32(1), I32(2)),
+      StringLength(str),
+      In(2, TFloat64()),
+      Die("mumblefoo", TFloat64()),
+      invoke("&&", b, c), // ApplySpecial
+      invoke("toFloat64", i), // Apply
+      invoke("isDefined", s), // ApplyIR
+      Uniroot("x", F64(3.14), F64(-5.0), F64(5.0)))
+    irs.map(x => Array(x))
+  }
+
+  @DataProvider(name = "tableIRs")
+  def tableIRs(): Array[Array[TableIR]] = {
+    try {
+      val ht = Table.read(hc, "src/test/resources/backward_compatability/1.0.0/table/0.ht")
+      val mt = MatrixTable.read(hc, "src/test/resources/backward_compatability/1.0.0/matrix_table/0.hmt")
+
+      val read = ht.tir.asInstanceOf[TableRead]
+      val mtRead = mt.ast.asInstanceOf[MatrixRead]
+      val b = True()
+
+      val xs: Array[TableIR] = Array(
+        TableUnkey(read),
+        TableKeyBy(read, Array("m", "d"), Some(1)),
+        TableFilter(read, b),
+        read,
+        MatrixColsTable(mtRead),
+        TableAggregateByKey(read,
+          MakeStruct(FastIndexedSeq(
+            "a" -> I32(5)))),
+        TableJoin(read,
+          TableRange(100, 10), "inner"),
+        MatrixEntriesTable(mtRead),
+        MatrixRowsTable(mtRead),
+        TableParallelize(
+          TableType(
+            TStruct("a" -> TInt32()),
+            None,
+            TStruct.empty()),
+          FastIndexedSeq(null, Row(5), Row(-3)),
+          None),
+        TableMapRows(read,
+          MakeStruct(FastIndexedSeq(
+            "a" -> GetField(Ref("row", read.typ.rowType), "f32"),
+            "b" -> F64(-2.11))),
+          None, None),
+        TableMapGlobals(read,
+          MakeStruct(FastIndexedSeq(
+            "foo" -> NA(TArray(TInt32())))),
+          BroadcastRow(Row(), TStruct.empty(), hc.sc)),
+        TableRange(100, 10),
+        TableUnion(
+          FastIndexedSeq(TableRange(100, 10), TableRange(50, 10))),
+        TableExplode(read, "mset")
+      )
+      xs.map(x => Array(x))
+    } catch {
+      case t: Throwable =>
+        println(t)
+        println(t.printStackTrace())
+        throw t
+    }
+  }
+
+  @Test(dataProvider = "valueIRs")
+  def testValueIRParser(x: IR) {
+    val s = Pretty(x)
+    val x2 = Parser.parse(Parser.ir_value_expr, s)
+    assert(x2 == x)
+  }
+
+  @Test(dataProvider = "tableIRs")
+  def testTableIRParser(x: TableIR) {
+    val s = Pretty(x)
+    val x2 = Parser.parse(Parser.table_ir, s)
+    assert(x2 == x)
   }
 }

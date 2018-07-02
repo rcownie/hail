@@ -4,6 +4,8 @@ Unit tests for Hail.
 import pandas as pd
 import unittest
 import random
+import math
+
 import hail as hl
 import hail.expr.aggregators as agg
 from hail.utils.java import Env, scala_object
@@ -262,7 +264,8 @@ class TableTests(unittest.TestCase):
                            x15=agg.collect(hl.Struct(a=5, b="foo", c=hl.Struct(banana='apple')))[0],
                            x16=agg.collect(hl.Struct(a=5, b="foo", c=hl.Struct(banana='apple')).c.banana)[0],
                            x17=agg.collect(agg.explode(hl.null(hl.tarray(hl.tint32)))),
-                           x18=agg.collect(agg.explode(hl.null(hl.tset(hl.tint32))))
+                           x18=agg.collect(agg.explode(hl.null(hl.tset(hl.tint32)))),
+                           x19=agg.take(kt.GT, 1, ordering=-kt.qPheno)
                            ).take(1)[0])
 
         expected = {u'status': 0,
@@ -275,7 +278,8 @@ class TableTests(unittest.TestCase):
                     u'x11': {u'r_expected_het_freq': 0.5, u'p_hwe': 0.5},
                     u'x2': [3, 4, 13, 14], u'x3': 3, u'x1': [6, 26], u'x6': 39, u'x7': 2, u'x4': 13, u'x5': 16,
                     u'x17': [],
-                    u'x18': []}
+                    u'x18': [],
+                    u'x19': [hl.Call([0, 1])]}
 
         self.maxDiff = None
 
@@ -451,6 +455,13 @@ class TableTests(unittest.TestCase):
         ht = hl.utils.range_table(10)
         ht1 = ht.annotate(foo = 5)
         self.assertTrue(ht.all(ht1[ht.key].foo == 5))
+
+    def test_multiple_entry_joins(self):
+        mt = hl.utils.range_matrix_table(4, 4)
+        mt2 = hl.utils.range_matrix_table(4, 4)
+        mt2 = mt2.annotate_entries(x=mt2.row_idx + mt2.col_idx)
+        mt.select_entries(a=mt2[mt.row_idx, mt.col_idx].x,
+                          b=mt2[mt.row_idx, mt.col_idx].x)
 
     def test_index_maintains_count(self):
         t1 = hl.Table.parallelize([
@@ -637,6 +648,12 @@ class TableTests(unittest.TestCase):
         ht = ht.key_by('idx', 'b')
         ht._force_count()
 
+    def test_explode_key_error(self):
+        t = hl.utils.range_table(1)
+        t = t.key_by(a=['a', 'b', 'c'])
+        with self.assertRaises(ValueError):
+            t.explode('a')
+
     def test_explode_on_set(self):
         t = hl.utils.range_table(1)
         t = t.annotate(a=hl.set(['a', 'b', 'c']))
@@ -685,8 +702,13 @@ class GroupedTableTests(unittest.TestCase):
 
         self.assertTrue(result._same(expected))
 
+    def test_issue_2446_takeby(self):
+        t = hl.utils.range_table(10)
+        result = t.group_by(foo=5).aggregate(x=hl.agg.take(t.idx, 3, ordering=t.idx))
+        self.assertTrue(result.collect()[0].x == [0, 1, 2])
 
-class MatrixTests(unittest.TestCase):
+
+class MatrixTableTests(unittest.TestCase):
     def get_vds(self, min_partitions=None) -> hl.MatrixTable:
         return hl.import_vcf(resource("sample.vcf"), min_partitions=min_partitions)
 
@@ -878,6 +900,13 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(mt.annotate_cols(x = hl.empty_array('int')).explode_cols('x').count_cols(), 0)
         self.assertEqual(mt.annotate_cols(x = hl.null('array<int>')).explode_cols('x').count_cols(), 0)
         self.assertEqual(mt.annotate_cols(x = hl.range(0, mt.col_idx)).explode_cols('x').count_cols(), 6)
+
+    def test_explode_key_errors(self):
+        mt = hl.utils.range_matrix_table(1, 1).key_cols_by(a=[1]).key_rows_by(b=[1])
+        with self.assertRaises(ValueError):
+            mt.explode_cols('a')
+        with self.assertRaises(ValueError):
+            mt.explode_rows('b')
 
     def test_aggregate_cols_by(self):
         mt = hl.utils.range_matrix_table(2, 4)
@@ -1464,10 +1493,13 @@ class MatrixTests(unittest.TestCase):
                     (2, ['A', 'G'], 0.25, 0.5),
                     (3, ['T', 'C'], 0.5357142857142857, 0.21428571428571427),
                     (4, ['T', 'A'], 0.5714285714285714,0.6571428571428573),
-                    (5, ['G', 'A'], 0.3333333333333333, 0.5),
-                    (6, ['T', 'C'], hl.null(hl.tfloat64), 0.5)]],
+                    (5, ['G', 'A'], 0.3333333333333333, 0.5)]],
                                         key=['locus', 'alleles'])
-        self.assertTrue(rt._same(expected))
+        self.assertTrue(rt.filter(rt.locus.position != 6)._same(expected))
+
+        rt6 = rt.filter(rt.locus.position == 6).collect()[0]
+        self.assertEqual(rt6['p_hwe'], 0.5)
+        self.assertTrue(math.isnan(rt6['r_expected_het_freq']))
 
     def test_hw_p_and_agg_agree(self):
         mt = hl.import_vcf(resource('sample.vcf'))
@@ -1481,9 +1513,11 @@ class MatrixTests(unittest.TestCase):
         rt = mt.rows()
         self.assertTrue(rt.all(rt.hw == rt.hw2))
 
-class GroupedMatrixTests(unittest.TestCase):
 
-    def get_groupable_matrix(self):
+class GroupedMatrixTableTests(unittest.TestCase):
+
+    @staticmethod
+    def get_groupable_matrix():
         rt = hl.utils.range_matrix_table(n_rows=100, n_cols=20)
         rt = rt.annotate_globals(foo="foo")
         rt = rt.annotate_rows(group1=rt['row_idx'] % 6,
@@ -1524,7 +1558,6 @@ class GroupedMatrixTests(unittest.TestCase):
         self.assertRaises(ExpressionException, b.aggregate, group5=hl.agg.sum(mt['c']))
         self.assertRaises(ExpressionException, b.aggregate, foo=hl.agg.sum(mt['c']))
 
-
     def test_fields_work_correctly(self):
         mt = self.get_groupable_matrix()
         a = mt.group_rows_by(mt['group1']).aggregate(c=hl.agg.sum(mt['c']))
@@ -1555,6 +1588,52 @@ class GroupedMatrixTests(unittest.TestCase):
         self.assertEqual(b.count_cols(), 6)
         self.assertTrue('group5' in b.col_key)
 
+    def test_joins_work_correctly(self):
+        mt = hl.utils.range_matrix_table(4, 4)
+        mt = mt.annotate_globals(glob=5)
+
+        mt2 = hl.utils.range_matrix_table(4, 4)
+        mt2 = mt2.annotate_entries(x=mt2.row_idx + mt2.col_idx)
+        mt2 = mt2.annotate_rows(row_idx2=mt2.row_idx)
+        mt2 = mt2.annotate_cols(col_idx2=mt2.col_idx)
+
+        col_result = (mt.group_cols_by(group=mt2.cols()[mt.col_idx].col_idx2 < 2)
+                        .aggregate(sum=hl.agg.sum(mt2[mt.row_idx, mt.col_idx].x + mt.glob) + mt.glob - 15))
+
+        col_expected = (
+            hl.Table.parallelize(
+                [{'row_idx': 0, 'group': True, 'sum': 1},
+                 {'row_idx': 0, 'group': False, 'sum': 5},
+                 {'row_idx': 1, 'group': True, 'sum': 3},
+                 {'row_idx': 1, 'group': False, 'sum': 7},
+                 {'row_idx': 2, 'group': True, 'sum': 5},
+                 {'row_idx': 2, 'group': False, 'sum': 9},
+                 {'row_idx': 3, 'group': True, 'sum': 7},
+                 {'row_idx': 3, 'group': False, 'sum': 11}],
+                hl.tstruct(row_idx=hl.tint32, group=hl.tbool, sum=hl.tint64)
+            ).annotate_globals(glob=5).key_by('row_idx', 'group')
+        )
+
+        self.assertTrue(col_result.entries()._same(col_expected))
+
+        row_result = (mt.group_rows_by(group=mt2.rows()[mt.row_idx].row_idx2 < 2)
+                        .aggregate(sum=hl.agg.sum(mt2[mt.row_idx, mt.col_idx].x + mt.glob) + mt.glob - 15))
+
+        row_expected = (
+            hl.Table.parallelize(
+                [{'group': True, 'col_idx': 0, 'sum': 1},
+                 {'group': True, 'col_idx': 1, 'sum': 3},
+                 {'group': True, 'col_idx': 2, 'sum': 5},
+                 {'group': True, 'col_idx': 3, 'sum': 7},
+                 {'group': False, 'col_idx': 0, 'sum': 5},
+                 {'group': False, 'col_idx': 1, 'sum': 7},
+                 {'group': False, 'col_idx': 2, 'sum': 9},
+                 {'group': False, 'col_idx': 3, 'sum': 11}],
+                hl.tstruct(group=hl.tbool, col_idx=hl.tint32, sum=hl.tint64)
+            ).annotate_globals(glob=5).key_by('group', 'col_idx')
+        )
+
+        self.assertTrue(row_result.entries()._same(row_expected))
 
 
 class FunctionsTests(unittest.TestCase):

@@ -4,7 +4,7 @@ import is.hail.HailContext
 import is.hail.annotations._
 import is.hail.expr._
 import is.hail.expr.ir
-import is.hail.expr.ir.{IR, Pretty}
+import is.hail.expr.ir.{IR, Pretty, TableAggregateByKey, TableExplode, TableFilter, TableIR, TableJoin, TableKeyBy, TableLiteral, TableMapGlobals, TableMapRows, TableParallelize, TableRange, TableRead, TableUnion, TableUnkey, TableValue}
 import is.hail.expr.types._
 import is.hail.io.plink.{FamFileConfig, LoadPlink}
 import is.hail.methods.Aggregators
@@ -73,7 +73,7 @@ object Table {
     var typ = spec.table_type
     if (rowFields != null)
       typ = typ.copy(
-        rowType = typ.rowType.filter(rowFields)._1)
+        rowType = typ.rowType.filterSet(rowFields)._1)
 
     new Table(hc, TableRead(path, spec, typ, dropRows = false))
   }
@@ -230,9 +230,9 @@ class Table(val hc: HailContext, val tir: TableIR) {
   def typ: TableType = tir.typ
   
   lazy val value: TableValue = {
+    log.info("in Table.value: pre-opt:\n" + ir.Pretty(tir))
     val opt = ir.Optimize(tir)
-
-    log.info("in Table.value: execute:\n" + ir.Pretty(opt))
+    log.info("in Table.value: post-opt:\n" + ir.Pretty(opt))
 
     opt.execute(hc)
   }
@@ -289,7 +289,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
 
   def fieldNames: Array[String] = fields.map(_.name)
 
-  def partitionCounts(): Array[Long] = {
+  def partitionCounts(): IndexedSeq[Long] = {
     tir.partitionCounts match {
       case Some(counts) => counts
       case None => rvd.countPerPartition()
@@ -312,7 +312,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
   }
 
   def valueSignature: TStruct = {
-    val (t, _) = signature.filter(keyOrEmpty.toSet, include = false)
+    val (t, _) = signature.filterSet(keyOrEmpty.toSet, include = false)
     t
   }
 
@@ -435,22 +435,9 @@ class Table(val hc: HailContext, val tir: TableIR) {
     val ec = aggEvalContext()
 
     val queryAST = Parser.parseToAST(expr, ec)
-    queryAST.toIROpt(Some("AGG" -> "row")) match {
+    (queryAST.toIROpt(Some("AGG" -> "row")): @unchecked) match {
       case Some(ir) =>
         aggregate(ir)
-      case _ =>
-        val globalsBc = globals.broadcast
-        val (t, f) = Parser.parseExpr(expr, ec)
-        val (zVals, seqOp, combOp, resultOp) = Aggregators.makeFunctions[Annotation](ec, {
-          case (ec, a) =>
-            ec.setAll(globalsBc.value, a)
-        })
-
-        val r = rdd.aggregate(zVals.map(_.copy()))(seqOp, combOp)
-        ec.set(0, globalsBc.value)
-        resultOp(r)
-
-        (f(), t)
     }
   }
 
@@ -481,17 +468,9 @@ class Table(val hc: HailContext, val tir: TableIR) {
     val ast = Parser.parseToAST(expr, ec)
     assert(ast.`type`.isInstanceOf[TStruct])
 
-    ast.toIROpt() match {
+    (ast.toIROpt(): @unchecked) match {
       case Some(ir) =>
         new Table(hc, TableMapGlobals(tir, ir, BroadcastRow(Row(), TStruct(), hc.sc)))
-      case _ =>
-        ec.set(0, globals.value)
-        val (t, f) = Parser.parseExpr(expr, ec)
-        val newSignature = t.asInstanceOf[TStruct]
-        val newGlobal = f().asInstanceOf[Row]
-
-        copy2(globalSignature = newSignature,
-          globals = globals.copy(value = newGlobal, t = newSignature))
     }
   }
 
@@ -499,25 +478,11 @@ class Table(val hc: HailContext, val tir: TableIR) {
     val ec = rowEvalContext()
     var filterAST = Parser.parseToAST(cond, ec)
     val pred = filterAST.toIROpt()
-    pred match {
+    (pred: @unchecked) match {
       case Some(irPred) =>
         new Table(hc,
           TableFilter(tir, ir.filterPredicateWithKeep(irPred, keep))
         )
-      case None =>
-        if (!keep)
-          filterAST = Apply(filterAST.getPos, "!", Array(filterAST))
-        val f: () => java.lang.Boolean = Parser.evalTypedExpr[java.lang.Boolean](filterAST, ec)
-        val localSignature = signature
-
-        val globalsBc = globals.broadcast
-        val p = (rv: RegionValue) => {
-          val ur = new UnsafeRow(localSignature, rv)
-          ec.setAll(globalsBc.value, ur)
-          val ret = f()
-          ret != null && ret.booleanValue()
-        }
-        copy2(rvd = rvd.filter(p))
     }
   }
 
@@ -563,20 +528,9 @@ class Table(val hc: HailContext, val tir: TableIR) {
     val ast = Parser.parseToAST(expr, ec)
     assert(ast.`type`.isInstanceOf[TStruct])
 
-    ast.toIROpt() match {
+    (ast.toIROpt(): @unchecked) match {
       case Some(ir) =>
         new Table(hc, TableMapRows(tir, ir, newKey, preservedKeyFields))
-      case _ =>
-        val (t, f) = Parser.parseExpr(expr, ec)
-        val newSignature = t.asInstanceOf[TStruct]
-        val globalsBc = globals.broadcast
-
-        val annotF: Row => Row = { r =>
-          ec.setAll(globalsBc.value, r)
-          f().asInstanceOf[Row]
-        }
-
-        copy(rdd = rdd.map(annotF), signature = newSignature, key = newKey)
     }
   }
 
@@ -785,46 +739,9 @@ class Table(val hc: HailContext, val tir: TableIR) {
     val ec = aggEvalContext()
     val ast = Parser.parseToAST(expr, ec)
 
-    ast.toIROpt(Some("AGG" -> "row")) match {
+    (ast.toIROpt(Some("AGG" -> "row")): @unchecked) match {
       case Some(x) =>
         new Table(hc, TableAggregateByKey(tir, x))
-      case _ =>
-        log.warn(s"group_by(...).aggregate() found no AST to IR conversion: ${ PrettyAST(ast) }")
-        
-        val (aggPaths, aggTypes, aggF) = Parser.parseAnnotationExprs(oldAggExpr, ec, None)
-        
-        val aggNames = aggPaths.map(_.head)
-      
-        val aggSignature = TStruct((aggNames, aggTypes).zipped.toSeq: _*)
-        val globalsBc = globals.broadcast
-      
-        // FIXME: delete this when we understand what it's doing
-        ec.set(0, globals.safeValue)
-        val (zVals, seqOp, combOp, resultOp) = Aggregators.makeFunctions[Row](ec, {
-          case (ec_, r) =>
-            ec_.set(0, globalsBc.value)
-            ec_.set(1, r)
-        })
-        
-        assert(keyFieldIdx.isDefined)
-        val keyIndices = keyFieldIdx.get
-        
-        val newRDD = rdd.mapPartitions {
-          it =>
-            it.map {
-              r =>
-                val key = Row.fromSeq(keyIndices.map(r.get))
-                (key, r)
-            }
-        }.aggregateByKey(zVals, nPartitions.getOrElse(this.nPartitions))(seqOp, combOp)
-          .map {
-            case (k, agg) =>
-              ec.set(0, globalsBc.value)
-              resultOp(agg)
-              Row.fromSeq(k.toSeq ++ aggF())
-          }
-      
-        copy(rdd = newRDD, signature = keySignature.get.merge(aggSignature)._1)
     }
   }
 
@@ -970,13 +887,8 @@ class Table(val hc: HailContext, val tir: TableIR) {
   def index(name: String): Table = {
     if (fieldNames.contains(name))
       fatal(s"name collision: cannot index table, because column '$name' already exists")
-
-    val (newSignature, ins) = signature.insert(TInt64(), name)
-
-    // FIXME: should use RVD, need zipWithIndex
-    val newRDD = rdd.zipWithIndex().map { case (r, ind) => ins(r, ind).asInstanceOf[Row] }
-
-    copy(signature = newSignature.asInstanceOf[TStruct], rdd = newRDD)
+    val newRvd = rvd.zipWithIndex(name)
+    copy2(signature = newRvd.rowType, rvd = newRvd)
   }
 
   def show(n: Int = 10, truncate: Option[Int] = None, printTypes: Boolean = true, maxWidth: Int = 100): Unit = {

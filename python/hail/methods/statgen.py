@@ -1420,7 +1420,7 @@ def pca(entry_expr, k=10, compute_loadings=False) -> Tuple[List[float], Table, T
       This method does **not** automatically mean-center or normalize each column.
       If desired, such transformations should be incorporated in `entry_expr`.
 
-      Hail will return an error if `entry_expr` evaluates to missing, NaN, or
+      Hail will return an error if `entry_expr` evaluates to missing, nan, or
       infinity on any entry.
 
     Notes
@@ -2405,7 +2405,7 @@ def balding_nichols_model(n_populations, n_samples, n_variants, n_partitions=Non
     distribution :math:`\pi`. Note that the actual size of each population is
     random.
 
-    Variants are modeled as bi-allelic and unlinked. Ancestral allele
+    Variants are modeled as biallelic and unlinked. Ancestral allele
     frequencies are drawn independently for each variant from a frequency
     spectrum :math:`P_0`. The extent of genetic drift of each modern population
     from the ancestral population is defined by the corresponding :math:`F_{ST}`
@@ -3007,6 +3007,7 @@ def ld_prune(call_expr, r2=0.2, bp_window_size=1000000, memory_per_core=256, kee
         field = Env.get_uid()
         mt = mt.select_entries(**{field: call_expr})
 
+    mt = mt.distinct_by_row()
     locally_pruned_table_path = new_temp_file()
     (_local_ld_prune(require_biallelic(mt, 'ld_prune'), field, r2, bp_window_size, memory_per_core)
         .add_index()

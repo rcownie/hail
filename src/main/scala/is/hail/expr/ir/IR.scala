@@ -1,7 +1,6 @@
 package is.hail.expr.ir
 
 import is.hail.expr.types._
-import is.hail.expr.{BaseIR, MatrixIR, MatrixValue, TableIR}
 import is.hail.expr.ir.functions.{IRFunctionRegistry, IRFunctionWithMissingness, IRFunctionWithoutMissingness}
 import is.hail.utils.{ExportType, FastIndexedSeq}
 
@@ -83,7 +82,7 @@ final case class ArrayRef(a: IR, i: IR) extends InferIR
 final case class ArrayLen(a: IR) extends IR { val typ = TInt32() }
 final case class ArrayRange(start: IR, stop: IR, step: IR) extends IR { val typ: TArray = TArray(TInt32()) }
 
-final case class ArraySort(a: IR, ascending: IR) extends InferIR
+final case class ArraySort(a: IR, ascending: IR, onKey: Boolean = false) extends InferIR
 final case class ToSet(a: IR) extends InferIR
 final case class ToDict(a: IR) extends InferIR
 final case class ToArray(a: IR) extends InferIR
@@ -231,10 +230,10 @@ class PrimitiveIR(val self: IR) extends AnyVal {
   def unary_-(): IR = ApplyUnaryPrimOp(Negate(), self)
   def unary_!(): IR = ApplyUnaryPrimOp(Bang(), self)
 
-  def ceq(other: IR): IR = ApplyComparisonOp(EQWithNA(self.typ), self, other)
-  def cne(other: IR): IR = ApplyComparisonOp(NEQWithNA(self.typ), self, other)
-  def <(other: IR): IR = ApplyComparisonOp(LT(self.typ), self, other)
-  def >(other: IR): IR = ApplyComparisonOp(GT(self.typ), self, other)
-  def <=(other: IR): IR = ApplyComparisonOp(LTEQ(self.typ), self, other)
-  def >=(other: IR): IR = ApplyComparisonOp(GTEQ(self.typ), self, other)
+  def ceq(other: IR): IR = ApplyComparisonOp(EQWithNA(self.typ, other.typ), self, other)
+  def cne(other: IR): IR = ApplyComparisonOp(NEQWithNA(self.typ, other.typ), self, other)
+  def <(other: IR): IR = ApplyComparisonOp(LT(self.typ, other.typ), self, other)
+  def >(other: IR): IR = ApplyComparisonOp(GT(self.typ, other.typ), self, other)
+  def <=(other: IR): IR = ApplyComparisonOp(LTEQ(self.typ, other.typ), self, other)
+  def >=(other: IR): IR = ApplyComparisonOp(GTEQ(self.typ, other.typ), self, other)
 }

@@ -1,101 +1,27 @@
 package is.hail.expr
 
-import is.hail.expr.ir.{AggOp, AggSignature, ApplyAggOp, IR, SeqOp}
-import is.hail.asm4s.{Code, _}
+import is.hail.expr.ir.{AggOp, AggSignature, IR}
 import is.hail.expr.ToIRErr._
 import is.hail.expr.ir.functions.IRFunctionRegistry
 import is.hail.expr.types._
 import is.hail.utils.EitherIsAMonad._
 import is.hail.utils._
-import is.hail.variant.{Locus, ReferenceGenome}
-import org.apache.spark.sql.{Row, RowFactory}
+import is.hail.variant.ReferenceGenome
 
-import scala.collection.mutable
-import scala.collection.mutable.ArrayBuffer
 import scala.language.existentials
 import scala.reflect.ClassTag
 import scala.util.parsing.input.{Position, Positional}
 
-case class RefBox(var v: Any)
-
-case class EvalContext private(st: SymbolTable,
-  a: ArrayBuffer[Any],
-  aggregations: ArrayBuffer[(RefBox, CPS[Any], Aggregator)]) {
+case class EvalContext(st: SymbolTable) {
   st.foreach {
     case (name, (i, t: TAggregable)) =>
       require(t.symTab.exists { case (_, (j, t2)) => j == i && t2 == t.elementType },
         s"did not find binding for type ${ t.elementType } at index $i in agg symbol table for `$name'")
     case _ =>
   }
-
-  def setAll(arg1: Any) {
-    a(0) = arg1
-  }
-
-  def setAll(arg1: Any, arg2: Any) {
-    a(0) = arg1
-    a(1) = arg2
-  }
-
-  def setAll(arg1: Any, arg2: Any, arg3: Any) {
-    a(0) = arg1
-    a(1) = arg2
-    a(2) = arg3
-  }
-
-  def setAll(arg1: Any, arg2: Any, arg3: Any, arg4: Any) {
-    a(0) = arg1
-    a(1) = arg2
-    a(2) = arg3
-    a(3) = arg4
-  }
-
-  def setAll(arg1: Any, arg2: Any, arg3: Any, arg4: Any, arg5: Any) {
-    a(0) = arg1
-    a(1) = arg2
-    a(2) = arg3
-    a(3) = arg4
-    a(4) = arg5
-  }
-
-  def setAll(arg1: Any, arg2: Any, arg3: Any, arg4: Any, arg5: Any, args: Any*) {
-    a(0) = arg1
-    a(1) = arg2
-    a(2) = arg3
-    a(3) = arg4
-    a(4) = arg5
-    var i = 0
-    while (i < args.length) {
-      a(5 + i) = args(i)
-      i += 1
-    }
-  }
-
-  def set(index: Int, arg: Any) {
-    a(index) = arg
-  }
 }
 
 object EvalContext {
-  def apply(symTab: SymbolTable): EvalContext = {
-    def maxEntry(st: SymbolTable): Int = {
-      val m = st.map {
-        case (name, (i, t: TAggregable)) => i.max(maxEntry(t.symTab))
-        case (name, (i, t)) => i
-      }
-
-      if (m.isEmpty)
-        -1
-      else
-        m.max
-    }
-
-    val m = maxEntry(symTab) + 1
-    val a = ArrayBuffer.fill[Any](m)(null)
-    val af = new ArrayBuffer[(RefBox, CPS[Any], Aggregator)]()
-    EvalContext(symTab, a, af)
-  }
-
   def apply(args: (String, Type)*): EvalContext = {
     EvalContext(args.zipWithIndex
       .map { case ((name, t), i) => (name, (i, t)) }
@@ -103,109 +29,17 @@ object EvalContext {
   }
 }
 
-sealed trait NumericConversion[T, U <: ToBoxed[T]] extends Serializable {
-  def to(numeric: Any): T
-
-  def to(c: Code[java.lang.Number]): CM[Code[U#T]]
-}
-
-object IntNumericConversion extends NumericConversion[Int, BoxedInt] {
-  def to(numeric: Any): Int = numeric match {
-    case i: Int => i
-  }
-
-  def to(c: Code[java.lang.Number]) =
-    c.mapNull((x: Code[java.lang.Number]) => Code.boxInt(Code.intValue(x)))
-}
-
-object LongNumericConversion extends NumericConversion[Long, BoxedLong] {
-  def to(numeric: Any): Long = numeric match {
-    case i: Int => i
-    case l: Long => l
-  }
-
-  def to(c: Code[java.lang.Number]) =
-    c.mapNull((x: Code[java.lang.Number]) => Code.boxLong(Code.longValue(x)))
-}
-
-object FloatNumericConversion extends NumericConversion[Float, BoxedFloat] {
-  def to(numeric: Any): Float = numeric match {
-    case i: Int => i
-    case l: Long => l
-    case f: Float => f
-  }
-
-  def to(c: Code[java.lang.Number]) =
-    c.mapNull((x: Code[java.lang.Number]) => Code.boxFloat(Code.floatValue(x)))
-}
-
-object DoubleNumericConversion extends NumericConversion[Double, BoxedDouble] {
+object DoubleNumericConversion {
   def to(numeric: Any): Double = numeric match {
     case i: Int => i
     case l: Long => l
     case f: Float => f
     case d: Double => d
   }
-
-  def to(c: Code[java.lang.Number]) =
-    c.mapNull((x: Code[java.lang.Number]) => Code.boxDouble(Code.doubleValue(x)))
 }
 
 object AST extends Positional {
 
-  def evalComposeCode[T](subexpr: AST)(g: Code[T] => Code[AnyRef]): CM[Code[AnyRef]] =
-    subexpr.compile().flatMap(_.mapNull((x: Code[AnyRef]) => g(x.asInstanceOf[Code[T]])))
-
-  def evalComposeCodeM[T](subexpr: AST)(g: Code[T] => CM[Code[AnyRef]]): CM[Code[AnyRef]] = for (
-    (stc, c) <- CM.memoize(subexpr.compile());
-    gc <- g(c.asInstanceOf[Code[T]])
-  ) yield
-    Code(stc, c.ifNull(Code._null, gc))
-
-  def evalComposeCodeM[T, U](a: AST, b: AST)(g: (Code[T], Code[U]) => CM[Code[AnyRef]]): CM[Code[AnyRef]] = for (
-    (sta, ac) <- CM.memoize(a.compile());
-    (stb, bc) <- CM.memoize(b.compile());
-    gc <- g(ac.asInstanceOf[Code[T]], bc.asInstanceOf[Code[U]])
-  ) yield
-    Code(sta, ac.ifNull(Code._null,
-      Code(stb, bc.ifNull(Code._null, gc))))
-
-  def evalComposeCodeM[T, U, V](a: AST, b: AST, c: AST)(g: (Code[T], Code[U], Code[V]) => CM[Code[AnyRef]]): CM[Code[AnyRef]] = for (
-    (sta, ac) <- CM.memoize(a.compile());
-    (stb, bc) <- CM.memoize(b.compile());
-    (stc, cc) <- CM.memoize(c.compile());
-    gc <- g(ac.asInstanceOf[Code[T]], bc.asInstanceOf[Code[U]], cc.asInstanceOf[Code[V]]))
-    yield
-      Code(sta, ac.ifNull(Code._null,
-        Code(stb, bc.ifNull(Code._null,
-          Code(stc, cc.ifNull(Code._null, gc))))))
-
-  def evalComposeCodeM[T, U, V, W](a: AST, b: AST, c: AST, d: AST)(g: (Code[T], Code[U], Code[V], Code[W]) => CM[Code[AnyRef]]): CM[Code[AnyRef]] = for (
-    (sta, ac) <- CM.memoize(a.compile());
-    (stb, bc) <- CM.memoize(b.compile());
-    (stc, cc) <- CM.memoize(c.compile());
-    (std, dc) <- CM.memoize(d.compile());
-    gc <- g(ac.asInstanceOf[Code[T]], bc.asInstanceOf[Code[U]], cc.asInstanceOf[Code[V]], dc.asInstanceOf[Code[W]])
-  ) yield
-    Code(sta, ac.ifNull(Code._null,
-      Code(stb, bc.ifNull(Code._null,
-        Code(stc, cc.ifNull(Code._null,
-          Code(std, dc.ifNull(Code._null, gc))))))))
-
-  def evalComposeCodeM[T, U, V, W, X](a: AST, b: AST, c: AST, d: AST, e: AST)(g: (Code[T], Code[U], Code[V], Code[W], Code[X]) => CM[Code[AnyRef]]): CM[Code[AnyRef]] = for (
-    (sta, ac) <- CM.memoize(a.compile());
-    (stb, bc) <- CM.memoize(b.compile());
-    (stc, cc) <- CM.memoize(c.compile());
-    (std, dc) <- CM.memoize(d.compile());
-    (ste, ec) <- CM.memoize(e.compile());
-    gc <- g(ac.asInstanceOf[Code[T]], bc.asInstanceOf[Code[U]], cc.asInstanceOf[Code[V]], dc.asInstanceOf[Code[W]], ec.asInstanceOf[Code[X]])
-  ) yield
-    Code(sta, ac.ifNull(Code._null,
-      Code(stb, bc.ifNull(Code._null,
-        Code(stc, cc.ifNull(Code._null,
-          Code(std, dc.ifNull(Code._null,
-            Code(ste, ec.ifNull(Code._null, gc)
-            )))))))))
 }
 
 case class Positioned[T](x: T) extends Positional
@@ -236,38 +70,6 @@ sealed abstract class AST(pos: Position, val subexprs: Array[AST] = Array.empty)
     subexprs.foreach(_.errorIf[T](msg))
   }
 
-  def compile(): CM[Code[AnyRef]]
-
-  def compileAggregator(): CMCodeCPS[AnyRef]
-
-  def run(ec: EvalContext): () => AnyRef = this.compile().run(ec)
-
-  def runAggregator(ec: EvalContext): CPS[Any] = {
-    val typedNames = ec.st.toSeq
-      .sortBy { case (_, (i, _)) => i }
-      .map { case (name, (i, typ)) => (name, typ, i) }
-    val values = ec.a.asInstanceOf[mutable.ArrayBuffer[AnyRef]]
-
-    val idx = ec.a.length
-    val localA = ec.a
-    localA += null
-
-    val f = (this.compileAggregator() { (me: Code[AnyRef]) =>
-      for (
-        vs <- CM.initialValueArray();
-        k = Code.checkcast[AnyRef => Unit](vs.invoke[Int, AnyRef]("apply", idx))
-        // This method returns `Void` which is only inhabited by `null`, we treat
-        // these calls as non-stack-modifying functions so we must include a pop
-        // to reset the stack.
-      ) yield Code.toUnit(k.invoke[AnyRef, AnyRef]("apply", me))
-    }).map(x => Code(x, Code._null[AnyRef])).runWithDelayedValues(typedNames, ec)
-
-    { (k: (Any => Unit)) =>
-      localA(idx) = k
-      f(values)
-    }
-  }
-
   def toIROptNoWarning(agg: Option[(String, String)] = None): Option[IR] =
     toIR(agg).toOption
 
@@ -295,20 +97,6 @@ sealed abstract class AST(pos: Position, val subexprs: Array[AST] = Array.empty)
 }
 
 case class Const(posn: Position, value: Any, t: Type) extends AST(posn) {
-  def compileAggregator(): CMCodeCPS[AnyRef] = throw new UnsupportedOperationException
-
-  def compile() = CM.ret(value match {
-    case i: Int => Code.newInstance[java.lang.Integer, Int](i)
-    case l: Long => Code.newInstance[java.lang.Long, Long](l)
-    case f: Float => Code.newInstance[java.lang.Float, Float](f)
-    case d: Double => Code.newInstance[java.lang.Double, Double](d)
-    case s: String => (s: Code[String]).asInstanceOf[Code[AnyRef]]
-    case z: Boolean => Code.newInstance[java.lang.Boolean, Boolean](z)
-    // case c: Char => (CharInfo, c)
-    case null => Code._null
-    case _ => throw new RuntimeException(s"Unrecognized constant: $value")
-  })
-
   override def typecheckThis(): Type = t
 
   def toIR(agg: Option[(String, String)] = None): ToIRErr[IR] = (t, value) match {
@@ -323,7 +111,7 @@ case class Const(posn: Position, value: Any, t: Type) extends AST(posn) {
   }
 }
 
-case class Select(posn: Position, lhs: AST, rhs: String) extends AST(posn, lhs) {
+case class SelectAST(posn: Position, lhs: AST, rhs: String) extends AST(posn, lhs) {
   override def typecheckThis(): Type = {
     (lhs.`type`, rhs) match {
 
@@ -343,29 +131,6 @@ case class Select(posn: Position, lhs: AST, rhs: String) extends AST(posn, lhs) 
           case otherwise => parseError(otherwise.message)
         }
     }
-  }
-
-  def compileAggregator(): CMCodeCPS[AnyRef] =
-    FunctionRegistry.callAggregatorTransformation(lhs.`type`, FastSeq(), rhs)(lhs, FastSeq())
-
-  def compile() = (lhs.`type`: @unchecked) match {
-    case t: TStruct =>
-      val Some(f) = t.selfField(rhs)
-      val i = f.index
-      AST.evalComposeCode[Row](lhs) { r: Code[Row] => Code.checkcast(r.invoke[Int, AnyRef]("get", i))(f.typ.scalaClassTag) }
-
-    case t =>
-      val localPos = posn
-
-      FunctionRegistry.lookupField(t, FastSeq(), rhs)(lhs, FastSeq())
-        .valueOr {
-          case FunctionRegistry.NotFound(name, typ, _) =>
-            ParserUtils.error(localPos,
-              s"""`$t' has neither a field nor a method named `$name'
-                 |  Hint: sum, min, max, etc. have no parentheses when called on an Array:
-                 |    counts.sum""".stripMargin)
-          case otherwise => fatal(otherwise.message)
-        }
   }
 
   def toIR(agg: Option[(String, String)] = None): ToIRErr[IR] =
@@ -402,14 +167,6 @@ case class ArrayConstructor(posn: Position, elements: Array[AST]) extends AST(po
         s"\n  Found: [${ elements.map(_.`type`).mkString(", ") }]")
   }
 
-  def compileAggregator(): CMCodeCPS[AnyRef] = throw new UnsupportedOperationException
-
-  def compile() = for (
-    celements <- CM.sequence(elements.map(_.compile()));
-    convertedArray <- CompilationHelp.arrayOfWithConversion(`type`.asInstanceOf[TArray].elementType, celements))
-    yield
-      CompilationHelp.arrayToWrappedArray(convertedArray)
-
   def toIR(agg: Option[(String, String)] = None): ToIRErr[IR] = for {
     irElements <- all(elements.map(_.toIR(agg)))
     elementTypes = elements.map(_.`type`).distinct
@@ -419,15 +176,6 @@ case class ArrayConstructor(posn: Position, elements: Array[AST]) extends AST(po
 
 abstract class BaseStructConstructor(posn: Position, elements: Array[AST]) extends AST(posn, elements) {
   override def typecheckThis(ec: EvalContext): Type
-
-  def compileAggregator(): CMCodeCPS[AnyRef] = throw new UnsupportedOperationException
-
-  private def arrayToAnnotation(c: Code[Array[AnyRef]]): Code[Row] =
-    Code.invokeStatic[RowFactory, Array[AnyRef], Row]("create", c)
-
-  def compile() = for (
-    celements <- CM.sequence(elements.map(_.compile()))
-  ) yield arrayToAnnotation(CompilationHelp.arrayOf(celements))
 
   def toIR(agg: Option[(String, String)] = None): ToIRErr[IR]
 }
@@ -472,6 +220,8 @@ case class ReferenceGenomeDependentFunction(posn: Position, fName: String, grNam
         case _ => fatal(s"invalid arguments to '$fName'.")
       }
       if (fName == "liftoverLocus") destRG.locusType else destRG.intervalType
+    case "globalPosToLocus" => rg.locusType
+    case "locusToGlobalPos" => TInt64()
     case _ => throw new UnsupportedOperationException
   }
 
@@ -497,51 +247,17 @@ case class ReferenceGenomeDependentFunction(posn: Position, fName: String, grNam
         (args.map(_.`type`): @unchecked) match {
           case Array(TString(_), TInterval(TLocus(rg, _), _), TFloat64(_)) =>
         }
+      case "globalPosToLocus" =>
+        (args.map(_.`type`): @unchecked) match {
+          case Array(TInt64(_)) =>
+        }
+      case "locusToGlobalPos" =>
+        (args.map(_.`type`): @unchecked) match {
+          case Array(TLocus(rg, _)) =>
+        }
       case _ =>
     }
     rTyp
-  }
-
-  override def compileAggregator(): CMCodeCPS[AnyRef] = throw new UnsupportedOperationException
-
-  override def compile(): CM[Code[AnyRef]] = fName match {
-    case "getReferenceSequence" =>
-      val localRG = rg
-      val f: (String, Int, Int, Int) => String = { (contig, pos, before, after) =>
-        if (localRG.isValidLocus(contig, pos))
-          localRG.getSequence(contig, pos, before, after)
-        else
-          null
-      }
-      AST.evalComposeCodeM(args(0), args(1), args(2), args(3))(CM.invokePrimitive4(f.asInstanceOf[(AnyRef, AnyRef, AnyRef, AnyRef) => AnyRef]))
-
-    case "isValidContig" =>
-      val localRG = rg
-      val f: (String) => Boolean = { contig => localRG.isValidContig(contig) }
-      for {
-        b <- AST.evalComposeCodeM(args(0))(CM.invokePrimitive1(f.asInstanceOf[(AnyRef) => AnyRef]))
-      } yield Code.checkcast[java.lang.Boolean](b)
-
-    case "isValidLocus" =>
-      val localRG = rg
-      val f: (String, Int) => Boolean = { (contig, pos) => localRG.isValidLocus(contig, pos) }
-      for {
-        b <- AST.evalComposeCodeM(args(0), args(1))(CM.invokePrimitive2(f.asInstanceOf[(AnyRef, AnyRef) => AnyRef]))
-      } yield Code.checkcast[java.lang.Boolean](b)
-
-    case "liftoverLocus" =>
-      val localRG = rg
-      val destRGName = args(0).asInstanceOf[Const].value.asInstanceOf[String]
-      val f: (Locus, Double) => Locus = { (l, minMatch) => localRG.liftoverLocus(destRGName, l, minMatch) }
-      AST.evalComposeCodeM(args(1), args(2))(CM.invokePrimitive2(f.asInstanceOf[(AnyRef, AnyRef) => AnyRef]))
-
-    case "liftoverLocusInterval" =>
-      val localRG = rg
-      val destRGName = args(0).asInstanceOf[Const].value.asInstanceOf[String]
-      val f: (Interval, Double) => Interval = { (li, minMatch) => localRG.liftoverLocusInterval(destRGName, li, minMatch) }
-      AST.evalComposeCodeM(args(1), args(2))(CM.invokePrimitive2(f.asInstanceOf[(AnyRef, AnyRef) => AnyRef]))
-
-    case _ => FunctionRegistry.call(fName, args, args.map(_.`type`).toSeq, Some(rTyp))
   }
 
   def toIR(agg: Option[(String, String)] = None): ToIRErr[IR] = {
@@ -565,14 +281,10 @@ case class ReferenceGenomeDependentFunction(posn: Position, fName: String, grNam
 case class Lambda(posn: Position, param: String, body: AST) extends AST(posn, body) {
   def typecheck(): Type = parseError("non-function context")
 
-  def compileAggregator(): CMCodeCPS[AnyRef] = throw new UnsupportedOperationException
-
-  def compile() = throw new UnsupportedOperationException
-
   def toIR(agg: Option[(String, String)] = None): ToIRErr[IR] = fail(this)
 }
 
-case class Apply(posn: Position, fn: String, args: Array[AST]) extends AST(posn, args) {
+case class ApplyAST(posn: Position, fn: String, args: Array[AST]) extends AST(posn, args) {
   assert(fn != "LocusInterval")
 
   override def typecheckThis(): Type = {
@@ -609,7 +321,7 @@ case class Apply(posn: Position, fn: String, args: Array[AST]) extends AST(posn,
         val struct = args(0)
         struct.typecheck(ec)
         val identifiers = args.tail.map {
-          case SymRef(_, id) => id
+          case SymRefAST(_, id) => id
           case badAST => needsSymRef(badAST)
         }
         assert(identifiers.duplicates().isEmpty)
@@ -619,11 +331,11 @@ case class Apply(posn: Position, fn: String, args: Array[AST]) extends AST(posn,
         val struct = args(0)
         struct.typecheck(ec)
         val identifiers = args.tail.map {
-          case SymRef(_, id) => id
+          case SymRefAST(_, id) => id
           case badAST => needsSymRef(badAST)
         }
         assert(identifiers.duplicates().isEmpty)
-        `type` = struct.`type`.asInstanceOf[TStruct].filter(identifiers.toSet, include = false)._1
+        `type` = struct.`type`.asInstanceOf[TStruct].filterSet(identifiers.toSet, include = false)._1
 
       case "uniroot" =>
         if (args.length != 3)
@@ -646,36 +358,6 @@ case class Apply(posn: Position, fn: String, args: Array[AST]) extends AST(posn,
 
       case _ => super.typecheck(ec)
     }
-  }
-
-  def compileAggregator(): CMCodeCPS[AnyRef] = throw new UnsupportedOperationException
-
-  def compile() = ((fn, args): @unchecked) match {
-
-    case ("select" | "drop", Array(head, tail@_*)) =>
-      val struct = head.`type`.asInstanceOf[TStruct]
-      val identifiers = tail.map { ast =>
-        (ast: @unchecked) match {
-          case SymRef(_, id) => id
-        }
-      }
-
-      val f = fn match {
-        case "select" => struct.select(identifiers.toArray)._2
-        case "drop" => struct.filter(identifiers.toSet, include = false)._2
-      }
-
-      AST.evalComposeCodeM[AnyRef](head)(CM.invokePrimitive1(f.asInstanceOf[(AnyRef) => AnyRef]))
-
-    case ("annotate", Array(struct1, struct2)) => for (
-      f1 <- struct1.compile();
-      f2 <- struct2.compile();
-      (_, annotator) = struct1.`type`.asInstanceOf[TStruct].annotate(struct2.`type`.asInstanceOf[TStruct]);
-      result <- CM.invokePrimitive2(annotator)(f1, f2)
-    ) yield result.asInstanceOf[Code[AnyRef]]
-
-    case (_, _) =>
-      FunctionRegistry.call(fn, args, args.map(_.`type`).toSeq)
   }
 
   private def tryPrimOpConversion: Seq[IR] => Option[IR] = flatLift {
@@ -711,13 +393,13 @@ case class Apply(posn: Position, fn: String, args: Array[AST]) extends AST(posn,
     fn match {
       case "select" =>
         for (structIR <- args(0).toIR(agg)) yield {
-          val identifiers = args.tail.map { case SymRef(_, id) => id }
+          val identifiers = args.tail.map { case SymRefAST(_, id) => id }
           ir.SelectFields(structIR, identifiers)
         }
       case "drop" =>
         for (structIR <- args(0).toIR(agg)) yield {
           val t = types.coerce[TStruct](structIR.typ)
-          val identifiers = args.tail.map { case SymRef(_, id) => id }.toSet
+          val identifiers = args.tail.map { case SymRefAST(_, id) => id }.toSet
           val keep = t.fieldNames.filter(!identifiers.contains(_))
           ir.SelectFields(structIR, keep)
         }
@@ -734,10 +416,10 @@ case class Apply(posn: Position, fn: String, args: Array[AST]) extends AST(posn,
   }
 }
 
-case class ApplyMethod(posn: Position, lhs: AST, method: String, args: Array[AST]) extends AST(posn, lhs +: args) {
+case class ApplyMethodAST(posn: Position, lhs: AST, method: String, args: Array[AST]) extends AST(posn, lhs +: args) {
   def getSymRefId(ast: AST): String = {
     ast match {
-      case SymRef(_, id) => id
+      case SymRefAST(_, id) => id
       case _ => ???
     }
   }
@@ -795,33 +477,6 @@ case class ApplyMethod(posn: Position, lhs: AST, method: String, args: Array[AST
     }
   }
 
-  def compileAggregator(): CMCodeCPS[AnyRef] = {
-    val t = lhs.`type`.asInstanceOf[TAggregable]
-    args match {
-      case (Array(Lambda(_, param, body), rest@_*)) =>
-        val funType = TFunction(Array(t.elementType), body.`type`)
-
-        FunctionRegistry.callAggregatorTransformation(t, funType +: rest.map(_.`type`), method)(lhs, args)
-      case _ =>
-        FunctionRegistry.callAggregatorTransformation(t, args.map(_.`type`).toSeq, method)(lhs, args)
-    }
-  }
-
-  def compile() = ((lhs.`type`, method, args): @unchecked) match {
-    case (td: TDict, "mapValues", Array(Lambda(_, param, body), rest@_*)) =>
-      val funType = TFunction(Array(td.valueType), body.`type`)
-      FunctionRegistry.call(method, lhs +: args, td +: funType +: rest.map(_.`type`))
-    case (it: TContainer, _, Array(Lambda(_, param, body), rest@_*)) =>
-      val funType = TFunction(Array(it.elementType), body.`type`)
-      FunctionRegistry.call(method, lhs +: args, it +: funType +: rest.map(_.`type`))
-    case (tt: TTuple, "[]", Array(Const(_, v, t))) =>
-      val i = v.asInstanceOf[Int]
-      val elemTyp = tt.types(i)
-      AST.evalComposeCode[Row](lhs) { r: Code[Row] => Code.checkcast(r.invoke[Int, AnyRef]("get", i))(elemTyp.scalaClassTag) }
-
-    case (t, _, _) => FunctionRegistry.call(method, lhs +: args, t +: args.map(_.`type`))
-  }
-
   override def toAggIR(agg: (String, String), cont: (IR) => IR): ToIRErr[IR] = {
     assert(lhs.`type`.isInstanceOf[TAggregable])
     assert(args.length == 1)
@@ -850,7 +505,7 @@ case class ApplyMethod(posn: Position, lhs: AST, method: String, args: Array[AST
           rx <- lhs.toAggIR(agg, { lhsx =>
             val t = -lhsx.typ.asInstanceOf[TContainer].elementType
             val v = ir.genUID()
-            ir.ArrayFor(ir.Let(name, lhsx, bodyx),
+            ir.ArrayFor(ir.ToArray(ir.Let(name, lhsx, bodyx)),
               v,
               cont(ir.Ref(v, t)))
           })
@@ -900,6 +555,26 @@ case class ApplyMethod(posn: Position, lhs: AST, method: String, args: Array[AST
           rx <- lhs.toAggIR(agg.get, x => ir.SeqOp(x, ir.I32(0), aggSig, seqOpArgs))
         } yield
           ir.ApplyAggOp(rx, FastIndexedSeq(), None, aggSig): IR
+      case (t: TAggregable, "takeBy", IndexedSeq(Lambda(_, name, body), n)) =>
+        for {
+          op <- fromOption(
+            this,
+            s"no AggOp for method $method",
+            AggOp.fromString.lift(method))
+          nx <- n.toIR()
+          bodyx <- body.toIR()
+          aggSig = AggSignature(op,
+            -t.elementType,
+            FastIndexedSeq(nx.typ),
+            None,
+            FastIndexedSeq(bodyx.typ))
+          ca <- fromOption(
+            this,
+            "no CodeAggregator",
+            AggOp.getOption(aggSig))
+          rx <- lhs.toAggIR(agg.get, x => ir.SeqOp(x, ir.I32(0), aggSig, FastIndexedSeq(ir.Let(name, x, bodyx))))
+        } yield
+          ir.ApplyAggOp(rx, FastIndexedSeq(nx), None, aggSig): IR
       case (t: TAggregable, "fraction", IndexedSeq(Lambda(_, name, body))) =>
         for {
           op <- fromOption(
@@ -990,7 +665,37 @@ case class ApplyMethod(posn: Position, lhs: AST, method: String, args: Array[AST
                 ir.GroupByKey(ir.ArrayMap(a, name, ir.MakeTuple(FastSeq(b, ir.Ref(name, types.coerce[TContainer](a.typ).elementType)))))
               case (_: TSet, "groupBy") =>
                 ir.GroupByKey(ir.ArrayMap(ir.ToArray(a), name, ir.MakeTuple(FastSeq(b, ir.Ref(name, types.coerce[TContainer](a.typ).elementType)))))
+              case (_: TArray, "sortBy") =>
+                val ref = ir.Ref(ir.genUID(), TTuple(b.typ, types.coerce[TContainer](a.typ).elementType))
+                ir.ArrayMap(
+                  ir.ArraySort(
+                    ir.ArrayMap(a, name,
+                      ir.MakeTuple(FastSeq(b, ir.Ref(name, types.coerce[TContainer](a.typ).elementType)))),
+                    true, onKey = true),
+                  ref.name,
+                  ir.GetTupleElement(ref, 1))
             })
+        } yield result
+      case (t, m, IndexedSeq(Lambda(_, name, body), arg1)) =>
+        for {
+          a <- lhs.toIR(agg)
+          b <- body.toIR(agg)
+          irArg1 <- arg1.toIR(agg)
+          result <- fromOption(
+            this,
+            s"no method $m on type $t",
+            optMatch((t, m)) {
+              case (_: TArray, "sortBy") =>
+                val ref = ir.Ref(ir.genUID(), TTuple(b.typ, types.coerce[TContainer](a.typ).elementType))
+                ir.ArrayMap(
+                  ir.ArraySort(
+                    ir.ArrayMap(a, name,
+                      ir.MakeTuple(FastSeq(b, ir.Ref(name, types.coerce[TContainer](a.typ).elementType)))),
+                    irArg1, onKey = true),
+                  ref.name,
+                  ir.GetTupleElement(ref, 1))
+            }
+          )
         } yield result
       case _ =>
         for {
@@ -1006,7 +711,7 @@ case class ApplyMethod(posn: Position, lhs: AST, method: String, args: Array[AST
   }
 }
 
-case class Let(posn: Position, bindings: Array[(String, AST)], body: AST) extends AST(posn, bindings.map(_._2) :+ body) {
+case class LetAST(posn: Position, bindings: Array[(String, AST)], body: AST) extends AST(posn, bindings.map(_._2) :+ body) {
 
   override def typecheck(ec: EvalContext) {
     var symTab2 = ec.st
@@ -1019,17 +724,13 @@ case class Let(posn: Position, bindings: Array[(String, AST)], body: AST) extend
     `type` = body.`type`
   }
 
-  def compileAggregator(): CMCodeCPS[AnyRef] = throw new UnsupportedOperationException
-
-  def compile() = CM.bindRepIn(bindings.map { case (name, expr) => (name, expr.`type`, expr.compile()) })(body.compile())
-
   def toIR(agg: Option[(String, String)] = None): ToIRErr[IR] = for {
     irBindings <- all(bindings.map { case (x, y) => y.toIR(agg).map(irY => (x, irY)) })
     irBody <- body.toIR(agg)
   } yield irBindings.foldRight(irBody) { case ((name, v), x) => ir.Let(name, v, x) }
 }
 
-case class SymRef(posn: Position, symbol: String) extends AST(posn) {
+case class SymRefAST(posn: Position, symbol: String) extends AST(posn) {
   override def typecheckThis(ec: EvalContext): Type = {
     ec.st.get(symbol) match {
       case Some((_, t)) =>
@@ -1043,14 +744,6 @@ case class SymRef(posn: Position, symbol: String) extends AST(posn) {
     }
   }
 
-  def compileAggregator(): CMCodeCPS[AnyRef] = {
-    val x: CM[Code[AnyRef]] = CM.lookup(symbol)
-
-    ((k: Code[AnyRef] => CM[Code[Unit]]) => x.flatMap(k))
-  }
-
-  def compile() = CM.lookup(symbol)
-
   override def toAggIR(agg: (String, String), cont: (IR) => IR): ToIRErr[IR] = {
     assert(symbol == agg._1)
     success(cont(ir.Ref(agg._2, -`type`.asInstanceOf[TAggregable].elementType)))
@@ -1060,7 +753,7 @@ case class SymRef(posn: Position, symbol: String) extends AST(posn) {
     success(ir.Ref(symbol, `type`))
 }
 
-case class If(pos: Position, cond: AST, thenTree: AST, elseTree: AST)
+case class IfAST(pos: Position, cond: AST, thenTree: AST, elseTree: AST)
   extends AST(pos, Array(cond, thenTree, elseTree)) {
   override def typecheckThis(ec: EvalContext): Type = {
     if (!cond.`type`.isInstanceOf[TBoolean]) {
@@ -1072,23 +765,6 @@ case class If(pos: Position, cond: AST, thenTree: AST, elseTree: AST)
       case _ =>
         parseError(s"expected same-type `then' and `else' clause, got `${ thenTree.`type` }' and `${ elseTree.`type` }'")
     }
-  }
-
-  def compileAggregator(): CMCodeCPS[AnyRef] = throw new UnsupportedOperationException
-
-  def compile() = {
-    val coerce: Code[AnyRef] => CM[Code[AnyRef]] = `type` match {
-      case t: TNumeric => (x: Code[AnyRef]) => t.conv.to(x.asInstanceOf[Code[java.lang.Number]])
-      case _ => CM.ret _
-    }
-
-    for (
-      tc <- thenTree.compile();
-      ec <- elseTree.compile();
-      cc <- cond.compile();
-      result <- cc.asInstanceOf[Code[java.lang.Boolean]].mapNullM((cc: Code[java.lang.Boolean]) =>
-        coerce(cc.invoke[Boolean]("booleanValue").mux(tc, ec)))
-    ) yield result
   }
 
   def toIR(agg: Option[(String, String)] = None): ToIRErr[IR] = for {
@@ -1134,16 +810,16 @@ object PrettyAST {
 
   private def astToName(ast: AST): String = {
     ast match {
-      case Apply(_, fn, _) => s"Apply[${fn}]"
-      case ApplyMethod(_, _, method, _) => s"ApplyMethod[${method}]"
+      case ApplyAST(_, fn, _) => s"Apply[${fn}]"
+      case ApplyMethodAST(_, _, method, _) => s"ApplyMethod[${method}]"
       case ArrayConstructor(_, _) => "ArrayConstructor"
       case Const(_, value, _) => s"Const[${Option(value).getOrElse("NA")}]"
-      case If(_, _, _, _) => "If"
+      case IfAST(_, _, _, _) => "If"
       case Lambda(_, param, _) => s"Lambda[${param}]"
-      case Let(_, _, _) => "Let"
-      case Select(_, _, rhs) => s"Select[${rhs}]"
+      case LetAST(_, _, _) => "Let"
+      case SelectAST(_, _, rhs) => s"Select[${rhs}]"
       case StructConstructor(_, _, _) => "StructConstructor"
-      case SymRef(_, symbol) => s"SymRef[${symbol}]"
+      case SymRefAST(_, symbol) => s"SymRef[${symbol}]"
       case TupleConstructor(_, _) => "TupleConstructor"
       case _ => "UnknownAST"
     }

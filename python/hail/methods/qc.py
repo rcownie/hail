@@ -1,5 +1,6 @@
 import hail as hl
-
+from collections import Counter
+from pprint import pprint
 from typing import *
 from hail.typecheck import *
 from hail.utils.java import Env
@@ -139,14 +140,20 @@ def variant_qc(mt, name='variant_qc') -> MatrixTable:
     - `n_het` (``int64``) -- Number of heterozygous samples.
     - `n_non_ref` (``int64``) -- Number of samples with at least one called
       non-reference allele.
-    - `p_hwe` (``float64``) -- Hardy-Weinberg p-value corresponding to
-      the probability that the distribution of genotypes is under Hardy-Weinberg
-      equilibrium. **Assumes that all genotype calls are diploid, and is only
-      defined for biallelic variants**.
-    - `r_expected_het_freq` (``float64``) -- Ratio of heterozygote count to the
-      expected number of heterozygotes under Hardy-Weinberg equilibrium.
-      **Assumes that all genotype calls are diploid, and is only defined for
-      biallelic variants**.
+    - `p_hwe` (``float64``) -- p-value from test of Hardy-Weinberg equilibrium.
+      See :func:`.functions.hardy_weinberg_test` for details.
+    - `r_expected_het_freq` (``float64``) -- Expected frequency of heterozygous
+      samples under Hardy-Weinberg equilibrium. See
+      :func:`.functions.hardy_weinberg_p` for details.
+
+    Warning
+    -------
+    `p_hwe` and `r_expected_het_freq` are calculated as in
+    :func:`.functions.hardy_weinberg_p`, with non-diploid calls
+    (``ploidy != 2``) ignored in the counts. As this test is only
+    statistically rigorous in the biallelic setting, :func:`variant_qc`
+    sets both fields to missing for multiallelic variants. Consider using
+    :func:`~hail.methods.split_multi` to split multi-allelic variants beforehand.
 
     Parameters
     ----------
@@ -918,3 +925,98 @@ def nirvana(dataset, config, block_size=500000, name='nirvana') -> MatrixTable:
     require_row_key_variant(dataset, 'nirvana')
     mt = MatrixTable(Env.hail().methods.Nirvana.apply(dataset._jvds, config, block_size, 'va.`{}`'.format(name)))
     return mt.annotate_rows(nirvana=mt['nirvana']['nirvana'])
+
+
+@typecheck(mt=MatrixTable, show=bool)
+def summarize_variants(mt: MatrixTable, show=True):
+    """Summarize the variants present in a dataset and print the results.
+
+    Examples
+    --------
+    >>> hl.summarize_variants(dataset)
+    ==============================
+    Number of variants: 346
+    ==============================
+    Alleles per variant
+    -------------------
+      2 alleles: 346 variants
+    ==============================
+    Variants per contig
+    -------------------
+      20: 346 variants
+    ==============================
+    Allele type distribution
+    ------------------------
+            SNP: 301 alleles
+       Deletion: 27 alleles
+      Insertion: 18 alleles
+    ==============================
+
+    Parameters
+    ----------
+    mt : :class:`.MatrixTable`
+        Matrix table with a variant (locus / alleles) row key.
+    show : :obj:`bool`
+        If ``True``, print results instead of returning them.
+
+    Notes
+    -----
+    The result returned if `show` is ``False`` is a  :class:`.Struct` with
+    four fields:
+
+    - `n_variants` (:obj:`int`): Number of variants present in the matrix table.
+    - `allele_types` (:obj:`Dict[str, int]`): Number of alternate alleles in
+      each allele allele category.
+    - `contigs` (:obj:`Dict[str, int]`): Number of variants on each contig.
+    - `allele_counts` (:obj:`Dict[int, int]`): Number of variants broken down
+      by number of alleles (biallelic is 2, for example).
+
+    Returns
+    -------
+    :obj:`None` or :class:`.Struct`
+        Returns ``None`` if `show` is ``True``, or returns results as a struct.
+    """
+    require_row_key_variant(mt, 'summarize_variants')
+    alleles_per_variant = hl.range(1, hl.len(mt.alleles)).map(lambda i: hl.allele_type(mt.alleles[0], mt.alleles[i]))
+    allele_types, contigs, allele_counts, n_variants = mt.aggregate_rows(
+        (hl.agg.counter(hl.agg.explode(alleles_per_variant)),
+         hl.agg.counter(mt.locus.contig),
+         hl.agg.counter(hl.len(mt.alleles)),
+         hl.agg.count()))
+    rg = mt.locus.dtype.reference_genome
+    contig_idx = {contig: i for i, contig in enumerate(rg.contigs)}
+    if show:
+        max_contig_len = max(len(contig) for contig in contigs)
+        contig_formatter = f'%{max_contig_len}s'
+
+        max_allele_count_len = max(len(str(x)) for x in allele_counts)
+        allele_count_formatter = f'%{max_allele_count_len}s'
+
+        max_allele_type_len = max(len(x) for x in allele_types)
+        allele_type_formatter = f'%{max_allele_type_len}s'
+
+        line_break = '=============================='
+
+        print(line_break)
+        print(f'Number of variants: {n_variants}')
+        print(line_break)
+        print('Alleles per variant')
+        print('-------------------')
+        for n_alleles, count in sorted(allele_counts.items(), key=lambda x: x[0]):
+            print(f'  {allele_count_formatter % n_alleles} alleles: {count} variants')
+        print(line_break)
+        print('Variants per contig')
+        print('-------------------')
+        for contig, count in sorted(contigs.items(), key=lambda x: contig_idx[x[0]]):
+            print(f'  {contig_formatter % contig}: {count} variants')
+        print(line_break)
+        print('Allele type distribution')
+        print('------------------------')
+        for allele_type, count in Counter(allele_types).most_common():
+            print(f'  {allele_type_formatter % allele_type}: {count} alternate alleles')
+        print(line_break)
+    else:
+        return hl.Struct(allele_types=allele_types,
+                         contigs=contigs,
+                         allele_counts=allele_counts,
+                         n_variants=n_variants)

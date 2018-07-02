@@ -1,26 +1,20 @@
 package is.hail.expr.ir
 
-import is.hail.expr.{BaseIR, MatrixIR, TableIR}
-
 object Copy {
   def apply(x: IR, newChildren: IndexedSeq[BaseIR]): BaseIR = {
-    lazy val same = {
-      assert(newChildren.isEmpty)
-      x
-    }
     x match {
-      case I32(_) => same
-      case I64(_) => same
-      case F32(_) => same
-      case F64(_) => same
-      case Str(_) => same
-      case True() => same
-      case False() => same
-      case Void() => same
+      case I32(value) => I32(value)
+      case I64(value) => I64(value)
+      case F32(value) => F32(value)
+      case F64(value) => F64(value)
+      case Str(value) => Str(value)
+      case True() => True()
+      case False() => False()
+      case Void() => Void()
       case Cast(_, typ) =>
         val IndexedSeq(v: IR) = newChildren
         Cast(v, typ)
-      case NA(_) => same
+      case NA(t) => NA(t)
       case IsNA(value) =>
         val IndexedSeq(value: IR) = newChildren
         IsNA(value)
@@ -30,8 +24,7 @@ object Copy {
       case Let(name, _, _) =>
         val IndexedSeq(value: IR, body: IR) = newChildren
         Let(name, value, body)
-      case Ref(_, _) =>
-        same
+      case Ref(name, t) => Ref(name, t)
       case ApplyBinaryPrimOp(op, _, _) =>
         val IndexedSeq(l: IR, r: IR) = newChildren
         ApplyBinaryPrimOp(op, l, r)
@@ -53,9 +46,9 @@ object Copy {
       case ArrayRange(_, _, _) =>
         val IndexedSeq(start: IR, stop: IR, step: IR) = newChildren
         ArrayRange(start, stop, step)
-      case ArraySort(_, _) =>
+      case ArraySort(_, _, onKey) =>
         val IndexedSeq(a: IR, ascending: IR) = newChildren
-        ArraySort(a, ascending)
+        ArraySort(a, ascending, onKey)
       case ToSet(_) =>
         val IndexedSeq(a: IR) = newChildren
         ToSet(a)
@@ -122,10 +115,8 @@ object Copy {
       case StringLength(_) =>
         val IndexedSeq(s: IR) = newChildren
         StringLength(s)
-      case In(_, _) =>
-        same
-      case Die(message, typ) =>
-        same
+      case In(i, t) => In(i, t)
+      case Die(message, typ) => Die(message, typ)
       case ApplyIR(fn, args, conversion) =>
         ApplyIR(fn, newChildren.map(_.asInstanceOf[IR]), conversion)
       case Apply(fn, args) =>

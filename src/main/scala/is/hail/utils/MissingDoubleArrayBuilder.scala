@@ -4,10 +4,10 @@ import is.hail.expr.types._
 import is.hail.annotations._
 import scala.collection.mutable
 
-class MissingDoubleArrayBuilder {
+class MissingDoubleArrayBuilder extends Serializable {
   private var len = 0
-  private val elements = new ArrayBuilder[Double]()
-  private val isMissing = new mutable.BitSet()
+  private var elements = new ArrayBuilder[Double]()
+  private var isMissing = new mutable.BitSet()
 
   def addMissing() {
     isMissing.add(len)
@@ -57,5 +57,13 @@ class MissingDoubleArrayBuilder {
     len = 0
     elements.clear()
     isMissing.clear()
+  }
+
+  override def clone(): MissingDoubleArrayBuilder = {
+    val ab = new MissingDoubleArrayBuilder()
+    ab.len = len
+    ab.elements = elements.clone()
+    ab.isMissing = isMissing.clone()
+    ab
   }
 }

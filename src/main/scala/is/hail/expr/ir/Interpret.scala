@@ -26,15 +26,15 @@ object Interpret {
     }
 
     var ir = ir0.unwrap
-    if (optimize)
+    if (optimize) {
+      log.info("interpret: PRE-OPT\n" + Pretty(ir))
       ir = Optimize(ir)
-    TypeCheck(ir, typeEnv, agg.map { agg =>
-      agg._2.fields.foldLeft(Env.empty[Type]) { case (env, f) =>
+      TypeCheck(ir, typeEnv, agg.map { agg =>
+        agg._2.fields.foldLeft(Env.empty[Type]) { case (env, f) =>
           env.bind(f.name, f.typ)
-      }
-    })
-
-    log.info("interpret:\n" + Pretty(ir))
+        }
+      })
+    }
 
     apply(ir, valueEnv, args, agg, None).asInstanceOf[T]
   }
@@ -167,12 +167,12 @@ object Interpret {
           null
         else
           op match {
-            case EQ(_) | EQWithNA(_) => lValue == rValue
-            case NEQ(_) | NEQWithNA(_) => lValue != rValue
-            case LT(t) => t.ordering.lt(lValue, rValue)
-            case GT(t) => t.ordering.gt(lValue, rValue)
-            case LTEQ(t) => t.ordering.lteq(lValue, rValue)
-            case GTEQ(t) => t.ordering.gteq(lValue, rValue)
+            case EQ(_, _) | EQWithNA(_, _) => lValue == rValue
+            case NEQ(_, _) | NEQWithNA(_, _) => lValue != rValue
+            case LT(t, _) => t.ordering.lt(lValue, rValue)
+            case GT(t, _) => t.ordering.gt(lValue, rValue)
+            case LTEQ(t, _) => t.ordering.lteq(lValue, rValue)
+            case GTEQ(t, _) => t.ordering.gteq(lValue, rValue)
           }
 
       case MakeArray(elements, _) => elements.map(interpret(_, env, args, agg)).toIndexedSeq
@@ -205,18 +205,24 @@ object Interpret {
           null
         else
           startValue.asInstanceOf[Int] until stopValue.asInstanceOf[Int] by stepValue.asInstanceOf[Int]
-      case ArraySort(a, ascending) =>
+      case ArraySort(a, ascending, onKey) =>
         val aValue = interpret(a, env, args, agg)
         val ascendingValue = interpret(ascending, env, args, agg)
         if (aValue == null)
           null
         else {
+          var sortType = a.typ.asInstanceOf[TArray].elementType
+          if (onKey)
+            sortType = sortType.asInstanceOf[TBaseStruct].types(0)
           val ord =
             if (ascendingValue == null || ascendingValue.asInstanceOf[Boolean])
-              a.typ.asInstanceOf[TArray].elementType.ordering
+              sortType.ordering
             else
-              a.typ.asInstanceOf[TArray].elementType.ordering.reverse
-          aValue.asInstanceOf[IndexedSeq[Any]].sorted(ord.toOrdering)
+              sortType.ordering.reverse
+          if (onKey)
+            aValue.asInstanceOf[IndexedSeq[Row]].sortBy(_.get(0))(ord.toOrdering)
+          else
+            aValue.asInstanceOf[IndexedSeq[Any]].sorted(ord.toOrdering)
         }
       case ToSet(a) =>
         val aValue = interpret(a, env, args, agg)
@@ -324,11 +330,15 @@ object Interpret {
         xs.foreach(x => Interpret(x))
       case x@SeqOp(a, i, aggSig, seqOpArgs) =>
         assert(i == I32(0))
-        if (seqOpArgs.isEmpty)
-          aggregator.get.seqOp(interpret(a))
-        else if (aggSig.op == Inbreeding()) {
-          val IndexedSeq(af) = seqOpArgs
-          aggregator.get.asInstanceOf[InbreedingAggregator].seqOp(interpret(a), interpret(af))
+        aggSig.op match {
+          case Inbreeding() =>
+            val IndexedSeq(af) = seqOpArgs
+            aggregator.get.asInstanceOf[InbreedingAggregator].seqOp(interpret(a), interpret(af))
+          case TakeBy() =>
+            val IndexedSeq(key) = seqOpArgs
+            aggregator.get.asInstanceOf[TakeByAggregator[_]].seqOp(interpret(a), interpret(key))
+          case _ =>
+            aggregator.get.seqOp(interpret(a))
         }
       case x@ApplyAggOp(a, constructorArgs, initOpArgs, aggSig) =>
         val aggType = aggSig.inputType
@@ -341,18 +351,34 @@ object Interpret {
           case Inbreeding() =>
             assert(aggType == TCall())
             new InbreedingAggregator(null)
+          case HardyWeinberg() =>
+            assert(aggType == TCall())
+            new HWEAggregator()
+          case Count() => new CountAggregator()
           case Collect() => new CollectAggregator(aggType)
+          case Counter() => new CounterAggregator(aggType)
+          case CollectAsSet() => new CollectSetAggregator(aggType)
           case Fraction() =>
             assert(aggType == TBoolean())
             new FractionAggregator(a => a)
           case Sum() =>
             aggType match {
-              case TInt32(_) => new SumAggregator[Int]()
               case TInt64(_) => new SumAggregator[Long]()
-              case TFloat32(_) => new SumAggregator[Float]()
               case TFloat64(_) => new SumAggregator[Double]()
               case TArray(TInt64(_), _) => new SumArrayAggregator[Long]()
               case TArray(TFloat64(_), _) => new SumArrayAggregator[Double]()
+            }
+          case Product() =>
+            aggType match {
+              case TInt64(_) => new ProductAggregator[Long]()
+              case TFloat64(_) => new ProductAggregator[Double]()
+            }
+          case Min() =>
+            aggType match {
+              case TInt32(_) => new MinAggregator[Int, java.lang.Integer]()
+              case TInt64(_) => new MinAggregator[Long, java.lang.Long]()
+              case TFloat32(_) => new MinAggregator[Float, java.lang.Float]()
+              case TFloat64(_) => new MinAggregator[Double, java.lang.Double]()
             }
           case Max() =>
             aggType match {
@@ -365,6 +391,12 @@ object Interpret {
             val Seq(n) = constructorArgs
             val nValue = interpret(n, Env.empty[Any], null, null).asInstanceOf[Int]
             new TakeAggregator(aggType, nValue)
+          case TakeBy() =>
+            val IndexedSeq(n) = constructorArgs
+            val nValue = interpret(n, Env.empty[Any], null, null).asInstanceOf[Int]
+            val IndexedSeq(key) = a.asInstanceOf[SeqOp].args
+            val ord = key.typ.ordering.toOrdering
+            new TakeByAggregator(aggType, null, nValue)(ord)
           case Statistics() => new StatAggregator()
           case InfoScore() => new InfoScoreAggregator()
           case Histogram() =>
@@ -501,7 +533,10 @@ object Interpret {
         val f = { x: Double => interpret(fn, env.bind(functionid, x), args, agg).asInstanceOf[Double] }
         val min = interpret(minIR, env, args, agg)
         val max = interpret(maxIR, env, args, agg)
-        stats.uniroot(f, min.asInstanceOf[Double], max.asInstanceOf[Double]).orNull
+        if (min == null || max == null)
+          null
+        else
+          stats.uniroot(f, min.asInstanceOf[Double], max.asInstanceOf[Double]).orNull
 
       case TableCount(child) =>
         child.partitionCounts

@@ -72,10 +72,10 @@ object ArrayFunctions extends RegistryFunctions {
 
     registerIR("isEmpty", TArray(tv("T")))(isEmpty)
 
-    registerIR("sort", TArray(tv("T")), TBoolean())(ArraySort)
+    registerIR("sort", TArray(tv("T")), TBoolean())(ArraySort(_, _, false))
 
     registerIR("sort", TArray(tv("T"))) { a =>
-      ArraySort(a, True())
+      ArraySort(a, True(), false)
     }
 
     registerIR("extend", TArray(tv("T")), TArray(tv("T")))(extend)
@@ -206,9 +206,9 @@ object ArrayFunctions extends RegistryFunctions {
         ), "midx")
     }
 
-    registerIR("argmin", TArray(tv("T")))(argF(_, LT))
+    registerIR("argmin", TArray(tv("T")))(argF(_, LT(_)))
 
-    registerIR("argmax", TArray(tv("T")))(argF(_, GT))
+    registerIR("argmax", TArray(tv("T")))(argF(_, GT(_)))
 
     def uniqueIndex(a: IR, op: (Type) => ComparisonOp): IR = {
       val t = -coerce[TArray](a.typ).elementType
@@ -246,9 +246,9 @@ object ArrayFunctions extends RegistryFunctions {
         NA(TInt32())))
     }
 
-    registerIR("uniqueMinIndex", TArray(tv("T")))(uniqueIndex(_, LT))
+    registerIR("uniqueMinIndex", TArray(tv("T")))(uniqueIndex(_, LT(_)))
 
-    registerIR("uniqueMaxIndex", TArray(tv("T")))(uniqueIndex(_, GT))
+    registerIR("uniqueMaxIndex", TArray(tv("T")))(uniqueIndex(_, GT(_)))
 
     registerIR("[]", TArray(tv("T")), TInt32()) { (a, i) =>
       ArrayRef(

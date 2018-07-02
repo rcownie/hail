@@ -73,7 +73,10 @@ final case class TStruct(fields: IndexedSeq[Field], override val required: Boole
 
   val ordering: ExtendedOrdering = TBaseStruct.getOrdering(types)
 
-  def codeOrdering(mb: EmitMethodBuilder): CodeOrdering = CodeOrdering.rowOrdering(this, mb)
+  def codeOrdering(mb: EmitMethodBuilder, other: Type): CodeOrdering = {
+    assert(other isOfType this)
+    CodeOrdering.rowOrdering(this, other.asInstanceOf[TStruct], mb)
+  }
 
   def fieldByName(name: String): Field = fields(fieldIdx(name))
 
@@ -288,7 +291,7 @@ final case class TStruct(fields: IndexedSeq[Field], override val required: Boole
     for (i <- fields.indices)
       newFields(i) = fields(i)
     newFields(i) = Field(key, sig, i)
-    TStruct(newFields)
+    TStruct(newFields, required)
   }
 
   def deleteKey(key: String, index: Int): TStruct = {
@@ -301,7 +304,7 @@ final case class TStruct(fields: IndexedSeq[Field], override val required: Boole
         newFields(i) = fields(i)
       for (i <- index + 1 until fields.length)
         newFields(i - 1) = fields(i).copy(index = i - 1)
-      TStruct(newFields)
+      TStruct(newFields, required)
     }
   }
 
@@ -311,7 +314,7 @@ final case class TStruct(fields: IndexedSeq[Field], override val required: Boole
     for (i <- fields.indices)
       newFields(i) = fields(i)
     newFields(fields.length) = Field(key, sig, fields.length)
-    TStruct(newFields)
+    TStruct(newFields, required)
   }
 
   def merge(other: TStruct): (TStruct, Merger) = {
@@ -411,7 +414,7 @@ final case class TStruct(fields: IndexedSeq[Field], override val required: Boole
     TStruct(newFieldsBuilder.result(): _*)
   }
 
-  def filter(set: Set[String], include: Boolean = true): (TStruct, Deleter) = {
+  def filterSet(set: Set[String], include: Boolean = true): (TStruct, Deleter) = {
     val notFound = set.filter(name => selfField(name).isEmpty).map(prettyIdentifier)
     if (notFound.nonEmpty)
       fatal(
@@ -468,7 +471,7 @@ final case class TStruct(fields: IndexedSeq[Field], override val required: Boole
         Annotation.fromSeq(newValues)
       }
 
-    (TStruct(newFields.zipWithIndex.map { case (f, i) => f.copy(index = i) }), filterer)
+    (TStruct(newFields.zipWithIndex.map { case (f, i) => f.copy(index = i) }, required), filterer)
   }
 
   override def pyString(sb: StringBuilder): Unit = {
