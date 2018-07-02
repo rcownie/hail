@@ -15,13 +15,15 @@ public:
   char*   buf_;
   ssize_t pos_;
   ssize_t size_;
+  char*   rv_base_;
   
 public:
   PackDecoderBase(ssize_t bufCapacity = 0) :
     capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
     buf_((char*)malloc(capacity_)),
     pos_(0),
-    size_(0) {
+    size_(0),
+    rv_base_(nullptr) {
   }
   
   virtual ~PackDecoderBase() {
@@ -34,6 +36,7 @@ public:
     if (!strcmp(s, "buf_"))      return (int64_t)&zeroObj->buf_;
     if (!strcmp(s, "pos_"))      return (int64_t)&zeroObj->pos_;
     if (!strcmp(s, "size_"))     return (int64_t)&zeroObj->size_;
+    if (!strcmp(s, "rv_base_"))  return (int64_t)&zeroObj->rv_base_;
     return -1;
   }
   

@@ -323,6 +323,17 @@ NATIVEMETHOD(void, NativePtr, nativePtrFuncL8)(
   init_NativePtr(env, thisJ, &ptr);
 }
 
+NATIVEMETHOD(jlong, NativePtr, getFieldOffset)(
+  JNIEnv* env,
+  jobject thisJ,
+  jlong fieldSize,
+  jstring fieldNameJ
+) {
+  auto obj = get_from_NativePtr(env, thisJ);
+  JString fieldName(env, fieldNameJ);
+  return(obj ? obj->get_field_offset(fieldSize, fieldName) : -1L);
+}
+
 // Test code for nativePtrFunc
 
 class TestObjA : public hail::NativeObj {

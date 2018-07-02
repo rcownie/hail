@@ -897,7 +897,9 @@ object NativeDecode {
       if ((seen(depth) & bit) == 0) {
         seen(depth) = (seen(depth) | bit)
         val typ = stateVarType(name)
-        val initVal = if (typ.equals("char*")) "nullptr" else "0"
+        val initVal = if (!typ.equals("char*")) "0"
+        else if (depth == 0) "&rv_base_"
+        else "nullptr"
         stateDefs.append(s"  ${typ} ${result}_ = ${initVal};\n")
         localDefs.append(s"    ${typ} ${result} = ${result}_;\n")
         flushCode.append(s"    ${result}_ = ${result};\n")
@@ -1141,15 +1143,17 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
   var st = new NativeStatus()
   val make_decoder = mod.findPtrFuncL0(st, "make_decoder")
   val decode_until_done_or_need_push = mod.findLongFuncL3(st, "decode_until_done_or_need_push")
-  val decode_one_byte = mod.findLongFuncL1(st, "decode_one_byte")
+  val decode_one_byte = mod.findLongFuncL2(st, "decode_one_byte")
   val decoder = new NativePtr(makeDecoder, st)
   val bufOffset = decoder.getFieldOffset(8, "buf_")
   val sizeOffset = decoder.getFieldOffset(8, "size_")
+  val rvBaseOffset = decoder.getFieldOffset(8, "rv_base_")
   st.close()
   mod.close()
 
   def close(): Unit = {
     in.close()
+    decoder.close()
     make_decoder.close()
     decode_until_done_or_need_push.close()
     decode_one_byte.close()
@@ -1161,10 +1165,16 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
 
   def readByte(): Byte = {
     var rc = 0L
+    var pushSize = 0L
     var done = false
     while (!done) {
       rc = decode_one_byte(st, decoder.get())
-      if (rc >= 0x100) pushData(rc) else done = true
+      if ((0x00 <= rc) && (rc <= 0xff)) {
+        done = true;
+      } else {
+        pushSize = pushData(rc)
+        if (pushSize <= 0) done = true
+      }
     }
     val result: Byte = rc
     result
@@ -1172,10 +1182,18 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
 
   def readRegionValue(region: Region): Long = {
     var rc = 0L
+    var pushSize = 0L
     var done = false
     while (!done) {
-      rc = decode_until_done_or_need_push(st, decoder.get(), region.get(), )
+      rc = decode_until_done_or_need_push(st, decoder.get(), region.get(), pushSize)
+      if (rc <= 0) {
+        done = true
+      } else {
+        pushSize = pushData(rc)
+        if (pushSize <= 0) done = true
+      }
     }
+    val result = Memory.loadLong(decoder.get()+rvBaseOffset)
   }
 
 }
