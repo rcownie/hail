@@ -46,7 +46,7 @@ public:
   }
   
   static ssize_t elements_offset(ssize_t n, bool required, ssize_t align) {
-    if (align > 4) align = 4; // FIXME: bug-compatible with Scala code
+    if (align < sizeof(int32_t)) align = sizeof(int32_t);
     return round_up_align(sizeof(int32_t) + (required ? 0 : missing_bytes(n)), align);
   }
   
