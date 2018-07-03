@@ -167,9 +167,24 @@ final class StreamBlockInputBuffer(in: InputStream) extends InputBlockBuffer {
   }
 
   def readBlock(buf: Array[Byte]): Int = {
-    in.readFully(lenBuf, 0, 4)
-    val len = Memory.loadInt(lenBuf, 0)
-    in.readFully(buf, 0, len)
+    // Returns -1 for end-of-file
+    var done = false
+    var len = 0
+    var shift = 0
+    while (!done && (shift < 32)) {
+      val c = in.read();
+      if (c == -1) {
+        len = -1;
+        done = true
+      } else {
+        len |= ((c & 0xff) << shift)
+      }
+      shift += 8
+    }
+    if (len > 0) {
+      val ngot = in.read(buf, 0, len)
+      if (ngot < len) len = -1
+    }
     len
   }
 }
@@ -379,6 +394,8 @@ trait InputBuffer extends Closeable {
   def readDoubles(to: Array[Double]): Unit = readDoubles(to, 0, to.length)
 
   def readBoolean(): Boolean = readByte() != 0
+
+  def readBytesMaybeEOF(toBuf: Array[Byte], toOff: Int, n: Int): Int
 }
 
 final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
@@ -439,10 +456,15 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
   def skipBytes(n: Int): Unit = in.skipBytes(n)
 
   def readDoubles(to: Array[Double], toOff: Int, n: Int): Unit = in.readDoubles(to, toOff, n)
+
+  def readBytesMaybeEOF(toBuf: Array[Byte], toOff: Int, n: Int): Int = in.readBytesMaybeEOF(toBuf, toOff, n)
 }
 
 final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends InputBlockBuffer {
   private val comp = new Array[Byte](4 + LZ4Utils.maxCompressedLength(blockSize))
+  private var decompBuf = new Array[Byte](blockSize)
+  private var pos = 0
+  private var lim = 0
 
   def close() {
     in.close()
@@ -450,12 +472,41 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
 
   def readBlock(buf: Array[Byte]): Int = {
     val blockLen = in.readBlock(comp)
-    val compLen = blockLen - 4
-    val decompLen = Memory.loadInt(comp, 0)
+    if (blockLen == -1) {
+      -1
+    } else {
+      val compLen = blockLen - 4
+      val decompLen = Memory.loadInt(comp, 0)
 
-    LZ4Utils.decompress(buf, 0, decompLen, comp, 4, compLen)
+      LZ4Utils.decompress(buf, 0, decompLen, comp, 4, compLen)
 
-    decompLen
+      decompLen
+    }
+  }
+
+  def readBytesMaybeEOF(toBuf: Array[Byte], toOff: Int, n: Int): Int = {
+    var done = false
+    var ngot = 0
+    while (!done && (ngot < n)) {
+      var have = (lim - pos)
+      if (have == 0) {
+        have = in.readBlock(decompBuf)
+        if (have <= 0) {
+          pos = lim+1
+          done = true
+        } else {
+          lim = have
+          pos = 0
+        }
+      }
+      if (have > 0) {
+        val chunk = if (have <= n-ngot) have else n-ngot
+        Memory.memcpy(toBuf, toOff+ngot, decompBuf, pos, chunk)
+        pos += chunk
+        ngot += chunk
+      }
+    }
+    if (ngot > 0) ngot else -1
   }
 }
 
@@ -1160,7 +1211,7 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
   }
 
   def pushData(size: Long): Long = {
-
+    0L
   }
 
   def readByte(): Byte = {
@@ -1173,10 +1224,13 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
         done = true;
       } else {
         pushSize = pushData(rc)
-        if (pushSize <= 0) done = true
+        if (pushSize <= 0) {
+          rc = 0
+          done = true
+        }
       }
     }
-    val result: Byte = rc
+    val result = rc.toByte
     result
   }
 
@@ -1193,9 +1247,8 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
         if (pushSize <= 0) done = true
       }
     }
-    val result = Memory.loadLong(decoder.get()+rvBaseOffset)
+    if (rc == 0) Memory.loadLong(decoder.get()+rvBaseOffset) else 0L
   }
-
 }
 
 final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, InputBuffer, Long]) extends Decoder {
