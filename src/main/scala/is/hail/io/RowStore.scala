@@ -1195,7 +1195,7 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
   val make_decoder = mod.findPtrFuncL0(st, "make_decoder")
   val decode_until_done_or_need_push = mod.findLongFuncL3(st, "decode_until_done_or_need_push")
   val decode_one_byte = mod.findLongFuncL2(st, "decode_one_byte")
-  val decoder = new NativePtr(makeDecoder, st)
+  val decoder = new NativePtr(make_decoder, st)
   val bufOffset = decoder.getFieldOffset(8, "buf_")
   val sizeOffset = decoder.getFieldOffset(8, "size_")
   val rvBaseOffset = decoder.getFieldOffset(8, "rv_base_")
@@ -1219,7 +1219,7 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
     var pushSize = 0L
     var done = false
     while (!done) {
-      rc = decode_one_byte(st, decoder.get())
+      rc = decode_one_byte(st, decoder.get(), pushSize)
       if ((0x00 <= rc) && (rc <= 0xff)) {
         done = true;
       } else {
