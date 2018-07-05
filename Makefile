@@ -22,7 +22,7 @@ nativeLibClean:
 
 go:
 	./gradlew -Dspark.version=${SPARK_VERSION} -Dspark.home=${SPARK_HOME} \
-	  -Dtest.single=AnnotationsSuite test
+	  -Dtest.single=UnsafeSuite test
 
 test:
 	./gradlew -Dspark.version=${SPARK_VERSION} -Dspark.home=${SPARK_HOME} test

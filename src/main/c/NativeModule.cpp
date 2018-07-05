@@ -324,6 +324,7 @@ NativeModule::NativeModule(
   dlopen_handle_(nullptr),
   lib_name_(config.get_lib_name(key_)),
   new_name_(config.get_new_name(key_)) {
+  fprintf(stderr, "DEBUG: %p NativeModule::ctor(master)\n", this);
   // Master constructor - try to get module built in local file
   config.ensure_module_dir_exists();
   if (!force_build && file_exists(lib_name_)) {
@@ -348,6 +349,7 @@ NativeModule::NativeModule(
   dlopen_handle_(nullptr),
   lib_name_(config.get_lib_name(key_)),
   new_name_(config.get_new_name(key_)) {
+  fprintf(stderr, "DEBUG: %p NativeModule::ctor(worker)\n", this);
   // Worker constructor - try to get the binary written to local file
   if (is_global_) return;
   int rc = 0;
@@ -382,6 +384,7 @@ NativeModule::NativeModule(
 }
 
 NativeModule::~NativeModule() {
+  fprintf(stderr, "DEBUG: %p NativeModule::dtor()\n", this);
   if (!is_global_ && dlopen_handle_) {
     dlclose(dlopen_handle_);
   }

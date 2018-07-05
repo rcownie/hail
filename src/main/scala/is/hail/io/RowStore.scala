@@ -109,28 +109,17 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
     new PackEncoder(t, child.buildOutputBuffer(out))
   }
 
-  // def buildDecoder(t: Type)(in: InputStream): Decoder = new PackDecoder(t, child.buildInputBuffer(in))
-
   def buildDecoder(t: Type, requestedType: Type): (InputStream) => Decoder = {
     System.err.println("DEBUG: PackCodecSpec using CompiledPackDecoder")
     val sb = new StringBuilder()
     NativeDecode.appendCode(sb, t, requestedType)
-    val mod = new NativeModule("", sb.toString(), false)
+    val mod = new NativeModule("-g -O1", sb.toString(), true)
     val st = new NativeStatus()
     mod.findOrBuild(st)
     if (st.fail) System.err.println("findOrBuild ${st}")
     st.clear()
-    val makeDecoder = mod.findPtrFuncL0(st, "make_decoder")
-    if (st.fail) System.err.println("make_decoder ${st}")
-    st.clear()
-    val decodeRvFunc = mod.findLongFuncL3(st, "decode_until_done_or_need_push")
-    if (st.fail) System.err.println("decode_until_done_or_need_push")
-    val decodeOneByteFunc = mod.findLongFuncL2(st, "decode_one_byte")
-    if (st.fail) System.err.println("decode_one_byte")
-    System.err.println(s"DEBUG: NativeDecode ${sb}")
-    if (false) {
-      val result = (in: InputStream) => new NativePackDecoder(child.buildInputBuffer(in), new NativeModule(mod))
-      mod.close()
+    if (true) {
+      val result = (in: InputStream) => new NativePackDecoder(child.buildInputBuffer(in), mod)
       result
     } else {
       val f = EmitPackDecoder(t, requestedType)
@@ -649,6 +638,7 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       var have = (end - off)
       if (have == 0) {
         have = in.readBlock(buf)
+        System.err.println(s"DEBUG: readBlock() -> ${have}")
         if (have <= 0) {
           off = end+1
           done = true
@@ -656,6 +646,8 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
           end = have
           off = 0
         }
+      } else if (have < 0) {
+        done = true
       }
       if (have > 0) {
         val chunk = if (have <= n-ngot) have else n-ngot
@@ -948,6 +940,7 @@ object EmitPackDecoder {
 object NativeDecode {
 
   def appendCode(sb: StringBuilder, rowType: Type, wantType: Type): Unit = {
+    val verbose = true
     var seen = new ArrayBuffer[Int]()
     val stateDefs = new StringBuilder()
     val localDefs = new StringBuilder()
@@ -994,6 +987,7 @@ object NativeDecode {
       numStates += 1
       entryCode.append(s"      case ${s}: goto entry${s};\n")
       mainCode.append(s"    entry${s}: // ${name}\n")
+      if (verbose) mainCode.append(s"""    fprintf(stderr, "DEBUG: %p entry${s} ${name}\\n", this);\n""")
       s
     }
 
@@ -1083,7 +1077,7 @@ object NativeDecode {
             mainCode.append(s"${ind}    ${idx} += ngot;\n")
             mainCode.append(s"${ind}  }\n")
           }
-          mainCode.append(  s"${ind}  for (${idx} = 0; ${idx} < ${len};) {\n")
+          mainCode.append(  s"${ind}  for (${idx} = 0; ${idx} < ${len}; ++${idx}) {\n")
           if (!t.elementType.required) {
             mainCode.append(s"${ind}    if (is_missing(${ptr}+4, ${idx})) continue;\n")
           }
@@ -1173,7 +1167,8 @@ object NativeDecode {
                    
       }
     }
-    
+
+    allocState("init")
     scan(0, 1, "root", rowType, wantType, false)
 
     sb.append("#include \"hail/hail.h\"\n")
@@ -1182,6 +1177,7 @@ object NativeDecode {
     sb.append("#include \"hail/Region.h\"\n")
     sb.append("#include <cstdint>\n")
     sb.append("#include <cstring>\n")
+    if (verbose) sb.append("#include <cstdio>\n")
     sb.append("\n")
     sb.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
     sb.append("\n")
@@ -1193,18 +1189,17 @@ object NativeDecode {
     sb.append("  virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) {\n")
     sb.append("    size_ += push_size;\n")
     sb.append(localDefs)
-    if (entryCode.length > 0) {
-      sb.append("    int s = s_;\n")
-      sb.append("    switch (s) {\n")
-      sb.append(entryCode)
-      sb.append("    }\n")
-    }
+    sb.append("    int s = s_;\n")
+    sb.append("    switch (s) {\n")
+    sb.append(entryCode)
+    sb.append("    }\n")
     sb.append(mainCode)
     sb.append("    return 0;\n")
     if (rowType.byteSize > 0) {
       sb.append("  pull:\n")
       sb.append("    s_ = s;\n")
       sb.append(flushCode)
+      if (verbose) sb.append(s"""fprintf(stderr, "DEBUG: prepare_for_push(entry%d) pos_ %ld size_ %ld\\n", s_, pos_, size_);\n""")
       sb.append("    return prepare_for_push();\n")
     }
     sb.append("  }\n")
@@ -1252,10 +1247,13 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
     if (tmpBuf.length < size) {
       tmpBuf = new Array[Byte]((size.toInt + 0xfff) & ~0xfff)
     }
+    System.err.println(s"DEBUG: speculativeRead(${size}) ...")
     val ngot = in.speculativeRead(tmpBuf, 0, size.toInt)
+    System.err.println(s"DEBUG: speculativeRead(${size}) -> ${ngot}")
     if (ngot > 0) {
       Memory.memcpy(decoderBuf+decoderSize, tmpBuf, 0, ngot)
     }
+    System.err.println(s"DEBUG: pushData(${size}) -> ${ngot}")
     ngot
   }
 
@@ -1276,6 +1274,7 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
       }
     }
     val result = rc.toByte
+    System.err.println(s"DEBUG: readByte() -> ${result}")
     result
   }
 
@@ -1285,6 +1284,7 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
     var done = false
     while (!done) {
       rc = decode_until_done_or_need_push(st, decoder.get(), region.get(), pushSize)
+      System.err.println(s"DEBUG: decode_until_done() -> ${rc}")
       if (rc <= 0) {
         done = true
       } else {
@@ -1292,7 +1292,14 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
         if (pushSize <= 0) done = true
       }
     }
-    if (rc == 0) Memory.loadLong(decoder.get()+rvBaseOffset) else 0L
+    if (rc == 0) {
+      val rvAddr = Memory.loadLong(decoder.get()+rvBaseOffset)
+      System.err.println(s"DEBUG: readRegionValue() -> ${rvAddr}")
+      rvAddr
+    } else {
+      System.err.println(s"DEBUG: readRegionValue() -> 0")
+      0L
+    }
   }
 }
 

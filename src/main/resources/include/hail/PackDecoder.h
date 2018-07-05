@@ -4,6 +4,8 @@
 #include "hail/NativeObj.h"
 #include "hail/Region.h"
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 
 namespace hail {
 
@@ -88,6 +90,7 @@ public:
     if (pos >= size_) return false;
     *addr = *(int8_t*)(buf_+pos);
     pos_ = (pos+1);
+    fprintf(stderr, "DEBUG: decode_byte() -> 0x%02x\n", (*addr) & 0xff);
     return true;
   }
   
@@ -99,6 +102,7 @@ public:
   
   bool decode_int(int32_t* addr) {
     ssize_t pos = pos_;
+    ssize_t old = pos;
     int val = 0;
     for (int shift = 0;; shift += 7) {
       if (pos >= size_) return false;
@@ -106,6 +110,7 @@ public:
       val |= ((b & 0x7f) << shift);
       if ((b & 0x80) == 0) break;
     }
+    fprintf(stderr, "DEBUG: decode_int() -> %d {nbytes %ld}\n", val, pos-old);
     *addr = val;
     pos_ = pos;
     return true;
@@ -138,6 +143,7 @@ public:
     }
     *addr = val;
     pos_ = pos;
+    fprintf(stderr, "DEBUG: decode_long() -> %ld\n", val);
     return true;
   }
   
@@ -155,6 +161,7 @@ public:
     if (pos+4 > size_) return false;
     *addr = *(float*)(buf_+pos);
     pos_ = (pos+4);
+    fprintf(stderr, "DEBUG: decode_float() -> %.6f\n", (double)*addr);
     return true;
   }
   
@@ -170,6 +177,7 @@ public:
     if (pos+8 > size_) return false;
     *addr = *(double*)(buf_+pos);
     pos_ = (pos+8);
+    fprintf(stderr, "DEBUG: decode_double() -> %.6f\n", *addr);
     return true;
   }
   
@@ -179,15 +187,41 @@ public:
     pos_ = pos;
     return true;
   }
+  
+  void hexify(char* out, char* p, ssize_t n) {    
+    for (int j = 0; j < n; j += 8) {
+      for (int k = 0; k < 8; ++k) {
+        int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
+        int nibble = (c>>4) & 0xff;
+        *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
+        nibble = (c & 0xf);
+        *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
+        *out++ = ' ';
+      }
+      for (int k = 0; k < 8; ++k) {
+        int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
+        *out++ = ((' ' <= c) && (c <= '~')) ? c : '.';
+      }
+      *out++ = '\n';
+    }
+    *out++ = 0;
+  }
     
   ssize_t decode_bytes(char* addr, ssize_t n) {
     ssize_t pos = pos_;
-    if (n > size_-pos) n = size_-pos;
-    if (n > 0) {
-      memcpy(addr, buf_+pos, n);
-      pos_ = (pos + n);
+    fprintf(stderr, "DEBUG: decode_bytes buf %p size %ld pos %ld n %ld\n", buf_, size_, pos_, n);
+    ssize_t ngot = (size_ - pos);
+    if (ngot > n) ngot = n;
+    if (ngot > 0) {
+      fprintf(stderr, "DEBUG: memcpy(%p, %p, %ld)\n", addr, buf_+pos, ngot);
+      memcpy(addr, buf_+pos, ngot);
+      pos_ = (pos + ngot);
     }
-    return n;
+    char hex[256];
+    hexify(hex, addr, (ngot < 32) ? ngot : 32);
+    fprintf(stderr, "DEBUG: decode_bytes(%ld) -> %ld\n", n, ngot);
+    fprintf(stderr, "%s", hex);
+    return ngot;
   }
   
   ssize_t skip_bytes(ssize_t n) {
