@@ -395,7 +395,7 @@ trait InputBuffer extends Closeable {
 
   def readBoolean(): Boolean = readByte() != 0
 
-  def readBytesMaybeEOF(toBuf: Array[Byte], toOff: Int, n: Int): Int
+  def speculativeRead(toBuf: Array[Byte], toOff: Int, n: Int): Int
 }
 
 final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
@@ -457,7 +457,7 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
 
   def readDoubles(to: Array[Double], toOff: Int, n: Int): Unit = in.readDoubles(to, toOff, n)
 
-  def readBytesMaybeEOF(toBuf: Array[Byte], toOff: Int, n: Int): Int = in.readBytesMaybeEOF(toBuf, toOff, n)
+  def speculativeRead(toBuf: Array[Byte], toOff: Int, n: Int): Int = in.speculativeRead(toBuf, toOff, n)
 }
 
 final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends InputBlockBuffer {
@@ -484,7 +484,7 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     }
   }
 
-  def readBytesMaybeEOF(toBuf: Array[Byte], toOff: Int, n: Int): Int = {
+  def speculativeRead(toBuf: Array[Byte], toOff: Int, n: Int): Int = {
     var done = false
     var ngot = 0
     while (!done && (ngot < n)) {
@@ -636,6 +636,31 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       n -= p
       off += (p << 3)
     }
+  }
+
+  def speculativeRead(toBuf: Array[Byte], toOff: Int, n: Int): Int = {
+    var done = false
+    var ngot = 0
+    while (!done && (ngot < n)) {
+      var have = (end - off)
+      if (have == 0) {
+        have = in.readBlock(buf)
+        if (have <= 0) {
+          off = end+1
+          done = true
+        } else {
+          end = have
+          off = 0
+        }
+      }
+      if (have > 0) {
+        val chunk = if (have <= n-ngot) have else n-ngot
+        Memory.memcpy(toBuf, toOff+ngot, buf, off, chunk)
+        off += chunk
+        ngot += chunk
+      }
+    }
+    if (ngot > 0) ngot else -1
   }
 }
 
@@ -948,9 +973,10 @@ object NativeDecode {
       if ((seen(depth) & bit) == 0) {
         seen(depth) = (seen(depth) | bit)
         val typ = stateVarType(name)
-        val initVal = if (!typ.equals("char*")) "0"
-        else if (depth == 0) "&rv_base_"
-        else "nullptr"
+        val initVal =
+          if (!typ.equals("char*")) "0"
+          else if ((depth == 0) && (name.equals("addr"))) "(char*)&rv_base_"
+          else "nullptr"
         stateDefs.append(s"  ${typ} ${result}_ = ${initVal};\n")
         localDefs.append(s"    ${typ} ${result} = ${result}_;\n")
         flushCode.append(s"    ${result}_ = ${result};\n")
