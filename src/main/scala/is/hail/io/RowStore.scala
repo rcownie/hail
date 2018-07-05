@@ -127,11 +127,15 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
     if (st.fail) System.err.println("decode_until_done_or_need_push")
     val decodeOneByteFunc = mod.findLongFuncL2(st, "decode_one_byte")
     if (st.fail) System.err.println("decode_one_byte")
-    mod.close()
     System.err.println(s"DEBUG: NativeDecode ${sb}")
-    throw new IllegalArgumentException("getting out")
-    val f = EmitPackDecoder(t, requestedType)
-    (in: InputStream) => new CompiledPackDecoder(child.buildInputBuffer(in), f)
+    if (false) {
+      val result = (in: InputStream) => new NativePackDecoder(child.buildInputBuffer(in), new NativeModule(mod))
+      mod.close()
+      result
+    } else {
+      val f = EmitPackDecoder(t, requestedType)
+      (in: InputStream) => new CompiledPackDecoder(child.buildInputBuffer(in), f)
+    }
   }
 }
 
@@ -1188,17 +1192,21 @@ object NativeDecode {
     sb.append("\n")
     sb.append("  virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) {\n")
     sb.append("    size_ += push_size;\n")
-    sb.append("    int s = s_;\n")
     sb.append(localDefs)
-    sb.append("    switch (s) {\n")
-    sb.append(entryCode)
-    sb.append("    }\n")
+    if (entryCode.length > 0) {
+      sb.append("    int s = s_;\n")
+      sb.append("    switch (s) {\n")
+      sb.append(entryCode)
+      sb.append("    }\n")
+    }
     sb.append(mainCode)
     sb.append("    return 0;\n")
-    sb.append("  pull:\n")
-    sb.append("    s_ = s;\n")
-    sb.append(flushCode)
-    sb.append("    return prepare_for_push();\n")
+    if (rowType.byteSize > 0) {
+      sb.append("  pull:\n")
+      sb.append("    s_ = s;\n")
+      sb.append(flushCode)
+      sb.append("    return prepare_for_push();\n")
+    }
     sb.append("  }\n")
     sb.append("};\n")
     sb.append("\n")
@@ -1225,6 +1233,7 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
   val bufOffset = decoder.getFieldOffset(8, "buf_")
   val sizeOffset = decoder.getFieldOffset(8, "size_")
   val rvBaseOffset = decoder.getFieldOffset(8, "rv_base_")
+  var tmpBuf = new Array[Byte](64*1024)
   st.close()
   mod.close()
 
@@ -1237,7 +1246,17 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
   }
 
   def pushData(size: Long): Long = {
-    0L
+    val decoderBase = decoder.get()
+    val decoderBuf = Memory.loadLong(decoderBase+bufOffset)
+    val decoderSize = Memory.loadLong(decoderBase+sizeOffset)
+    if (tmpBuf.length < size) {
+      tmpBuf = new Array[Byte]((size.toInt + 0xfff) & ~0xfff)
+    }
+    val ngot = in.speculativeRead(tmpBuf, 0, size.toInt)
+    if (ngot > 0) {
+      Memory.memcpy(decoderBuf+decoderSize, tmpBuf, 0, ngot)
+    }
+    ngot
   }
 
   def readByte(): Byte = {
