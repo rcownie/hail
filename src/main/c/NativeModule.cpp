@@ -438,12 +438,8 @@ static std::string to_qualified_name(
 ) {
   JString name(env, nameJ);
   char argTypeCodes[32];
-  if ((numArgs == 0) && !is_longfunc) {
-    strcpy(argTypeCodes, "v"); // No args at all needs "v" for void
-  } else {
-    for (int j = 0; j < numArgs; ++j) argTypeCodes[j] = 'l';
-    argTypeCodes[numArgs] = 0;
-  }
+  for (int j = 0; j < numArgs; ++j) argTypeCodes[j] = 'l';
+  argTypeCodes[numArgs] = 0;
   char buf[512];
   if (is_global) {
     // No name-mangling for global func names
@@ -452,7 +448,7 @@ static std::string to_qualified_name(
     auto moduleName = std::string("hm_") + key;
     sprintf(buf, "_ZN4hail%lu%s%lu%sE%s%s",
       moduleName.length(), moduleName.c_str(), strlen(name), (const char*)name, 
-      is_longfunc ? "P12NativeStatus" : "", argTypeCodes);
+      "P12NativeStatus", argTypeCodes);
   }
   return std::string(buf);
 }

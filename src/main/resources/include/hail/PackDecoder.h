@@ -188,7 +188,7 @@ class PackDecoderBase : public DecoderBase {
     if (pos+4 > size_) return false;
     *addr = *(float*)(buf_+pos);
     pos_ = (pos+4);
-    fprintf(stderr, "DEBUG: decode_float() -> %12.6f\n", (double)*addr);
+    fprintf(stderr, "DEBUG: decode_float() -> %12e\n", (double)*addr);
     return true;
   }
   
@@ -204,7 +204,7 @@ class PackDecoderBase : public DecoderBase {
     if (pos+8 > size_) return false;
     *addr = *(double*)(buf_+pos);
     pos_ = (pos+8);
-    fprintf(stderr, "DEBUG: decode_double() -> %12.6f\n", *addr);
+    fprintf(stderr, "DEBUG: decode_double() -> %12e\n", *addr);
     return true;
   }
   
@@ -329,7 +329,7 @@ class PackDecoderBase<1> : public DecoderBase {
     if (pos+4 > size_) return false;
     *addr = *(float*)(buf_+pos);
     pos_ = (pos+4);
-    fprintf(stderr, "DEBUG: decode_float() -> %12.6f\n", (double)*addr);
+    fprintf(stderr, "DEBUG: decode_float() -> %12e\n", (double)*addr);
     return true;
   }
   
@@ -345,7 +345,7 @@ class PackDecoderBase<1> : public DecoderBase {
     if (pos+8 > size_) return false;
     *addr = *(double*)(buf_+pos);
     pos_ = (pos+8);
-    fprintf(stderr, "DEBUG: decode_double() -> %12.6f\n", *addr);
+    fprintf(stderr, "DEBUG: decode_double() -> %12e\n", *addr);
     return true;
   }
   
