@@ -111,6 +111,9 @@ public:
       if ((b & 0x80) == 0) break;
     }
     fprintf(stderr, "DEBUG: decode_int() -> %d {nbytes %ld}\n", val, pos-old);
+    char hex[256];
+    hexify(hex, old, buf_+old, pos-old);
+    fprintf(stderr, "%s", hex);
     *addr = val;
     pos_ = pos;
     return true;
@@ -128,12 +131,14 @@ public:
   bool decode_length(ssize_t* addr) {
     int32_t len = 0;
     if (!decode_int(&len)) return false;
+    fprintf(stderr, "DEBUG: decode_length() -> %d\n", len);
     *addr = (ssize_t)len;
     return true;
   }
   
   bool decode_long(int64_t* addr) {
     ssize_t pos = pos_;
+    ssize_t old = pos;
     ssize_t val = 0;
     for (int shift = 0;; shift += 7) {
       if (pos >= size_) return false;
@@ -144,6 +149,9 @@ public:
     *addr = val;
     pos_ = pos;
     fprintf(stderr, "DEBUG: decode_long() -> %ld\n", val);
+    char hex[256];
+    hexify(hex, old, buf_+old, pos-old);
+    fprintf(stderr, "%s", hex);
     return true;
   }
   
@@ -161,7 +169,7 @@ public:
     if (pos+4 > size_) return false;
     *addr = *(float*)(buf_+pos);
     pos_ = (pos+4);
-    fprintf(stderr, "DEBUG: decode_float() -> %.6f\n", (double)*addr);
+    fprintf(stderr, "DEBUG: decode_float() -> %12.6f\n", (double)*addr);
     return true;
   }
   
@@ -177,7 +185,7 @@ public:
     if (pos+8 > size_) return false;
     *addr = *(double*)(buf_+pos);
     pos_ = (pos+8);
-    fprintf(stderr, "DEBUG: decode_double() -> %.6f\n", *addr);
+    fprintf(stderr, "DEBUG: decode_double() -> %12.6f\n", *addr);
     return true;
   }
   
@@ -188,16 +196,24 @@ public:
     return true;
   }
   
-  void hexify(char* out, char* p, ssize_t n) {    
+  void hexify(char* out, ssize_t pos, char* p, ssize_t n) {    
     for (int j = 0; j < n; j += 8) {
+      sprintf(out, "[%4ld] ", pos+j);
+      out += strlen(out);
       for (int k = 0; k < 8; ++k) {
-        int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
-        int nibble = (c>>4) & 0xff;
-        *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
-        nibble = (c & 0xf);
-        *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
+        if (j+k >= n) {
+          *out++ = ' ';
+          *out++ = ' ';
+        } else {
+          int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
+          int nibble = (c>>4) & 0xff;
+          *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
+          nibble = (c & 0xf);
+          *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
+        }
         *out++ = ' ';
       }
+      *out++ = ' ';
       for (int k = 0; k < 8; ++k) {
         int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
         *out++ = ((' ' <= c) && (c <= '~')) ? c : '.';
@@ -209,16 +225,14 @@ public:
     
   ssize_t decode_bytes(char* addr, ssize_t n) {
     ssize_t pos = pos_;
-    fprintf(stderr, "DEBUG: decode_bytes buf %p size %ld pos %ld n %ld\n", buf_, size_, pos_, n);
     ssize_t ngot = (size_ - pos);
     if (ngot > n) ngot = n;
     if (ngot > 0) {
-      fprintf(stderr, "DEBUG: memcpy(%p, %p, %ld)\n", addr, buf_+pos, ngot);
       memcpy(addr, buf_+pos, ngot);
       pos_ = (pos + ngot);
     }
     char hex[256];
-    hexify(hex, addr, (ngot < 32) ? ngot : 32);
+    hexify(hex, pos, buf_+pos, (ngot < 32) ? ngot : 32);
     fprintf(stderr, "DEBUG: decode_bytes(%ld) -> %ld\n", n, ngot);
     fprintf(stderr, "%s", hex);
     return ngot;
