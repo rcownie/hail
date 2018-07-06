@@ -9,6 +9,23 @@
 
 namespace hail {
 
+inline ssize_t round_up_align(ssize_t n, ssize_t align) {
+  return ((n + (align-1)) & ~(align-1));
+}
+  
+inline ssize_t missing_bytes(ssize_t nbits) {
+  return ((nbits + 7) >> 3);
+}
+  
+inline ssize_t elements_offset(ssize_t n, bool required, ssize_t align) {
+  if (align < sizeof(int32_t)) align = sizeof(int32_t);
+  return round_up_align(sizeof(int32_t) + (required ? 0 : missing_bytes(n)), align);
+}
+  
+inline bool is_missing(char* missing_base, ssize_t idx) {
+  return (bool)((missing_base[idx>>3] >> (idx&7)) & 0x1);
+}
+  
 class DecoderBase : public NativeObj {
 private:
   static constexpr ssize_t kDefaultCapacity = (64*1024);
@@ -33,30 +50,13 @@ public:
   }
   
   virtual int64_t get_field_offset(int field_size, const char* s) {
-    auto zeroObj = reinterpret_cast<PackDecoderBase*>(0L);
+    auto zeroObj = reinterpret_cast<DecoderBase*>(0L);
     if (!strcmp(s, "capacity_")) return (int64_t)&zeroObj->capacity_;
     if (!strcmp(s, "buf_"))      return (int64_t)&zeroObj->buf_;
     if (!strcmp(s, "pos_"))      return (int64_t)&zeroObj->pos_;
     if (!strcmp(s, "size_"))     return (int64_t)&zeroObj->size_;
     if (!strcmp(s, "rv_base_"))  return (int64_t)&zeroObj->rv_base_;
     return -1;
-  }
-  
-  static ssize_t round_up_align(ssize_t n, ssize_t align) {
-    return ((n + (align-1)) & ~(align-1));
-  }
-  
-  static ssize_t missing_bytes(ssize_t nbits) {
-    return ((nbits + 7) >> 3);
-  }
-  
-  static ssize_t elements_offset(ssize_t n, bool required, ssize_t align) {
-    if (align < sizeof(int32_t)) align = sizeof(int32_t);
-    return round_up_align(sizeof(int32_t) + (required ? 0 : missing_bytes(n)), align);
-  }
-  
-  static bool is_missing(char* missing_base, ssize_t idx) {
-    return (bool)((missing_base[idx>>3] >> (idx&7)) & 0x1);
   }
   
   // Return values:
@@ -117,6 +117,7 @@ public:
 //
 template<int DecoderId>
 class PackDecoderBase : public DecoderBase {
+ public:
   virtual ~PackDecoderBase() { }
   //
   // Decode methods for primitive types
@@ -141,7 +142,7 @@ class PackDecoderBase : public DecoderBase {
     if (pos+4 > size_) return false;
     *addr = *(int32_t*)&buf_[pos];
     pos_ = pos+4;
-    fprintf(stderr, "DEBUG: decode_int() -> %d {nbytes %ld}\n", val, pos-old);
+    fprintf(stderr, "DEBUG: decode_int() -> %d\n", *addr);
     char hex[256];
     hexify(hex, pos, buf_+pos, 4);
     fprintf(stderr, "%s", hex);
@@ -168,7 +169,7 @@ class PackDecoderBase : public DecoderBase {
     if (pos+8 > size_) return false;
     *addr = *(int32_t*)&buf_[pos];
     pos_ = pos+8;
-    fprintf(stderr, "DEBUG: decode_int() -> %d {nbytes %ld}\n", val, pos-old);
+    fprintf(stderr, "DEBUG: decode_int() -> %ld\n", (long)*addr);
     char hex[256];
     hexify(hex, pos, buf_+pos, 8);
     fprintf(stderr, "%s", hex);
@@ -239,6 +240,7 @@ class PackDecoderBase : public DecoderBase {
 
 template<>
 class PackDecoderBase<1> : public DecoderBase {
+ public:
   virtual ~PackDecoderBase() { }
   //
   // Decode methods for primitive types
