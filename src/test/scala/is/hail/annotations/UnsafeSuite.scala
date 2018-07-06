@@ -80,12 +80,28 @@ class UnsafeSuite extends SparkSuite {
         en.writeRegionValue(region, offset)
         en.flush()
 
+        if (true) {
+          val data = aos.toByteArray
+          val len = if (data.length <= 32) data.length else 32
+          val sb = new StringBuilder()
+          var j = 0
+          while (j < len) {
+            val byte = data(j).toInt & 0xff
+            val hex = if (byte <= 0xf) "0"+byte.toHexString else byte.toHexString
+            sb.append(s" ${hex}")
+            if ((j & 0x7) == 0x7) sb.append("\n")
+            j += 1
+          }
+          System.err.println(sb.toString())
+        }
+
         region2.clear()
         val ais = new ByteArrayInputStream(aos.toByteArray)
         val dec = codecSpec.buildDecoder(t, t)(ais)
         System.err.println("DEBUG: readRegionValue(region2) ...")
         val offset2 = dec.readRegionValue(region2)
         System.err.println("DEBUG: readRegionValue(region2) done")
+        assert(offset2 != 0)
         val ur2 = new UnsafeRow(t, region2, offset2)
         assert(t.typeCheck(ur2))
 
@@ -95,6 +111,7 @@ class UnsafeSuite extends SparkSuite {
         System.err.println("DEBUG: readRegionValue(region3) ...")
         val offset3 = dec3.readRegionValue(region3)
         System.err.println("DEBUG: readRegionValue(region3) done")
+        assert(offset3 != 0)
         val ur3 = new UnsafeRow(requestedType, region3, offset3)
         assert(requestedType.typeCheck(ur3))
 

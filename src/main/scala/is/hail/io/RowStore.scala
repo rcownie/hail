@@ -103,6 +103,25 @@ trait CodecSpec extends Serializable {
   }
 }
 
+object ShowBuf {
+
+  def apply(buf: Array[Byte], pos: Int, n: Int): Unit = {
+    val sb = new StringBuilder()
+    val len = if (n < 32) n else 32
+    var j = 0
+    while (j < len) {
+      val x = (buf(pos+j).toInt & 0xff)
+      if (x <= 0xf) sb.append(s" 0${x.toHexString}") else sb.append(s" ${x.toHexString}")
+      if ((j & 0x7) == 0x7) sb.append("\n")
+      j += 1
+    }
+    System.err.println(sb.toString())
+  }
+
+}
+
+
+
 final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
 
   def buildEncoder(t: Type): (OutputStream) => Encoder = { out: OutputStream =>
@@ -354,6 +373,8 @@ final class BlockingOutputBuffer(blockSize: Int, out: OutputBlockBuffer) extends
 }
 
 trait InputBuffer extends Closeable {
+  def decoderId: Int
+
   def close(): Unit
 
   def readByte(): Byte
@@ -395,6 +416,8 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
   def close() {
     in.close()
   }
+
+  def decoderId = 1
 
   def readByte(): Byte = in.readByte()
 
@@ -468,10 +491,14 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     if (blockLen == -1) {
       -1
     } else {
+      System.err.println(s"LZ4InputBlockBuffer.readBlock blockLen ${blockLen}")
+      ShowBuf(comp, 0, blockLen)
       val compLen = blockLen - 4
       val decompLen = Memory.loadInt(comp, 0)
 
       LZ4Utils.decompress(buf, 0, decompLen, comp, 4, compLen)
+      System.err.println(s"LZ4InputBlockBuffer.readBlock decompLen ${decompLen}")
+      ShowBuf(buf, 0, decompLen)
 
       decompLen
     }
@@ -499,6 +526,10 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
         ngot += chunk
       }
     }
+    if (ngot > 0) {
+      System.err.println(s"LZ4InputBlockBuffer.speculativeRead ngot ${ngot}")
+      ShowBuf(toBuf, toOff, ngot)
+    }
     if (ngot > 0) ngot else -1
   }
 }
@@ -523,6 +554,8 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
   def close() {
     in.close()
   }
+
+  def decoderId = 0
 
   def readByte(): Byte = {
     ensure(1)
@@ -655,6 +688,10 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
         off += chunk
         ngot += chunk
       }
+    }
+    if (ngot > 0) {
+      System.err.println(s"BlockingInputBuffer.speculativeRead ngot ${ngot}")
+      ShowBuf(toBuf, toOff, ngot)
     }
     if (ngot > 0) ngot else -1
   }
@@ -1181,7 +1218,8 @@ object NativeDecode {
     sb.append("\n")
     sb.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
     sb.append("\n")
-    sb.append("class Decoder : public PackDecoderBase {\n")
+    sb.append("template<int DecoderId>")
+    sb.append("class Decoder : public PackDecoderBase<DecoderId> {\n")
     sb.append("public:\n")
     sb.append("  int s_ = 0;\n")
     sb.append(stateDefs)
@@ -1205,7 +1243,11 @@ object NativeDecode {
     sb.append("  }\n")
     sb.append("};\n")
     sb.append("\n")
-    sb.append("NativeObjPtr make_decoder() { return std::make_shared<Decoder>(); }\n")
+    sb.append("NativeObjPtr make_decoder(long decoderId) {\n")
+    sb.append("  if (decoderId == 0) return std::make_shared<Decoder<0>>();\n")
+    sb.append("  if (decoderId == 1) return std::make_shared<Decoder<1>>();\n")
+    sb.append("  return NativeObjPtr();\n")
+    sb.append("}\n")
     sb.append("\n")
     sb.append("ssize_t decode_until_done_or_need_push(NativeStatus*, long decoder, long region, long push_size) {\n")
     sb.append("  return ((Decoder*)decoder)->decode_until_done_or_need_push((Region*)region, push_size);\n")
@@ -1221,10 +1263,10 @@ object NativeDecode {
 
 final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decoder {
   var st = new NativeStatus()
-  val make_decoder = mod.findPtrFuncL0(st, "make_decoder")
+  val make_decoder = mod.findPtrFuncL1(st, "make_decoder")
   val decode_until_done_or_need_push = mod.findLongFuncL3(st, "decode_until_done_or_need_push")
   val decode_one_byte = mod.findLongFuncL2(st, "decode_one_byte")
-  val decoder = new NativePtr(make_decoder, st)
+  val decoder = new NativePtr(make_decoder, st, in.decoderId)
   val bufOffset = decoder.getFieldOffset(8, "buf_")
   val sizeOffset = decoder.getFieldOffset(8, "size_")
   val rvBaseOffset = decoder.getFieldOffset(8, "rv_base_")
@@ -1250,6 +1292,7 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
     System.err.println(s"DEBUG: speculativeRead(${size}) ...")
     val ngot = in.speculativeRead(tmpBuf, 0, size.toInt)
     System.err.println(s"DEBUG: speculativeRead(${size}) -> ${ngot}")
+    ShowBuf(tmpBuf, 0, size.toInt)
     if (ngot > 0) {
       Memory.memcpy(decoderBuf+decoderSize, tmpBuf, 0, ngot)
     }

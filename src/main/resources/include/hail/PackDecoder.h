@@ -9,7 +9,7 @@
 
 namespace hail {
 
-class PackDecoderBase : public NativeObj {
+class DecoderBase : public NativeObj {
 private:
   static constexpr ssize_t kDefaultCapacity = (64*1024);
 public:
@@ -20,7 +20,7 @@ public:
   char*   rv_base_;
   
 public:
-  PackDecoderBase(ssize_t bufCapacity = 0) :
+  DecoderBase(ssize_t bufCapacity = 0) :
     capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
     buf_((char*)malloc(capacity_)),
     pos_(0),
@@ -28,7 +28,7 @@ public:
     rv_base_(nullptr) {
   }
   
-  virtual ~PackDecoderBase() {
+  virtual ~DecoderBase() {
     if (buf_) free(buf_);
   }
   
@@ -81,7 +81,165 @@ public:
     }
     return (buf_[pos_++] & 0xff);
   }
+
+  void hexify(char* out, ssize_t pos, char* p, ssize_t n) {    
+    for (int j = 0; j < n; j += 8) {
+      sprintf(out, "[%4ld] ", pos+j);
+      out += strlen(out);
+      for (int k = 0; k < 8; ++k) {
+        if (j+k >= n) {
+          *out++ = ' ';
+          *out++ = ' ';
+        } else {
+          int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
+          int nibble = (c>>4) & 0xff;
+          *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
+          nibble = (c & 0xf);
+          *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
+        }
+        *out++ = ' ';
+      }
+      *out++ = ' ';
+      for (int k = 0; k < 8; ++k) {
+        int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
+        *out++ = ((' ' <= c) && (c <= '~')) ? c : '.';
+      }
+      *out++ = '\n';
+    }
+    *out++ = 0;
+  }
+    
+};
+
+//
+// DecoderId=0 fixed-size int/long
+// DecoderId=1 variable-length LEB128
+//
+template<int DecoderId>
+class PackDecoderBase : public DecoderBase {
+  virtual ~PackDecoderBase() { }
+  //
+  // Decode methods for primitive types
+  //
+  bool decode_byte(int8_t* addr) {
+    ssize_t pos = pos_;
+    if (pos >= size_) return false;
+    *addr = *(int8_t*)(buf_+pos);
+    pos_ = (pos+1);
+    fprintf(stderr, "DEBUG: decode_byte() -> 0x%02x\n", (*addr) & 0xff);
+    return true;
+  }
   
+  bool skip_byte() {
+    if (pos_ >= size_) return false;
+    pos_ += 1;
+    return false;
+  }
+  
+  bool decode_int(int32_t* addr) {
+    ssize_t pos = pos_;
+    if (pos+4 > size_) return false;
+    *addr = *(int32_t*)&buf_[pos];
+    pos_ = pos+4;
+    fprintf(stderr, "DEBUG: decode_int() -> %d {nbytes %ld}\n", val, pos-old);
+    char hex[256];
+    hexify(hex, pos, buf_+pos, 4);
+    fprintf(stderr, "%s", hex);
+    return true;
+  }
+  
+  bool skip_int() {
+    ssize_t pos = pos_;
+    if (pos+4 > size_) return false;
+    pos_ = pos+4;
+    return true;
+  }
+  
+  bool decode_length(ssize_t* addr) {
+    int32_t len = 0;
+    if (!decode_int(&len)) return false;
+    fprintf(stderr, "DEBUG: decode_length() -> %d\n", len);
+    *addr = (ssize_t)len;
+    return true;
+  }
+  
+  bool decode_long(int64_t* addr) {
+    ssize_t pos = pos_;
+    if (pos+8 > size_) return false;
+    *addr = *(int32_t*)&buf_[pos];
+    pos_ = pos+8;
+    fprintf(stderr, "DEBUG: decode_int() -> %d {nbytes %ld}\n", val, pos-old);
+    char hex[256];
+    hexify(hex, pos, buf_+pos, 8);
+    fprintf(stderr, "%s", hex);
+    return true;
+  }
+  
+  bool skip_long() {
+    ssize_t pos = pos_;
+    if (pos+8 > size_) return false;
+    pos_ = pos+8;
+    return true;
+  }
+  
+  bool decode_float(float* addr) {
+    ssize_t pos = pos_;
+    if (pos+4 > size_) return false;
+    *addr = *(float*)(buf_+pos);
+    pos_ = (pos+4);
+    fprintf(stderr, "DEBUG: decode_float() -> %12.6f\n", (double)*addr);
+    return true;
+  }
+  
+  bool skip_float() {
+    ssize_t pos = pos_ + sizeof(float);
+    if (pos > size_) return false;
+    pos_ = pos;
+    return true;
+  }
+  
+  bool decode_double(double* addr) {
+    ssize_t pos = pos_;
+    if (pos+8 > size_) return false;
+    *addr = *(double*)(buf_+pos);
+    pos_ = (pos+8);
+    fprintf(stderr, "DEBUG: decode_double() -> %12.6f\n", *addr);
+    return true;
+  }
+  
+  bool skip_double() {
+    ssize_t pos = pos_ + sizeof(double);
+    if (pos > size_) return false;
+    pos_ = pos;
+    return true;
+  }
+  
+  ssize_t decode_bytes(char* addr, ssize_t n) {
+    ssize_t pos = pos_;
+    ssize_t ngot = (size_ - pos);
+    if (ngot > n) ngot = n;
+    if (ngot > 0) {
+      memcpy(addr, buf_+pos, ngot);
+      pos_ = (pos + ngot);
+    }
+    char hex[256];
+    hexify(hex, pos, buf_+pos, (ngot < 32) ? ngot : 32);
+    fprintf(stderr, "DEBUG: decode_bytes(%ld) -> %ld\n", n, ngot);
+    fprintf(stderr, "%s", hex);
+    return ngot;
+  }
+  
+  ssize_t skip_bytes(ssize_t n) {
+    ssize_t pos = pos_;
+    if (n > size_-pos) n = size_-pos;
+    pos_ = pos + n;
+    return n;
+  }
+};
+
+template<>
+class PackDecoderBase<1> : public DecoderBase {
+  virtual ~PackDecoderBase() { }
   //
   // Decode methods for primitive types
   //
@@ -196,33 +354,6 @@ public:
     return true;
   }
   
-  void hexify(char* out, ssize_t pos, char* p, ssize_t n) {    
-    for (int j = 0; j < n; j += 8) {
-      sprintf(out, "[%4ld] ", pos+j);
-      out += strlen(out);
-      for (int k = 0; k < 8; ++k) {
-        if (j+k >= n) {
-          *out++ = ' ';
-          *out++ = ' ';
-        } else {
-          int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
-          int nibble = (c>>4) & 0xff;
-          *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
-          nibble = (c & 0xf);
-          *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
-        }
-        *out++ = ' ';
-      }
-      *out++ = ' ';
-      for (int k = 0; k < 8; ++k) {
-        int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
-        *out++ = ((' ' <= c) && (c <= '~')) ? c : '.';
-      }
-      *out++ = '\n';
-    }
-    *out++ = 0;
-  }
-    
   ssize_t decode_bytes(char* addr, ssize_t n) {
     ssize_t pos = pos_;
     ssize_t ngot = (size_ - pos);
