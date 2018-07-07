@@ -96,7 +96,7 @@ class NativeCodeSuite extends SparkSuite {
     sb.append("  const char* get_class_name() { return \"MyObj\"; }\n")
     sb.append("};\n")
     sb.append("\n")
-    sb.append("NativeObjPtr makeMyObj(long val) {\n")
+    sb.append("NativeObjPtr makeMyObj(NativeStatus*, long val) {\n")
     sb.append("  return std::make_shared<MyObj>(val);\n")
     sb.append("}\n")
     sb.append("\n")

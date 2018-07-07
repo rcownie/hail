@@ -18,7 +18,7 @@ inline ssize_t missing_bytes(ssize_t nbits) {
 }
   
 inline ssize_t elements_offset(ssize_t n, bool required, ssize_t align) {
-  if (align < sizeof(int32_t)) align = sizeof(int32_t);
+  if (align < (ssize_t)sizeof(int32_t)) align = sizeof(int32_t);
   return round_up_align(sizeof(int32_t) + (required ? 0 : missing_bytes(n)), align);
 }
   
