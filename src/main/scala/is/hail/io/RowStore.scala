@@ -1150,7 +1150,14 @@ object NativeDecode {
               mainCode.append(s"${ind}  ${ptr} = ${addr};\n")
             }
             if (wantStruct.fields.length != t.fields.length) {
-              mainCode.append(s"${ind}  set_all_missing(${ptr}, ${wantStruct.nMissingBits});\n")
+              var maxMissingBit = -1
+              var j = 0
+              while (j < wantStruct.missingIdx.length) {
+                val bit = wantStruct.missingIdx(j)
+                if (maxMissingBit < bit) maxMissingBit = bit
+                j += 1
+              }
+              mainCode.append(s"${ind}  set_all_missing(${ptr}, ${maxMissingBit+1});\n")
               mainCode.append(s"${ind}  ${miss} = (char*)malloc(${t.nMissingBytes});\n")
               haveTmpMissing = true
             } else {
