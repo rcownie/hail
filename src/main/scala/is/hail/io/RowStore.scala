@@ -1089,7 +1089,7 @@ object NativeDecode {
           val data = if (skip) "data_undefined" else stateVar("data", depth)
           mainCode.append(s"${ind}  if (!this->decode_length(&${len})) { s = ${r1}; goto pull; }\n")
           val wantArray = wantType.asInstanceOf[TArray]
-          val grain = if (wantArray.elementType.alignment > 4) t.elementType.alignment else 4
+          val grain = if (wantArray.elementType.alignment > 4) wantArray.elementType.alignment else 4
           val esize = wantArray.elementType.byteSize
           val req = if (t.elementType.required) "true" else "false"          
           var haveTmpMissing = false
@@ -1150,7 +1150,7 @@ object NativeDecode {
               mainCode.append(s"${ind}  ${ptr} = ${addr};\n")
             }
             if (wantStruct.fields.length != t.fields.length) {
-              mainCode.append(s"${ind}  memset(${ptr}, 0xff, ${wantStruct.nMissingBytes});\n")
+              mainCode.append(s"${ind}  set_all_missing(${ptr}, ${wantStruct.nMissingBits});\n")
               mainCode.append(s"${ind}  ${miss} = (char*)malloc(${t.nMissingBytes});\n")
               haveTmpMissing = true
             } else {
@@ -1180,7 +1180,7 @@ object NativeDecode {
                 j += 1
               }
             }
-            val fieldSkip = (wantIdx < 0)
+            val fieldSkip = skip || (wantIdx < 0)
             val wantType = if (fieldSkip) fieldType else wantStruct.types(wantIdx)
             if (!t.fieldRequired(fieldIdx)) {
               val m = t.missingIdx(fieldIdx)
