@@ -48,7 +48,7 @@ class UnsafeSuite extends SparkSuite {
     }
   }
 
-  @Test def testCodec() {
+  @Test def AAA_testCodec() {
     val region = Region()
     val region2 = Region()
     val region3 = Region()
@@ -64,6 +64,7 @@ class UnsafeSuite extends SparkSuite {
 
       val requestedType = subsetType(t).asInstanceOf[TStruct]
       val a2 = subset(t, requestedType, a)
+
       assert(requestedType.typeCheck(a2))
 
       CodecSpec.codecSpecs.foreach { codecSpec =>
@@ -117,13 +118,19 @@ class UnsafeSuite extends SparkSuite {
         val offset3 = dec3.readRegionValue(region3)
         System.err.println(s"DEBUG: readRegionValue(region3) -> ${offset3.toHexString}")
         assert(offset3 != 0)
-        System.err.println("A")
+        System.err.println("D")
         val ur3 = new UnsafeRow(requestedType, region3, offset3)
-        System.err.println("B")
+        System.err.println("E")
         assert(requestedType.typeCheck(ur3))
-        System.err.println("C")
+        System.err.println("F")
 
-        assert(requestedType.valuesSimilar(a2, ur3))
+        val similar = requestedType.valuesSimilar(a2, ur3)
+        System.err.println(s"G valuesSimilar ${similar}")
+        if (!similar) {
+          System.err.println(s"DEBUG: want a2 ${a2.toString()}")
+          System.err.println(s"DEBUG: have ur3 ${ur3.pretty()}")
+        }
+        assert(similar)
       }
 
       true
@@ -131,7 +138,7 @@ class UnsafeSuite extends SparkSuite {
     p.check()
   }
 
-  @Test def testBufferWriteReadDoubles() {
+  @Test def testBufferWriteReadDoubles() = if (false) {
     val a = Array(1.0, -349.273, 0.0, 9925.467, 0.001)
 
     CodecSpec.bufferSpecs.foreach { bufferSpec =>
@@ -149,7 +156,7 @@ class UnsafeSuite extends SparkSuite {
     }
   }
 
-  @Test def testRegionValue() {
+  @Test def testRegionValue() = if (false) {
     val region = Region()
     val region2 = Region()
     val rvb = new RegionValueBuilder(region)
@@ -231,7 +238,7 @@ class UnsafeSuite extends SparkSuite {
     p.check()
   }
 
-  @Test def testRegion() {
+  @Test def testRegion() = if (false) {
     val buff = Region()
 
     val addrA = buff.appendLong(124L)
@@ -303,7 +310,7 @@ class UnsafeSuite extends SparkSuite {
     assert(TStruct().byteSize == 0)
   }
 
-  @Test def testUnsafeOrdering() {
+  @Test def testUnsafeOrdering() = if (false) {
     val region = Region()
     val region2 = Region()
     val rvb = new RegionValueBuilder(region)

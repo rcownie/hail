@@ -1150,6 +1150,7 @@ object NativeDecode {
               mainCode.append(s"${ind}  ${ptr} = ${addr};\n")
             }
             if (wantStruct.fields.length != t.fields.length) {
+              haveTmpMissing = true
               var maxMissingBit = -1
               var j = 0
               while (j < wantStruct.missingIdx.length) {
@@ -1157,9 +1158,10 @@ object NativeDecode {
                 if (maxMissingBit < bit) maxMissingBit = bit
                 j += 1
               }
-              mainCode.append(s"${ind}  set_all_missing(${ptr}, ${maxMissingBit+1});\n")
+              if (maxMissingBit >= 0) {
+                mainCode.append(s"${ind}  set_all_missing(${ptr}, ${maxMissingBit+1});\n")
+              }
               mainCode.append(s"${ind}  ${miss} = (char*)malloc(${t.nMissingBytes});\n")
-              haveTmpMissing = true
             } else {
               miss = ptr
             }
@@ -1177,7 +1179,6 @@ object NativeDecode {
           var fieldIdx = 0
           while (fieldIdx < t.fields.length) {
             val field = t.fields(fieldIdx)
-            val fieldOffset = t.byteOffsets(fieldIdx)
             val fieldType = t.types(fieldIdx)
             var wantIdx = -1
             if (!skip) {
@@ -1200,6 +1201,7 @@ object NativeDecode {
                 val wantOffset = wantStruct.byteOffsets(wantIdx)
                 mainCode.append(s"${ind}    ${stateVar("addr", depth+1)} = ${ptr} + ${wantOffset};\n")
               }
+              mainCode.append(s"${ind}    // ${name}.${field.name} fieldSkip ${fieldSkip};\n")
               scan(depth+1, numIndent+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
               mainCode.append(s"${ind}  }\n")
             } else {

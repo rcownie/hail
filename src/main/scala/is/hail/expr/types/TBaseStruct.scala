@@ -68,7 +68,7 @@ abstract class TBaseStruct extends Type {
   def types: Array[Type]
 
   def fields: IndexedSeq[Field]
-  
+
   def fieldRequired: Array[Boolean]
 
   override def children: Seq[Type] = types
@@ -111,13 +111,27 @@ abstract class TBaseStruct extends Type {
           Gen.uniformSequence(types.map(t => t.genValue)).map(a => Annotation(a: _*)))
   }
 
-  override def valuesSimilar(a1: Annotation, a2: Annotation, tolerance: Double, absolute: Boolean): Boolean =
-    a1 == a2 || (a1 != null && a2 != null
-      && types.zip(a1.asInstanceOf[Row].toSeq).zip(a2.asInstanceOf[Row].toSeq)
-      .forall {
-        case ((t, x1), x2) =>
-          t.valuesSimilar(x1, x2, tolerance, absolute)
-      })
+  override def valuesSimilar(a1: Annotation, a2: Annotation, tolerance: Double, absolute: Boolean): Boolean = {
+    val result =
+      a1 == a2 || (a1 != null && a2 != null
+        && types.zip(a1.asInstanceOf[Row].toSeq).zip(a2.asInstanceOf[Row].toSeq)
+        .forall {
+          case ((t, x1), x2) =>
+            t.valuesSimilar(x1, x2, tolerance, absolute)
+        })
+    if (!result) {
+      System.err.println("TBaseStruct.valuesSimilar() -> false")
+      val row1 = a1.asInstanceOf[Row]
+      val row2 = a2.asInstanceOf[Row]
+      var j = 0
+      while (j < fields.length) {
+        val ok = types(j).valuesSimilar(row1(j), row2(j))
+        if (!ok) System.err.println(s"TBaseStruct dissimilar at ${fields(j).name}")
+        j += 1
+      }
+    }
+    result
+  }
 
   override def scalaClassTag: ClassTag[Row] = classTag[Row]
 
