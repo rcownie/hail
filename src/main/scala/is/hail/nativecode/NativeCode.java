@@ -12,12 +12,26 @@ class NativeCode {
       System.err.println("DEBUG: System.load " + libBoot);
       System.load(libBoot);
       String libHail = libToLocalFile("libhail");
-      System.err.println("DEBUG: dlopenGlobal " + libHail);
-      long handle = dlopenGlobal(libHail);
+      if (isLinux()) {
+        System.err.println("DEBUG: dlopenGlobal " + libHail);
+        long handle = dlopenGlobal(libHail);
+      } else {
+        System.err.println("DEBUG: System.load " + libHail);
+        System.load(libHail);
+      }
       System.err.println("DEBUG: done");
     } catch (Exception e) {
       System.err.println("ERROR: NativeCode.init caught exception");
     }
+  }
+  
+  private static Boolean isLinux() {
+    String osName = System.getProperty("os.name").toLowerCase();
+    System.err.println("osName " + osName);
+    if ((osName.length() >= 3) && osName.substring(0, 3).equals("mac")) {
+      return false;
+    }
+    return true;
   }
   
   private static String libToLocalFile(String libName) {
@@ -26,8 +40,7 @@ class NativeCode {
       File file = File.createTempFile(libName, ".lib");
       ClassLoader loader = NativeCode.class.getClassLoader();
       InputStream s = null;
-      String osName = System.getProperty("os.name");
-      if (osName.equals("Linux") || osName.equals("linux")) {
+      if (isLinux()) {
         s = loader.getResourceAsStream("linux-x86-64/" + libName + ".so");
       } else {
         s = loader.getResourceAsStream("darwin/" + libName + ".dylib");
@@ -59,7 +72,5 @@ class NativeCode {
     return name;
   }
 
-  final static void forceLoad() {
-    System.err.println("DEBUG: forceLoad()");
-  }
+  final static void forceLoad() { }
 }
