@@ -51,6 +51,7 @@ LIBFLAGS += -fvisibility=default
 
 ifeq ($(UNAME_S),Linux)
   LIBFLAGS += -rdynamic -shared
+  boot_library := lib/linux-x86-64/libboot.so
   shared_library = lib/linux-x86-64/libhail.so
   ifneq ($(filter %86,$(UNAME_P)),)
     shared_library = lib/linux-x86/libhail.so
@@ -58,10 +59,11 @@ ifeq ($(UNAME_S),Linux)
 endif
 ifeq ($(UNAME_S),Darwin)
   LIBFLAGS += -dynamiclib -Wl,-undefined,dynamic_lookup
+  boot_library := lib/darwin/libboot.dylib
   shared_library = lib/darwin/libhail.dylib
 endif
 
-all: debug $(shared_library)
+all: debug $(boot_library) $(shared_library)
 
 debug:
 	echo "make debug"
@@ -106,7 +108,11 @@ libsimdpp-2.0-rc2.tar.gz:
 libsimdpp-2.0-rc2: libsimdpp-2.0-rc2.tar.gz
 	tar -xzf libsimdpp-2.0-rc2.tar.gz
 
-$(shared_library): libsimdpp-2.0-rc2 ${OBJECTS}
-	mkdir -p $(basename $(shared_library))
-	${CXX} ${LIBFLAGS} ${LIBDIRS} ${CXXFLAGS} ${OBJECTS} -o $@ 
+$(boot_library): NativeBoot.o
+	-mkdir -p $(basename $(boot_library))
+	$(CXX) $(LIBFLAGS) $(LIBDIRS) $(CXXFLAGS) NativeBoot.o -o $@
+
+$(shared_library): libsimdpp-2.0-rc2 $(OBJECTS)
+	-mkdir -p $(basename $(shared_library))
+	$(CXX) $(LIBFLAGS) $(LIBDIRS) $(CXXFLAGS) $(OBJECTS) -o $@ 
 
