@@ -32,6 +32,18 @@ inline void set_all_missing(char* miss, ssize_t nbits) {
 inline bool is_missing(char* missing_base, ssize_t idx) {
   return (bool)((missing_base[idx>>3] >> (idx&7)) & 0x1);
 }
+
+inline void set_all_missing(std::vector<char>& missing_vec, ssize_t nbits) {
+  ssize_t nbytes = ((nbits+7)>>3);
+  if (missing_vec.size() < nbytes) missing_vec.resize(nbytes);
+  memset(&missing_vec[0], 0xff, nbytes);
+  int partial = (nbits & 0x7);
+  if (partial != 0) missing_vec[nbits>>3] = (1<<partial)-1;
+}
+  
+inline bool is_missing(const std::vector<char>& missing_vec, ssize_t idx) {
+  return (bool)((missing_vec[idx>>3] >> (idx&7)) & 0x1);
+}
   
 class DecoderBase : public NativeObj {
 private:
