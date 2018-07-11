@@ -187,9 +187,9 @@ class PackDecoderBase : public DecoderBase {
   bool decode_long(int64_t* addr) {
     ssize_t pos = pos_;
     if (pos+8 > size_) return false;
-    *addr = *(int32_t*)&buf_[pos];
+    *addr = *(int64_t*)&buf_[pos];
     pos_ = pos+8;
-    fprintf(stderr, "DEBUG: A decode_int() -> %ld\n", (long)*addr);
+    fprintf(stderr, "DEBUG: A decode_long() -> %ld\n", (long)*addr);
     char hex[256];
     hexify(hex, pos, buf_+pos, 8);
     fprintf(stderr, "%s", hex);
