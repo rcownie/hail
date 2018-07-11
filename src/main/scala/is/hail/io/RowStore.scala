@@ -1097,7 +1097,7 @@ object NativeDecode {
           val req = if (t.elementType.required) "true" else "false"          
           if (skip) {
             if (!t.elementType.required) {
-              mainCode.append(s"${ind}  if (${miss}.size() < (size_t)missing_bytes(${len}) ${miss}.resize(missing_bytes(${len});\n")
+              mainCode.append(s"${ind}  if (${miss}.size() < (size_t)missing_bytes(${len})) ${miss}.resize(missing_bytes(${len}));\n")
             }
           } else {
             mainCode.append(s"${ind}  { ssize_t data_offset = elements_offset(${len}, ${req}, ${grain});\n")
@@ -1108,7 +1108,7 @@ object NativeDecode {
             mainCode.append(s"${ind}    ${data} = ${ptr} + data_offset;\n")
             mainCode.append(s"${ind}  }\n")
             mainCode.append(s"${ind}  *(int32_t*)${ptr} = ${len};\n")
-            miss = s"${ptr}+4"
+            miss = s"(${ptr}+4)"
           }
           if (!t.elementType.required) {
             mainCode.append(s"${ind}  for (${idx} = 0; ${idx} < missing_bytes(${len});) {\n")
@@ -1166,7 +1166,7 @@ object NativeDecode {
           }
           if (t.nMissingBytes == 1) {
             val r2 = allocState(s"${name}.missing");
-            mainCode.append(s"${ind}  if (!this->decode_byte((int8_t*)&${miss}[0])) { s = ${r2}; goto pull; }\n")
+            mainCode.append(s"${ind}  if (this->decode_bytes(&${miss}[0], 1) <= 0) { s = ${r2}; goto pull; }\n")
           } else if (t.nMissingBytes > 1) {
             // Ack! We have to read this missing bytes, but shuffle bits needed for wantStruct
             val idx = stateVar("idx", depth)
@@ -1202,7 +1202,7 @@ object NativeDecode {
                 val wantOffset = wantStruct.byteOffsets(wantIdx)
                 mainCode.append(s"${ind}    ${stateVar("addr", depth+1)} = ${ptr} + ${wantOffset};\n")
               }
-              mainCode.append(s"${ind}    // ${name}.${field.name} fieldSkip ${fieldSkip};\n")
+              mainCode.append(s"${ind}    // ${name}.${field.name} fieldSkip ${fieldSkip} ${fieldType}\n")
               scan(depth+1, numIndent+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
               mainCode.append(s"${ind}  }\n")
             } else {

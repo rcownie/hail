@@ -35,7 +35,7 @@ inline bool is_missing(char* missing_base, ssize_t idx) {
 
 inline void set_all_missing(std::vector<char>& missing_vec, ssize_t nbits) {
   ssize_t nbytes = ((nbits+7)>>3);
-  if (missing_vec.size() < nbytes) missing_vec.resize(nbytes);
+  if (missing_vec.size() < (size_t)nbytes) missing_vec.resize(nbytes);
   memset(&missing_vec[0], 0xff, nbytes);
   int partial = (nbits & 0x7);
   if (partial != 0) missing_vec[nbits>>3] = (1<<partial)-1;
