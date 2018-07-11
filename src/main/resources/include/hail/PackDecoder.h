@@ -19,7 +19,6 @@ inline ssize_t missing_bytes(ssize_t nbits) {
 }
   
 inline ssize_t elements_offset(ssize_t n, bool required, ssize_t align) {
-  if (align < (ssize_t)sizeof(int32_t)) align = sizeof(int32_t);
   return round_up_align(sizeof(int32_t) + (required ? 0 : missing_bytes(n)), align);
 }
 
@@ -43,6 +42,10 @@ inline void set_all_missing(std::vector<char>& missing_vec, ssize_t nbits) {
   
 inline bool is_missing(const std::vector<char>& missing_vec, ssize_t idx) {
   return (bool)((missing_vec[idx>>3] >> (idx&7)) & 0x1);
+}
+
+inline void stretch_size(std::vector<char>& missing_vec, ssize_t minsize) {
+  if (ssize(missing_vec) < minsize) missing_vec.resize(minsize);
 }
   
 class DecoderBase : public NativeObj {

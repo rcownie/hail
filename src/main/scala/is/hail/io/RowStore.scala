@@ -1092,12 +1092,12 @@ object NativeDecode {
           var miss = if (t.elementType.required || !skip) "miss_undefined" else stateVar("miss", depth)
           mainCode.append(s"${ind}  if (!this->decode_length(&${len})) { s = ${r1}; goto pull; }\n")
           val wantArray = wantType.asInstanceOf[TArray]
-          val grain = if (wantArray.elementType.alignment > 4) wantArray.elementType.alignment else 4
-          val esize = wantArray.elementType.byteSize
+          val grain = wantArray.contentsAlignment
+          val esize = wantArray.elementByteSize
           val req = if (t.elementType.required) "true" else "false"          
           if (skip) {
             if (!t.elementType.required) {
-              mainCode.append(s"${ind}  if (ssize(${miss}) < missing_bytes(${len})) ${miss}.resize(missing_bytes(${len}));\n")
+              mainCode.append(s"${ind}  stretch_size(${miss}, missing_bytes(${len}));\n")
             }
           } else {
             mainCode.append(s"${ind}  { ssize_t data_offset = elements_offset(${len}, ${req}, ${grain});\n")
@@ -1139,7 +1139,7 @@ s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${grain}, size, $
           if ((t.nMissingBytes > 0) && 
             (skip || (wantStruct.fields.length < t.fields.length))) {
             miss = stateVar("miss", depth)
-            mainCode.append(s"${ind}  if (ssize(${miss}) < ${t.nMissingBytes}) ${miss}.resize(${t.nMissingBytes});\n")
+            mainCode.append(s"${ind}  stretch_size(${miss}, ${t.nMissingBytes});\n")
           }
           if (!skip) {
             if (depth == 0) { // top-level TBaseStruct must be allocated
