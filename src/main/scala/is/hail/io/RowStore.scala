@@ -1097,12 +1097,15 @@ object NativeDecode {
           val req = if (t.elementType.required) "true" else "false"          
           if (skip) {
             if (!t.elementType.required) {
-              mainCode.append(s"${ind}  if (${miss}.size() < (size_t)missing_bytes(${len})) ${miss}.resize(missing_bytes(${len}));\n")
+              mainCode.append(s"${ind}  if (ssize(${miss}) < missing_bytes(${len})) ${miss}.resize(missing_bytes(${len}));\n")
             }
           } else {
             mainCode.append(s"${ind}  { ssize_t data_offset = elements_offset(${len}, ${req}, ${grain});\n")
             mainCode.append(s"${ind}    ssize_t size = data_offset + ${esize}*${len};\n")
             mainCode.append(s"${ind}    ${ptr} = region->allocate(${grain}, size);\n");
+            mainCode.append(
+s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${grain}, size, ${ptr}, ${ptr}+size-1);\n""")
+            mainCode.append(s"${ind}    memset(${ptr}, 0, size);\n")
             mainCode.append(s"""${ind}    fprintf(stderr, "%p = %p; // array\\n", ${addr}, ${ptr});\n""")
             mainCode.append(s"${ind}    *(char**)${addr} = ${ptr};\n")
             mainCode.append(s"${ind}    ${data} = ${ptr} + data_offset;\n")
@@ -1130,38 +1133,45 @@ object NativeDecode {
 
         case t: TBaseStruct =>
           val wantStruct = wantType.fundamentalType.asInstanceOf[TBaseStruct];
-          val ptr = stateVar("ptr", depth)
-          var miss = if (t.nMissingBytes <= 0) "miss_undefined" else stateVar("miss", depth)
+          var miss = "miss_undefined"
           var shuffleMissingBits = false
-          if (skip) {
-            if (t.nMissingBytes > 0) {
-              mainCode.append(s"${ind}  if (${miss}.size() < ${t.nMissingBytes}) ${miss}.resize(${t.nMissingBytes});\n")
-            }
-          } else {
-            if (depth == 0) {
-              mainCode.append(s"${ind}  ${ptr} = region->allocate(${wantStruct.alignment}, ${wantStruct.byteSize});\n")
-              mainCode.append(s"""${ind}  fprintf(stderr, "%p = %p; // struct\\n", ${addr}, ${ptr});\n""")
-              mainCode.append(s"${ind}  this->rv_base_ = ${ptr};\n")
-            } else {
-              mainCode.append(s"${ind}  ${ptr} = ${addr};\n")
-            }
-            if (wantStruct.fields.length != t.fields.length) {
-              shuffleMissingBits = true
-              var maxMissingBit = -1
-              var j = 0
-              while (j < wantStruct.missingIdx.length) {
-                val bit = wantStruct.missingIdx(j)
-                if (maxMissingBit < bit) maxMissingBit = bit
-                j += 1
+          var fieldToWantIdx = new Array[Int](t.fields.length)
+          if ((t.nMissingBytes > 0) && 
+            (skip || (wantStruct.fields.length < t.fields.length))) {
+            miss = stateVar("miss", depth)
+            mainCode.append(s"${ind}  if (ssize(${miss}) < ${t.nMissingBytes}) ${miss}.resize(${t.nMissingBytes});\n")
+          }
+          if (!skip) {
+            if (depth == 0) { // top-level TBaseStruct must be allocated
+              mainCode.append(s"${ind}  ${addr} = region->allocate(${wantStruct.alignment}, ${wantStruct.byteSize});\n")
+              mainCode.append(s"${ind}  memset(${addr}, 0, ${wantStruct.byteSize});\n")
+              mainCode.append(s"${ind}  this->rv_base_ = ${addr};\n")
+            }            
+            var wantIdx = 0
+            var fieldIdx = 0
+            while (fieldIdx < t.fields.length) {
+              if (t.fields(fieldIdx).name.equals(wantStruct.fields(wantIdx).name)) {
+                fieldToWantIdx(fieldIdx) = wantIdx
+                wantIdx += 1
+              } else {
+                fieldToWantIdx(fieldIdx) = -1
+                shuffleMissingBits = true
               }
+              fieldIdx += 1
+            }
+            var maxMissingBit = -1
+            var j = 0
+            while (j < wantStruct.missingIdx.length) {
+              val bit = wantStruct.missingIdx(j)
+              if (maxMissingBit < bit) maxMissingBit = bit
+              j += 1
+            }
+            if (shuffleMissingBits) {
               if (maxMissingBit >= 0) {
-                mainCode.append(s"${ind}  set_all_missing(${ptr}, ${maxMissingBit+1});\n")
-              }
-              if (t.nMissingBytes > 0) {
-                mainCode.append(s"${ind}  if (${miss}.size() < ${t.nMissingBytes}) ${miss}.resize(${t.nMissingBytes});\n")
+                mainCode.append(s"${ind}  set_all_missing(${addr}, ${maxMissingBit+1});\n")
               }
             } else {
-              miss = ptr
+              miss = addr
             }
           }
           if (t.nMissingBytes == 1) {
@@ -1180,16 +1190,9 @@ object NativeDecode {
           var fieldIdx = 0
           while (fieldIdx < t.fields.length) {
             val field = t.fields(fieldIdx)
-            val fieldType = t.types(fieldIdx)
-            var wantIdx = -1
-            if (!skip) {
-              var j = 0
-              while (j < wantStruct.fields.length) {
-                if (wantStruct.fields(j).name.equals(field.name)) wantIdx = j
-                j += 1
-              }
-            }
+            val wantIdx = fieldToWantIdx(fieldIdx)
             val fieldSkip = skip || (wantIdx < 0)
+            val fieldType = t.types(fieldIdx)
             val wantType = if (fieldSkip) fieldType else wantStruct.types(wantIdx)
             if (!t.fieldRequired(fieldIdx)) {
               val m = t.missingIdx(fieldIdx)
@@ -1197,10 +1200,10 @@ object NativeDecode {
               if (!fieldSkip) {
                 if (shuffleMissingBits) {
                   val mbit = wantStruct.missingIdx(wantIdx)
-                  mainCode.append(s"${ind}    ${ptr}[${mbit>>3}] &= ~(1<<${mbit&0x7});\n")
+                  mainCode.append(s"${ind}    ${addr}[${mbit>>3}] &= ~(1<<${mbit&0x7});\n")
                 }
                 val wantOffset = wantStruct.byteOffsets(wantIdx)
-                mainCode.append(s"${ind}    ${stateVar("addr", depth+1)} = ${ptr} + ${wantOffset};\n")
+                mainCode.append(s"${ind}    ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
               }
               mainCode.append(s"${ind}    // ${name}.${field.name} fieldSkip ${fieldSkip} ${fieldType}\n")
               scan(depth+1, numIndent+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
@@ -1208,7 +1211,7 @@ object NativeDecode {
             } else {
               if (!fieldSkip) {
                 val wantOffset = wantStruct.byteOffsets(wantIdx)
-                mainCode.append(s"${ind}  ${stateVar("addr", depth+1)} = ${ptr} + ${wantOffset};\n")
+                mainCode.append(s"${ind}  ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
               }
               scan(depth+1, numIndent, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
             }
