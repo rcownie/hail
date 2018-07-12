@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 
+//#define MYDEBUG
+
 namespace hail {
 
 inline ssize_t round_up_align(ssize_t n, ssize_t align) {
@@ -149,7 +151,7 @@ class PackDecoderBase : public DecoderBase {
     if (pos >= size_) return false;
     *addr = *(int8_t*)(buf_+pos);
     pos_ = pos+1;
-    fprintf(stderr, "DEBUG: A decode_byte() -> 0x%02x [%p]\n", (*addr) & 0xff, addr);
+    //fprintf(stderr, "DEBUG: A decode_byte() -> 0x%02x [%p]\n", (*addr) & 0xff, addr);
     return true;
   }
   
@@ -165,10 +167,12 @@ class PackDecoderBase : public DecoderBase {
     if (pos+4 > size_) return false;
     *addr = *(int32_t*)&buf_[pos];
     pos_ = pos+4;
+#ifdef MYDEBUG
     fprintf(stderr, "DEBUG: A decode_int() -> %d\n", *addr);
     char hex[256];
     hexify(hex, pos, buf_+pos, 4);
     fprintf(stderr, "%s", hex);
+#endif
     return true;
   }
   
@@ -182,7 +186,9 @@ class PackDecoderBase : public DecoderBase {
   bool decode_length(ssize_t* addr) {
     int32_t len = 0;
     if (!decode_int(&len)) return false;
+#ifdef MYDEBUG
     fprintf(stderr, "DEBUG: A decode_length() -> %d\n", len);
+#endif
     *addr = (ssize_t)len;
     return true;
   }
@@ -192,7 +198,9 @@ class PackDecoderBase : public DecoderBase {
     if (pos+8 > size_) return false;
     *addr = *(int64_t*)&buf_[pos];
     pos_ = pos+8;
+#ifdef MYDEBUG
     fprintf(stderr, "DEBUG: A decode_long() -> %ld\n", (long)*addr);
+#endif
     char hex[256];
     hexify(hex, pos, buf_+pos, 8);
     fprintf(stderr, "%s", hex);
@@ -211,7 +219,9 @@ class PackDecoderBase : public DecoderBase {
     if (pos+4 > size_) return false;
     *addr = *(float*)(buf_+pos);
     pos_ = (pos+4);
+#ifdef MYDEBUG
     fprintf(stderr, "DEBUG: A decode_float() -> %12e\n", (double)*addr);
+#endif
     return true;
   }
   
@@ -227,7 +237,9 @@ class PackDecoderBase : public DecoderBase {
     if (pos+8 > size_) return false;
     *addr = *(double*)(buf_+pos);
     pos_ = (pos+8);
+#ifdef MYDEBUG
     fprintf(stderr, "DEBUG: A decode_double() -> %12e\n", *addr);
+#endif
     return true;
   }
   
@@ -246,10 +258,12 @@ class PackDecoderBase : public DecoderBase {
       memcpy(addr, buf_+pos, ngot);
       pos_ = (pos + ngot);
     }
+#ifdef MYDEBUG
     char hex[256];
     hexify(hex, pos, buf_+pos, (ngot < 32) ? ngot : 32);
     fprintf(stderr, "DEBUG: A decode_bytes(%ld) -> %ld\n", n, ngot);
     fprintf(stderr, "%s", hex);
+#endif
     return ngot;
   }
   
@@ -273,7 +287,9 @@ class PackDecoderBase<1> : public DecoderBase {
     if (pos >= size_) return false;
     *addr = *(int8_t*)(buf_+pos);
     pos_ = (pos+1);
+#ifdef MYDEBUG
     fprintf(stderr, "DEBUG: B decode_byte() -> 0x%02x [%p]\n", (*addr) & 0xff, addr);
+#endif
     return true;
   }
   
@@ -293,10 +309,12 @@ class PackDecoderBase<1> : public DecoderBase {
       val |= ((b & 0x7f) << shift);
       if ((b & 0x80) == 0) break;
     }
+#ifdef MYDEBUG
     fprintf(stderr, "DEBUG: B decode_int() -> %d {nbytes %ld}\n", val, pos-old);
     char hex[256];
     hexify(hex, old, buf_+old, pos-old);
     fprintf(stderr, "%s", hex);
+#endif
     *addr = val;
     pos_ = pos;
     return true;
@@ -314,7 +332,9 @@ class PackDecoderBase<1> : public DecoderBase {
   bool decode_length(ssize_t* addr) {
     int32_t len = 0;
     if (!decode_int(&len)) return false;
+#ifdef MYDEBUG
     fprintf(stderr, "DEBUG: B decode_length() -> %d\n", len);
+#endif
     *addr = (ssize_t)len;
     return true;
   }
@@ -331,10 +351,12 @@ class PackDecoderBase<1> : public DecoderBase {
     }
     *addr = val;
     pos_ = pos;
+#ifdef MYDEBUG
     fprintf(stderr, "DEBUG: B decode_long() -> %ld\n", val);
     char hex[256];
     hexify(hex, old, buf_+old, pos-old);
     fprintf(stderr, "%s", hex);
+#endif
     return true;
   }
   
@@ -352,7 +374,9 @@ class PackDecoderBase<1> : public DecoderBase {
     if (pos+4 > size_) return false;
     *addr = *(float*)(buf_+pos);
     pos_ = (pos+4);
+#ifdef MYDEBUG
     fprintf(stderr, "DEBUG: B decode_float() -> %12e\n", (double)*addr);
+#endif
     return true;
   }
   
@@ -368,7 +392,9 @@ class PackDecoderBase<1> : public DecoderBase {
     if (pos+8 > size_) return false;
     *addr = *(double*)(buf_+pos);
     pos_ = (pos+8);
+#ifdef MYDEBUG
     fprintf(stderr, "DEBUG: B decode_double() -> %12e\n", *addr);
+#endif
     return true;
   }
   
@@ -387,10 +413,12 @@ class PackDecoderBase<1> : public DecoderBase {
       memcpy(addr, buf_+pos, ngot);
       pos_ = (pos + ngot);
     }
+#ifdef MYDEBUG
     char hex[256];
     hexify(hex, pos, buf_+pos, (ngot < 32) ? ngot : 32);
     fprintf(stderr, "DEBUG: B decode_bytes(%ld) -> %ld\n", n, ngot);
     fprintf(stderr, "%s", hex);
+#endif
     return ngot;
   }
   
