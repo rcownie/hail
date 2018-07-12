@@ -5,7 +5,7 @@ import java.util.*;
 import java.net.URL;
 import com.sun.jna.*;
 
-class NativeCode {
+public class NativeCode {
   static {
     try {
       String libBoot = libToLocalFile("libboot");
@@ -15,6 +15,7 @@ class NativeCode {
       if (isLinux()) {
         System.err.println("DEBUG: dlopenGlobal " + libHail);
         long handle = dlopenGlobal(libHail);
+        System.load(libHail);
       } else {
         System.err.println("DEBUG: System.load " + libHail);
         System.load(libHail);
@@ -37,7 +38,7 @@ class NativeCode {
   private static String libToLocalFile(String libName) {
     String path = "";
     try {
-      File file = File.createTempFile(libName, ".lib");
+      File file = File.createTempFile(libName, ".so");
       ClassLoader loader = NativeCode.class.getClassLoader();
       InputStream s = null;
       if (isLinux()) {
@@ -60,7 +61,7 @@ class NativeCode {
   
   private native static long dlclose(long handle);
 
-  final static String getIncludeDir() {
+  public final static String getIncludeDir() {
     String name = ClassLoader.getSystemResource("include/hail/hail.h").toString();
     int len = name.length();
     if (len >= 12) {
@@ -72,5 +73,5 @@ class NativeCode {
     return name;
   }
 
-  final static void forceLoad() { }
+  public final static void forceLoad() { }
 }

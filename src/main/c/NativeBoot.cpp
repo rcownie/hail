@@ -14,8 +14,15 @@ NATIVEMETHOD(jlong, NativeCode, dlopenGlobal)(
   jstring dllPathJ
 ) {
   const char* dll_path = env->GetStringUTFChars(dllPathJ, 0);
-  void* handle = dlopen(dll_path, RTLD_GLOBAL|RTLD_LAZY);
-  fprintf(stderr, "dlopen(%s, RTLD_GLOBAL|RTLD_LAZY -> %p\n", dll_path, handle);
+  void* handle = dlopen(dll_path, RTLD_GLOBAL|RTLD_NOW);
+  fprintf(stderr, "dlopen(%s, RTLD_GLOBAL|RTLD_NOW) -> %p\n", dll_path, handle);
+  if (!handle) {
+    char* msg = dlerror();
+    fprintf(stderr, "ERROR: dlopen(\"%s\"): %s\n", dll_path, msg ? msg : "NoError");
+  } else {
+    void* sym = ::dlsym(RTLD_DEFAULT, "_ZN4hail6Region15new_chunk_allocEl");
+    fprintf(stderr, "dlsym() -> %p\n", sym);
+  }
   env->ReleaseStringUTFChars(dllPathJ, dll_path);
   return reinterpret_cast<jlong>(handle);
 }
