@@ -149,7 +149,7 @@ class PackDecoderBase : public DecoderBase {
     if (pos >= size_) return false;
     *addr = *(int8_t*)(buf_+pos);
     pos_ = pos+1;
-    fprintf(stderr, "DEBUG: A decode_byte() -> 0x%02x\n", (*addr) & 0xff);
+    fprintf(stderr, "DEBUG: A decode_byte() -> 0x%02x [%p]\n", (*addr) & 0xff, addr);
     return true;
   }
   
@@ -273,7 +273,7 @@ class PackDecoderBase<1> : public DecoderBase {
     if (pos >= size_) return false;
     *addr = *(int8_t*)(buf_+pos);
     pos_ = (pos+1);
-    fprintf(stderr, "DEBUG: B decode_byte() -> 0x%02x\n", (*addr) & 0xff);
+    fprintf(stderr, "DEBUG: B decode_byte() -> 0x%02x [%p]\n", (*addr) & 0xff, addr);
     return true;
   }
   

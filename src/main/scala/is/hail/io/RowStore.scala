@@ -1187,6 +1187,7 @@ s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${grain}, size, $
             mainCode.append(s"${ind}    ${idx} += ngot;\n")
             mainCode.append(s"${ind}  }\n")
           }
+          System.err.println(s"DEBUG: wantStruct ${wantStruct}")
           var fieldIdx = 0
           while (fieldIdx < t.fields.length) {
             val field = t.fields(fieldIdx)
@@ -1194,6 +1195,8 @@ s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${grain}, size, $
             val fieldSkip = skip || (wantIdx < 0)
             val fieldType = t.types(fieldIdx)
             val wantType = if (fieldSkip) fieldType else wantStruct.types(wantIdx)
+            val wantOffset = if (fieldSkip) -1 else wantStruct.byteOffsets(wantIdx)
+            System.err.println(s"DEBUG: fieldIdx ${fieldIdx} ${field.name} wantIdx ${wantIdx} wantOff ${wantOffset} ")
             if (!t.fieldRequired(fieldIdx)) {
               val m = t.missingIdx(fieldIdx)
               mainCode.append(s"${ind}  if (!is_missing(${miss}, ${m})) {\n")
@@ -1202,7 +1205,6 @@ s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${grain}, size, $
                   val mbit = wantStruct.missingIdx(wantIdx)
                   mainCode.append(s"${ind}    ${addr}[${mbit>>3}] &= ~(1<<${mbit&0x7});\n")
                 }
-                val wantOffset = wantStruct.byteOffsets(wantIdx)
                 mainCode.append(s"${ind}    ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
               }
               mainCode.append(s"${ind}    // ${name}.${field.name} fieldSkip ${fieldSkip} ${fieldType}\n")
@@ -1210,7 +1212,6 @@ s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${grain}, size, $
               mainCode.append(s"${ind}  }\n")
             } else {
               if (!fieldSkip) {
-                val wantOffset = wantStruct.byteOffsets(wantIdx)
                 mainCode.append(s"${ind}  ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
               }
               scan(depth+1, numIndent, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
