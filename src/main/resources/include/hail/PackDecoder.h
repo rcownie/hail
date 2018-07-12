@@ -301,7 +301,9 @@ class PackDecoderBase<1> : public DecoderBase {
   
   bool decode_int(int32_t* addr) {
     ssize_t pos = pos_;
+#ifdef MYDEBUG
     ssize_t old = pos;
+#endif
     int val = 0;
     for (int shift = 0;; shift += 7) {
       if (pos >= size_) return false;
@@ -341,7 +343,9 @@ class PackDecoderBase<1> : public DecoderBase {
   
   bool decode_long(int64_t* addr) {
     ssize_t pos = pos_;
+#ifdef MYDEBUG
     ssize_t old = pos;
+#endif
     ssize_t val = 0;
     for (int shift = 0;; shift += 7) {
       if (pos >= size_) return false;
