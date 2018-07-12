@@ -1092,7 +1092,8 @@ object NativeDecode {
           var miss = if (t.elementType.required || !skip) "miss_undefined" else stateVar("miss", depth)
           mainCode.append(s"${ind}  if (!this->decode_length(&${len})) { s = ${r1}; goto pull; }\n")
           val wantArray = wantType.asInstanceOf[TArray]
-          val grain = wantArray.contentsAlignment
+          val ealign = wantArray.elementType.alignment
+          val align = if (ealign > 4) ealign else 4
           val esize = wantArray.elementByteSize
           val req = if (t.elementType.required) "true" else "false"          
           if (skip) {
@@ -1100,11 +1101,11 @@ object NativeDecode {
               mainCode.append(s"${ind}  stretch_size(${miss}, missing_bytes(${len}));\n")
             }
           } else {
-            mainCode.append(s"${ind}  { ssize_t data_offset = elements_offset(${len}, ${req}, ${grain});\n")
+            mainCode.append(s"${ind}  { ssize_t data_offset = elements_offset(${len}, ${req}, ${ealign});\n")
             mainCode.append(s"${ind}    ssize_t size = data_offset + ${esize}*${len};\n")
-            mainCode.append(s"${ind}    ${ptr} = region->allocate(${grain}, size);\n");
+            mainCode.append(s"${ind}    ${ptr} = region->allocate(${align}, size);\n");
             mainCode.append(
-s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${grain}, size, ${ptr}, ${ptr}+size-1);\n""")
+s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${align}, size, ${ptr}, ${ptr}+size-1);\n""")
             mainCode.append(s"${ind}    memset(${ptr}, 0, size);\n")
             mainCode.append(s"""${ind}    fprintf(stderr, "%p = %p; // array\\n", ${addr}, ${ptr});\n""")
             mainCode.append(s"${ind}    *(char**)${addr} = ${ptr};\n")
