@@ -8,19 +8,20 @@ import com.sun.jna.*;
 public class NativeCode {
   static {
     try {
+      // libboot.so has native methods to call dlopen/dlclose
       String libBoot = libToLocalFile("libboot");
-      System.err.println("DEBUG: System.load " + libBoot);
       System.load(libBoot);
       String libHail = libToLocalFile("libhail");
       if (isLinux()) {
-        System.err.println("DEBUG: dlopenGlobal " + libHail);
+        // We need libhail.so to be loaded with RTLD_GLOBAL so that its symbols
+        // are visible to dynamic-generated code in other DLLs ...
         long handle = dlopenGlobal(libHail);
+        // ... but we also need System.load to let the JVM see it
         System.load(libHail);
       } else {
-        System.err.println("DEBUG: System.load " + libHail);
+        // MacOS System.load uses RTLD_GLOBAL, so it just works
         System.load(libHail);
       }
-      System.err.println("DEBUG: done");
     } catch (Exception e) {
       System.err.println("ERROR: NativeCode.init caught exception");
     }
@@ -28,7 +29,6 @@ public class NativeCode {
   
   private static Boolean isLinux() {
     String osName = System.getProperty("os.name").toLowerCase();
-    System.err.println("osName " + osName);
     if ((osName.length() >= 3) && osName.substring(0, 3).equals("mac")) {
       return false;
     }

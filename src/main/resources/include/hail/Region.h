@@ -88,7 +88,6 @@ public:
     } else {
       p = ((n <= kMaxSmall) ? new_chunk_alloc(n) : big_alloc(n));
     }
-    memset(p, 0x00, n);
     return p;
   }
     
@@ -101,7 +100,6 @@ public:
     } else {
       p = ((n <= kMaxSmall) ? new_chunk_alloc(n) : big_alloc(n));
     }
-    memset(p, 0x00, n);
     return p;
   }
   

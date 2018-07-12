@@ -132,7 +132,7 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
     System.err.println("DEBUG: PackCodecSpec using CompiledPackDecoder")
     val sb = new StringBuilder()
     NativeDecode.appendCode(sb, t, requestedType)
-    val mod = new NativeModule("-g -O1", sb.toString(), true)
+    val mod = new NativeModule("-g -O2", sb.toString(), true)
     val st = new NativeStatus()
     mod.findOrBuild(st)
     if (st.fail) System.err.println("findOrBuild ${st}")
@@ -977,7 +977,7 @@ object EmitPackDecoder {
 object NativeDecode {
 
   def appendCode(sb: StringBuilder, rowType: Type, wantType: Type): Unit = {
-    val verbose = true
+    val verbose = false
     var seen = new ArrayBuffer[Int]()
     val stateDefs = new StringBuilder()
     val localDefs = new StringBuilder()
@@ -1073,7 +1073,6 @@ object NativeDecode {
             mainCode.append(s"${ind}  }\n")            
           } else {
             mainCode.append(s"${ind}  ${ptr} = region->allocate(4, 4+${len});\n")
-            mainCode.append(s"""${ind}  fprintf(stderr, "%p = %p // binary\\n", ${addr}, ${ptr});\n""")
             mainCode.append(s"${ind}  *(char**)${addr} = ${ptr};\n")
             mainCode.append(s"${ind}  *(int32_t*)${ptr} = ${len};\n")
             mainCode.append(s"${ind}  for (${idx} = 0; ${idx} < ${len};) {\n")
@@ -1104,10 +1103,7 @@ object NativeDecode {
             mainCode.append(s"${ind}  { ssize_t data_offset = elements_offset(${len}, ${req}, ${ealign});\n")
             mainCode.append(s"${ind}    ssize_t size = data_offset + ${esize}*${len};\n")
             mainCode.append(s"${ind}    ${ptr} = region->allocate(${align}, size);\n");
-            mainCode.append(
-s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${align}, size, ${ptr}, ${ptr}+size-1);\n""")
             mainCode.append(s"${ind}    memset(${ptr}, 0, size);\n")
-            mainCode.append(s"""${ind}    fprintf(stderr, "%p = %p; // array\\n", ${addr}, ${ptr});\n""")
             mainCode.append(s"${ind}    *(char**)${addr} = ${ptr};\n")
             mainCode.append(s"${ind}    ${data} = ${ptr} + data_offset;\n")
             mainCode.append(s"${ind}  }\n")
@@ -1188,7 +1184,6 @@ s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${align}, size, $
             mainCode.append(s"${ind}    ${idx} += ngot;\n")
             mainCode.append(s"${ind}  }\n")
           }
-          System.err.println(s"DEBUG: wantStruct ${wantStruct}")
           var fieldIdx = 0
           while (fieldIdx < t.fields.length) {
             val field = t.fields(fieldIdx)
@@ -1197,7 +1192,6 @@ s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${align}, size, $
             val fieldType = t.types(fieldIdx)
             val wantType = if (fieldSkip) fieldType else wantStruct.types(wantIdx)
             val wantOffset = if (fieldSkip) -1 else wantStruct.byteOffsets(wantIdx)
-            System.err.println(s"DEBUG: fieldIdx ${fieldIdx} ${field.name} wantIdx ${wantIdx} wantOff ${wantOffset} ")
             if (!t.fieldRequired(fieldIdx)) {
               val m = t.missingIdx(fieldIdx)
               mainCode.append(s"${ind}  if (!is_missing(${miss}, ${m})) {\n")
@@ -1286,6 +1280,7 @@ s"""${ind}    fprintf(stderr, "alloc(%d, %ld) -> [%p, %p]\\n", ${align}, size, $
 }
 
 final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decoder {
+  System.err.println(s"new NativePackDecoder(decoderId ${in.decoderId}) ...")
   var st = new NativeStatus()
   val make_decoder = mod.findPtrFuncL1(st, "make_decoder")
   val decode_until_done_or_need_push = mod.findLongFuncL3(st, "decode_until_done_or_need_push")
@@ -1297,6 +1292,7 @@ final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decode
   var tmpBuf = new Array[Byte](64*1024)
   st.close()
   mod.close()
+  System.err.println(s"new NativePackDecoder() done")
 
   def close(): Unit = {
     in.close()
