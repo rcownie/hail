@@ -79,29 +79,30 @@ public:
   }
   
   inline char* allocate(ssize_t a, ssize_t n) {
-    a = 0x10;
-    n = (n+0x0) & ~0xf;
+    char* p;
     ssize_t mask = (a-1);
     ssize_t apos = ((pos_ + mask) & ~mask);
     if (apos+n <= kChunkCap) {
-      char* p = (buf_ + apos);
+      p = (buf_ + apos);
       pos_ = (apos + n);
-      memset(p, 0x00, n);
-      return p;
+    } else {
+      p = ((n <= kMaxSmall) ? new_chunk_alloc(n) : big_alloc(n));
     }
-    return (n <= kMaxSmall) ? new_chunk_alloc(n) : big_alloc(n);
+    memset(p, 0x00, n);
+    return p;
   }
     
   inline char* allocate(ssize_t n) {
-    n = (n+0xf) & ~0xf;
+    char* p;
     ssize_t apos = pos_;
     if (apos+n <= kChunkCap) {
-      char* p = (buf_ + apos);
+      p = (buf_ + apos);
       pos_ = (apos + n);
-      memset(p, 0x00, n);
-      return p;
+    } else {
+      p = ((n <= kMaxSmall) ? new_chunk_alloc(n) : big_alloc(n));
     }
-    return (n <= kMaxSmall) ? new_chunk_alloc(n) : big_alloc(n);
+    memset(p, 0x00, n);
+    return p;
   }
   
   virtual const char* get_class_name() { return "Region"; }
