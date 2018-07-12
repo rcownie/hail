@@ -1147,7 +1147,8 @@ object NativeDecode {
             var wantIdx = 0
             var fieldIdx = 0
             while (fieldIdx < t.fields.length) {
-              if (t.fields(fieldIdx).name.equals(wantStruct.fields(wantIdx).name)) {
+              if ((wantIdx < wantStruct.fields.length) &&
+                t.fields(fieldIdx).name.equals(wantStruct.fields(wantIdx).name)) {
                 fieldToWantIdx(fieldIdx) = wantIdx
                 wantIdx += 1
               } else {
