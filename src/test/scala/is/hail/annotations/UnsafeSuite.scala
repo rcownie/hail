@@ -64,7 +64,6 @@ class UnsafeSuite extends SparkSuite {
 
       val requestedType = subsetType(t).asInstanceOf[TStruct]
       val a2 = subset(t, requestedType, a)
-
       assert(requestedType.typeCheck(a2))
 
       CodecSpec.codecSpecs.foreach { codecSpec =>
@@ -72,8 +71,6 @@ class UnsafeSuite extends SparkSuite {
         rvb.start(t)
         rvb.addRow(t, a.asInstanceOf[Row])
         val offset = rvb.end()
-        val rv0 = rvb.result()
-        System.err.println(s"DEBUG: rv0 ${rv0.pretty(t)}")
         val ur = new UnsafeRow(t, region, offset)
 
         val aos = new ByteArrayOutputStream()
@@ -81,56 +78,21 @@ class UnsafeSuite extends SparkSuite {
         en.writeRegionValue(region, offset)
         en.flush()
 
-        if (true) {
-          val data = aos.toByteArray
-          val len = if (data.length <= 32) data.length else 32
-          val sb = new StringBuilder()
-          var j = 0
-          while (j < len) {
-            val byte = data(j).toInt & 0xff
-            val hex = if (byte <= 0xf) "0"+byte.toHexString else byte.toHexString
-            sb.append(s" ${hex}")
-            if ((j & 0x7) == 0x7) sb.append("\n")
-            j += 1
-          }
-          System.err.println(sb.toString())
-        }
-
         region2.clear()
         val ais = new ByteArrayInputStream(aos.toByteArray)
         val dec = codecSpec.buildDecoder(t, t)(ais)
-        System.err.println("DEBUG: readRegionValue(region2) ...")
         val offset2 = dec.readRegionValue(region2)
-        System.err.println(s"DEBUG: readRegionValue(region2) -> ${offset2.toHexString}")
-        assert(offset2 != 0)
-        System.err.println("A")
         val ur2 = new UnsafeRow(t, region2, offset2)
-        System.err.println("B")
-        val ur2Pretty = ur2.pretty()
-        System.err.println(s"DEBUG: ur2 ${ur2Pretty}")
         assert(t.typeCheck(ur2))
-        System.err.println("C")
 
         region3.clear()
         val ais3 = new ByteArrayInputStream(aos.toByteArray)
         val dec3 = codecSpec.buildDecoder(t, requestedType)(ais3)
-        System.err.println("DEBUG: readRegionValue(region3) ...")
         val offset3 = dec3.readRegionValue(region3)
-        System.err.println(s"DEBUG: readRegionValue(region3) -> ${offset3.toHexString}")
-        assert(offset3 != 0)
-        System.err.println("D")
         val ur3 = new UnsafeRow(requestedType, region3, offset3)
-        System.err.println("E")
         assert(requestedType.typeCheck(ur3))
-        System.err.println("F")
 
-        val similar = requestedType.valuesSimilar(a2, ur3)
-        System.err.println(s"G valuesSimilar ${similar}")
-        if (!similar) {
-          System.err.println(s"DEBUG: want a2 ${a2.toString()}")
-          System.err.println(s"DEBUG: have ur3 ${ur3.pretty()}")
-        }
-        assert(similar)
+        assert(requestedType.valuesSimilar(a2, ur3))
       }
 
       true
@@ -138,7 +100,7 @@ class UnsafeSuite extends SparkSuite {
     p.check()
   }
 
-  @Test def testBufferWriteReadDoubles() = if (false) {
+  @Test def testBufferWriteReadDoubles() {
     val a = Array(1.0, -349.273, 0.0, 9925.467, 0.001)
 
     CodecSpec.bufferSpecs.foreach { bufferSpec =>
@@ -156,7 +118,7 @@ class UnsafeSuite extends SparkSuite {
     }
   }
 
-  @Test def testRegionValue() = if (false) {
+  @Test def testRegionValue() {
     val region = Region()
     val region2 = Region()
     val rvb = new RegionValueBuilder(region)
@@ -238,22 +200,27 @@ class UnsafeSuite extends SparkSuite {
     p.check()
   }
 
-  @Test def testRegion() = if (false) {
+  @Test def testRegion() {
     val buff = Region()
 
-    val addrA = buff.appendLong(124L)
-    val addrB = buff.appendByte(2)
-    val addrC = buff.appendByte(1)
-    val addrD = buff.appendByte(4)
-    val addrE = buff.appendInt(1234567)
-    val addrF = buff.appendDouble(1.1)
+    val o1 = buff.appendLong(124L)
+    val o2 = buff.appendByte(2)
+    val o3 = buff.appendByte(1)
+    val o4 = buff.appendByte(4)
+    val o5 = buff.appendInt(1234567)
+    val o6 = buff.appendDouble(1.1)
 
-    assert(buff.loadLong(addrA) == 124L)
-    assert(buff.loadByte(addrB) == 2)
-    assert(buff.loadByte(addrC) == 1)
-    assert(buff.loadByte(addrD) == 4)
-    assert(buff.loadInt(addrE) == 1234567)
-    assert(buff.loadDouble(addrF) == 1.1)
+    assert(buff.loadLong(o1) == 124L)
+    assert(buff.loadByte(o2) == 2)
+    assert(buff.loadByte(o3) == 1)
+    assert(buff.loadByte(o4) == 4)
+    assert(buff.loadInt(o5) == 1234567)
+    assert(buff.loadDouble(o6) == 1.1)
+    assert(o2 - o1 == 8)
+    assert(o3 - o2 == 1)
+    assert(o4 - o3 == 1)
+    assert(o5 - o4 == 2) // nb: alignment
+    assert(o6 - o5 == 4)
   }
 
   val g = (for {
@@ -310,7 +277,7 @@ class UnsafeSuite extends SparkSuite {
     assert(TStruct().byteSize == 0)
   }
 
-  @Test def testUnsafeOrdering() = if (false) {
+  @Test def testUnsafeOrdering() {
     val region = Region()
     val region2 = Region()
     val rvb = new RegionValueBuilder(region)
@@ -362,8 +329,4 @@ class UnsafeSuite extends SparkSuite {
     }
     p.check()
   }
-  
-  // Tests for Region serialization have been removed since an off-heap Region
-  // contains absolute addresses and can't be serialized/deserialized without 
-  // knowing the RegionValue Type.
 }
