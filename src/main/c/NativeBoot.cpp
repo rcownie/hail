@@ -14,8 +14,7 @@ NATIVEMETHOD(jlong, NativeCode, dlopenGlobal)(
   jstring dllPathJ
 ) {
   const char* dll_path = env->GetStringUTFChars(dllPathJ, 0);
-  void* handle = dlopen(dll_path, RTLD_GLOBAL|RTLD_NOW);
-  fprintf(stderr, "DEBUG: dlopen(%s, RTLD_GLOBAL|RTLD_NOW) -> %p\n", dll_path, handle);
+  void* handle = dlopen(dll_path, RTLD_GLOBAL|RTLD_LAZY);
   if (!handle) {
     char* msg = dlerror();
     fprintf(stderr, "ERROR: dlopen(\"%s\"): %s\n", dll_path, msg ? msg : "NoError");

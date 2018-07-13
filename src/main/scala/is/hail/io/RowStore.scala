@@ -132,7 +132,7 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
     System.err.println("DEBUG: PackCodecSpec using CompiledPackDecoder")
     val sb = new StringBuilder()
     NativeDecode.appendCode(sb, t, requestedType)
-    val mod = new NativeModule("-g -O2", sb.toString(), true)
+    val mod = new NativeModule("-O2", sb.toString(), true)
     val st = new NativeStatus()
     mod.findOrBuild(st)
     if (st.fail) System.err.println("findOrBuild ${st}")
@@ -1147,8 +1147,8 @@ object NativeDecode {
             var wantIdx = 0
             var fieldIdx = 0
             while (fieldIdx < t.fields.length) {
-              if ((wantIdx < wantStruct.fields.length) &&
-                t.fields(fieldIdx).name.equals(wantStruct.fields(wantIdx).name)) {
+              val wantName = if (wantIdx < wantStruct.fields.length) wantStruct.fields(wantIdx).name else "~Bad Name~"
+              if (t.fields(fieldIdx).name.equals(wantName)) {
                 fieldToWantIdx(fieldIdx) = wantIdx
                 wantIdx += 1
               } else {

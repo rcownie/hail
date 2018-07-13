@@ -8,11 +8,11 @@ import com.sun.jna.*;
 public class NativeCode {
   static {
     try {
-      // libboot.so has native methods to call dlopen/dlclose
-      String libBoot = libToLocalFile("libboot");
-      System.load(libBoot);
       String libHail = libToLocalFile("libhail");
       if (isLinux()) {
+        // libboot.so has native methods to call dlopen/dlclose
+        String libBoot = libToLocalFile("libboot");
+        System.load(libBoot);
         // We need libhail.so to be loaded with RTLD_GLOBAL so that its symbols
         // are visible to dynamic-generated code in other DLLs ...
         long handle = dlopenGlobal(libHail);

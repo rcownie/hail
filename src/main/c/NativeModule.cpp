@@ -324,7 +324,6 @@ NativeModule::NativeModule(
   dlopen_handle_(nullptr),
   lib_name_(config.get_lib_name(key_)),
   new_name_(config.get_new_name(key_)) {
-  fprintf(stderr, "DEBUG: %p NativeModule::ctor(master)\n", this);
   // Master constructor - try to get module built in local file
   config.ensure_module_dir_exists();
   if (!force_build && file_exists(lib_name_)) {
@@ -349,7 +348,6 @@ NativeModule::NativeModule(
   dlopen_handle_(nullptr),
   lib_name_(config.get_lib_name(key_)),
   new_name_(config.get_new_name(key_)) {
-  fprintf(stderr, "DEBUG: %p NativeModule::ctor(worker)\n", this);
   // Worker constructor - try to get the binary written to local file
   if (is_global_) return;
   int rc = 0;
@@ -384,7 +382,6 @@ NativeModule::NativeModule(
 }
 
 NativeModule::~NativeModule() {
-  fprintf(stderr, "DEBUG: %p NativeModule::dtor()\n", this);
   if (!is_global_ && dlopen_handle_) {
     dlclose(dlopen_handle_);
   }
@@ -414,12 +411,11 @@ bool NativeModule::try_load() {
     if (is_global_) {
       load_state_ = kPass;
     } else if (!try_wait_for_build()) {
-      fprintf(stderr, "libName %s try_wait_for_build fail\n", lib_name_.c_str());
       load_state_ = kFail;
     } else {
       auto handle = dlopen(lib_name_.c_str(), RTLD_GLOBAL|RTLD_LAZY);
       if (!handle) {
-        fprintf(stderr, "dlopen failed: %s\n", dlerror());
+        fprintf(stderr, "ERROR: dlopen failed: %s\n", dlerror());
       }
       load_state_ = (handle ? kPass : kFail);
       if (handle) dlopen_handle_ = handle;
