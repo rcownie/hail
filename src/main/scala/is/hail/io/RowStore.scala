@@ -132,7 +132,7 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
     System.err.println("DEBUG: PackCodecSpec using CompiledPackDecoder")
     val sb = new StringBuilder()
     NativeDecode.appendCode(sb, t, requestedType)
-    val mod = new NativeModule("-O2", sb.toString(), true)
+    val mod = new NativeModule("-O1", sb.toString(), true)
     val st = new NativeStatus()
     mod.findOrBuild(st)
     if (st.fail) System.err.println("findOrBuild ${st}")

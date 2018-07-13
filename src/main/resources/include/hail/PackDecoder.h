@@ -10,6 +10,14 @@
 
 //#define MYDEBUG
 
+#define BIG_METHOD_INLINE 0
+
+#if BIG_METHOD_INLINE
+# define MAYBE_INLINE inline
+#else
+# define MAYBE_INLINE
+#endif
+
 namespace hail {
 
 inline ssize_t round_up_align(ssize_t n, ssize_t align) {
@@ -200,10 +208,10 @@ class PackDecoderBase : public DecoderBase {
     pos_ = pos+8;
 #ifdef MYDEBUG
     fprintf(stderr, "DEBUG: A decode_long() -> %ld\n", (long)*addr);
-#endif
     char hex[256];
     hexify(hex, pos, buf_+pos, 8);
     fprintf(stderr, "%s", hex);
+#endif
     return true;
   }
   
@@ -299,28 +307,7 @@ class PackDecoderBase<1> : public DecoderBase {
     return true;
   }
   
-  bool decode_int(int32_t* addr) {
-    ssize_t pos = pos_;
-#ifdef MYDEBUG
-    ssize_t old = pos;
-#endif
-    int val = 0;
-    for (int shift = 0;; shift += 7) {
-      if (pos >= size_) return false;
-      int b = buf_[pos++];
-      val |= ((b & 0x7f) << shift);
-      if ((b & 0x80) == 0) break;
-    }
-#ifdef MYDEBUG
-    fprintf(stderr, "DEBUG: B decode_int() -> %d {nbytes %ld}\n", val, pos-old);
-    char hex[256];
-    hexify(hex, old, buf_+old, pos-old);
-    fprintf(stderr, "%s", hex);
-#endif
-    *addr = val;
-    pos_ = pos;
-    return true;
-  }
+  bool decode_int(int32_t* addr);
   
   bool skip_int() {
     ssize_t pos = pos_;
@@ -341,29 +328,8 @@ class PackDecoderBase<1> : public DecoderBase {
     return true;
   }
   
-  bool decode_long(int64_t* addr) {
-    ssize_t pos = pos_;
-#ifdef MYDEBUG
-    ssize_t old = pos;
-#endif
-    ssize_t val = 0;
-    for (int shift = 0;; shift += 7) {
-      if (pos >= size_) return false;
-      ssize_t b = buf_[pos++];
-      val |= ((b & 0x7f) << shift);
-      if ((b & 0x80) == 0) break;
-    }
-    *addr = val;
-    pos_ = pos;
-#ifdef MYDEBUG
-    fprintf(stderr, "DEBUG: B decode_long() -> %ld\n", val);
-    char hex[256];
-    hexify(hex, old, buf_+old, pos-old);
-    fprintf(stderr, "%s", hex);
-#endif
-    return true;
-  }
-  
+  bool decode_long(int64_t* addr);
+
   bool skip_long() {
     ssize_t pos = pos_;
     do {
@@ -409,23 +375,8 @@ class PackDecoderBase<1> : public DecoderBase {
     return true;
   }
   
-  ssize_t decode_bytes(char* addr, ssize_t n) {
-    ssize_t pos = pos_;
-    ssize_t ngot = (size_ - pos);
-    if (ngot > n) ngot = n;
-    if (ngot > 0) {
-      memcpy(addr, buf_+pos, ngot);
-      pos_ = (pos + ngot);
-    }
-#ifdef MYDEBUG
-    char hex[256];
-    hexify(hex, pos, buf_+pos, (ngot < 32) ? ngot : 32);
-    fprintf(stderr, "DEBUG: B decode_bytes(%ld) -> %ld\n", n, ngot);
-    fprintf(stderr, "%s", hex);
-#endif
-    return ngot;
-  }
-  
+  ssize_t decode_bytes(char* addr, ssize_t n);
+
   ssize_t skip_bytes(ssize_t n) {
     ssize_t pos = pos_;
     if (n > size_-pos) n = size_-pos;
@@ -433,6 +384,60 @@ class PackDecoderBase<1> : public DecoderBase {
     return n;
   }
 };
+
+MAYBE_INLINE bool PackDecoderBase<1>::decode_int(int32_t* addr) {
+  ssize_t pos = pos_;
+  int val = 0;
+  for (int shift = 0;; shift += 7) {
+    if (pos >= size_) return false;
+    int b = buf_[pos++];
+    val |= ((b & 0x7f) << shift);
+    if ((b & 0x80) == 0) break;
+  }
+  *addr = val;
+  pos_ = pos;
+  return true;
+}
+
+MAYBE_INLINE bool PackDecoderBase<1>::decode_long(int64_t* addr) {
+  ssize_t pos = pos_;
+#ifdef MYDEBUG
+  ssize_t old = pos;
+#endif
+  ssize_t val = 0;
+  for (int shift = 0;; shift += 7) {
+    if (pos >= size_) return false;
+    ssize_t b = buf_[pos++];
+    val |= ((b & 0x7f) << shift);
+    if ((b & 0x80) == 0) break;
+  }
+  *addr = val;
+  pos_ = pos;
+#ifdef MYDEBUG
+  fprintf(stderr, "DEBUG: B decode_long() -> %ld\n", val);
+  char hex[256];
+  hexify(hex, old, buf_+old, pos-old);
+  fprintf(stderr, "%s", hex);
+#endif
+  return true;
+}
+  
+MAYBE_INLINE ssize_t PackDecoderBase<1>::decode_bytes(char* addr, ssize_t n) {
+  ssize_t pos = pos_;
+  ssize_t ngot = (size_ - pos);
+  if (ngot > n) ngot = n;
+  if (ngot > 0) {
+    memcpy(addr, buf_+pos, ngot);
+    pos_ = (pos + ngot);
+  }
+#ifdef MYDEBUG
+  char hex[256];
+  hexify(hex, pos, buf_+pos, (ngot < 32) ? ngot : 32);
+  fprintf(stderr, "DEBUG: B decode_bytes(%ld) -> %ld\n", n, ngot);
+  fprintf(stderr, "%s", hex);
+#endif
+  return ngot;
+}
 
 } // end hail
 
