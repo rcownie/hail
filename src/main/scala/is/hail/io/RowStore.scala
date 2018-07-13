@@ -120,8 +120,6 @@ object ShowBuf {
 
 }
 
-
-
 final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
 
   def buildEncoder(t: Type): (OutputStream) => Encoder = { out: OutputStream =>
@@ -1030,6 +1028,7 @@ object NativeDecode {
       val r1 = if (isResumePoint(typ)) allocState(name) else -1
       val addr = if (skip) "addr_undefined" else stateVar("addr", depth)
       val ind = "  " * numIndent
+      if (!skip) mainCode.append(s"""fprintf(stderr, "DEBUG: ${name} ...\\n");\n""")
       typ.fundamentalType match {
         case t: TBoolean =>
           val call = if (skip) "this->skip_byte()" else s"this->decode_byte((int8_t*)${addr})"
