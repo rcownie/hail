@@ -130,7 +130,6 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
 
   def buildDecoder(t: Type, requestedType: Type): (InputStream) => Decoder = {
     if (true) {
-      System.err.println("DEBUG: PackCodecSpec using NativePackDecoder")
       val sb = new StringBuilder()
       NativeDecode.appendCode(sb, t, requestedType)
       val mod = new NativeModule("-g -O1", sb.toString(), true)
@@ -495,15 +494,9 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     if (blockLen == -1) {
       -1
     } else {
-      System.err.println(s"LZ4InputBlockBuffer.readBlock blockLen ${blockLen}")
-      ShowBuf(comp, 0, blockLen)
       val compLen = blockLen - 4
       val decompLen = Memory.loadInt(comp, 0)
-
       LZ4Utils.decompress(buf, 0, decompLen, comp, 4, compLen)
-      System.err.println(s"LZ4InputBlockBuffer.readBlock decompLen ${decompLen}")
-      ShowBuf(buf, 0, decompLen)
-
       decompLen
     }
   }
@@ -530,10 +523,7 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
         ngot += chunk
       }
     }
-    if (ngot > 0) {
-      System.err.println(s"LZ4InputBlockBuffer.speculativeRead ngot ${ngot}")
-      ShowBuf(toBuf, toOff, ngot)
-    }
+
     if (ngot > 0) ngot else -1
   }
 }
@@ -675,7 +665,6 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       var have = (end - off)
       if (have == 0) {
         have = in.readBlock(buf)
-        System.err.println(s"DEBUG: readBlock() -> ${have}")
         if (have <= 0) {
           off = end+1
           done = true
@@ -692,10 +681,6 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
         off += chunk
         ngot += chunk
       }
-    }
-    if (ngot > 0) {
-      System.err.println(s"BlockingInputBuffer.speculativeRead ngot ${ngot}")
-      ShowBuf(toBuf, toOff, ngot)
     }
     if (ngot > 0) ngot else -1
   }
@@ -1285,7 +1270,6 @@ object NativeDecode {
 }
 
 final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: Array[Byte]) extends Decoder {
-  System.err.println(s"new NativePackDecoder(decoderId ${in.decoderId}) ...")
   val mod = new NativeModule(moduleKey, moduleBinary)
   var st = new NativeStatus()
   val make_decoder = mod.findPtrFuncL1(st, "make_decoder")
@@ -1298,7 +1282,6 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
   var tmpBuf = new Array[Byte](64*1024)
   st.close()
   mod.close()
-  System.err.println(s"new NativePackDecoder() done")
 
   def close(): Unit = {
     in.close()
@@ -1315,14 +1298,10 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     if (tmpBuf.length < size) {
       tmpBuf = new Array[Byte]((size.toInt + 0xfff) & ~0xfff)
     }
-    System.err.println(s"DEBUG: speculativeRead(${size}) ...")
     val ngot = in.speculativeRead(tmpBuf, 0, size.toInt)
-    System.err.println(s"DEBUG: speculativeRead(${size}) -> ${ngot}")
-    ShowBuf(tmpBuf, 0, size.toInt)
     if (ngot > 0) {
       Memory.memcpy(decoderBuf+decoderSize, tmpBuf, 0, ngot)
     }
-    System.err.println(s"DEBUG: pushData(${size}) -> ${ngot}")
     ngot
   }
 
@@ -1343,7 +1322,6 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
       }
     }
     val result = rc.toByte
-    System.err.println(s"DEBUG: readByte() -> ${result}")
     result
   }
 
@@ -1353,7 +1331,6 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     var done = false
     while (!done) {
       rc = decode_until_done_or_need_push(st, decoder.get(), region.get(), pushSize)
-      System.err.println(s"DEBUG: decode_until_done() -> ${rc}")
       if (rc <= 0) {
         done = true
       } else {
@@ -1363,10 +1340,8 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     }
     if (rc == 0) {
       val rvAddr = Memory.loadLong(decoder.get()+rvBaseOffset)
-      System.err.println(s"DEBUG: readRegionValue() -> ${rvAddr.toHexString}")
       rvAddr
     } else {
-      System.err.println(s"DEBUG: readRegionValue() -> 0")
       0L
     }
   }
