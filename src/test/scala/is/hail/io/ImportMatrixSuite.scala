@@ -108,7 +108,7 @@ class ImportMatrixSuite extends SparkSuite {
     assert(e.getMessage.contains("Incorrect number"))
   }
 
-  @Test def testWithHeaderAndKey() {
+  @Test def AAA_testWithHeaderAndKey() {
     checkValidResult { vsm =>
       val actual: MatrixTable = {
         val f = exportImportableVds(vsm)

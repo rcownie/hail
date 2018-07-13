@@ -395,15 +395,18 @@ MAYBE_INLINE bool PackDecoderBase<1>::decode_int(int32_t* addr) {
     if ((b & 0x80) == 0) break;
   }
   *addr = val;
+#ifdef MYDEBUG
+  fprintf(stderr, "DEBUG: B decode_int() -> %d\n", val);
+  char hex[256];
+  hexify(hex, pos_, buf_+pos_, pos-pos_);
+  fprintf(stderr, "%s", hex);
+#endif
   pos_ = pos;
   return true;
 }
 
 MAYBE_INLINE bool PackDecoderBase<1>::decode_long(int64_t* addr) {
   ssize_t pos = pos_;
-#ifdef MYDEBUG
-  ssize_t old = pos;
-#endif
   ssize_t val = 0;
   for (int shift = 0;; shift += 7) {
     if (pos >= size_) return false;
@@ -412,13 +415,13 @@ MAYBE_INLINE bool PackDecoderBase<1>::decode_long(int64_t* addr) {
     if ((b & 0x80) == 0) break;
   }
   *addr = val;
-  pos_ = pos;
 #ifdef MYDEBUG
   fprintf(stderr, "DEBUG: B decode_long() -> %ld\n", val);
   char hex[256];
-  hexify(hex, old, buf_+old, pos-old);
+  hexify(hex, pos_, buf_+pos_, pos-pos_);
   fprintf(stderr, "%s", hex);
 #endif
+  pos_ = pos;
   return true;
 }
   
