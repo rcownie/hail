@@ -129,16 +129,20 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
   }
 
   def buildDecoder(t: Type, requestedType: Type): (InputStream) => Decoder = {
-    System.err.println("DEBUG: PackCodecSpec using CompiledPackDecoder")
-    val sb = new StringBuilder()
-    NativeDecode.appendCode(sb, t, requestedType)
-    val mod = new NativeModule("-O1", sb.toString(), true)
-    val st = new NativeStatus()
-    mod.findOrBuild(st)
-    if (st.fail) System.err.println("findOrBuild ${st}")
-    st.clear()
     if (true) {
-      val result = (in: InputStream) => new NativePackDecoder(child.buildInputBuffer(in), mod)
+      System.err.println("DEBUG: PackCodecSpec using NativePackDecoder")
+      val sb = new StringBuilder()
+      NativeDecode.appendCode(sb, t, requestedType)
+      val mod = new NativeModule("-O1", sb.toString(), true)
+      val st = new NativeStatus()
+      mod.findOrBuild(st)
+      if (st.fail) System.err.println("findOrBuild ${st}")
+      st.clear()
+      val modKey = mod.getKey()
+      val modBinary = mod.getBinary()
+      mod.close()
+      val result =
+        (in: InputStream) => new NativePackDecoder(child.buildInputBuffer(in), modKey, modBinary)
       result
     } else {
       val f = EmitPackDecoder(t, requestedType)
@@ -1280,8 +1284,9 @@ object NativeDecode {
   }
 }
 
-final class NativePackDecoder(in: InputBuffer, mod: NativeModule) extends Decoder {
+final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: Array[Byte]) extends Decoder {
   System.err.println(s"new NativePackDecoder(decoderId ${in.decoderId}) ...")
+  val mod = new NativeModule(moduleKey, moduleBinary)
   var st = new NativeStatus()
   val make_decoder = mod.findPtrFuncL1(st, "make_decoder")
   val decode_until_done_or_need_push = mod.findLongFuncL3(st, "decode_until_done_or_need_push")
