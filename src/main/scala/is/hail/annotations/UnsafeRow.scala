@@ -213,6 +213,158 @@ class UnsafeRow(var t: TBaseStruct,
   private def readObject(s: ObjectInputStream): Unit = {
     throw new NotImplementedException()
   }
+
+  def sameVerbose(b: UnsafeRow): Boolean = {
+    val regionA = region
+    val regionB = b.region
+
+    // Step-by-step comparison with verbose error messages
+    def sameRecurse(curType: Type, addrA: Long, offA: Long, addrB: Long, offB: Long, name: String): Boolean = {
+      var same = true
+      curType.fundamentalType match {
+        case typ: TBaseStruct =>
+          if (typ.nMissingBytes > 0) {
+            var idx = 0
+            while (same && (idx < typ.fields.length)) {
+              if (!typ.fieldRequired(idx)) {
+                val m = typ.missingIdx(idx)
+                val bitA = regionA.loadBit(addrA+offA, m)
+                val bitB = regionB.loadBit(addrB+offB, m)
+                if (bitA != bitB) {
+                  System.err.println(s"FAIL: ${name}.missing(${m}=${typ.fields(idx).name}) ${bitA} != ${bitB}")
+                  System.err.println(s"FAIL: + addrA ${addrA.toHexString}+${offA} addrB ${addrB.toHexString}+${offB}")
+                  System.err.println(s"FAIL: + in struct ${typ}")
+                  same = false
+                }
+              }
+              idx += 1
+            }
+          }
+          var idx = 0
+          while (same && (idx < typ.fields.length)) {
+            if (typ.fieldRequired(idx) || !regionA.loadBit(addrA, typ.missingIdx(idx))) {
+              val fieldOffset = typ.byteOffsets(idx)
+              val fieldSame = sameRecurse(
+                typ.types(idx),
+                addrA+offA, fieldOffset,
+                addrB+offB, fieldOffset,
+                name + s".${typ.fields(idx).name}"
+              )
+              if (!fieldSame) {
+                if (same && typ.fields(idx).name.equals("END")) {
+                  System.err.println(s"FAIL: + offset ${fieldOffset} in ${typ}")
+                }
+                same = false
+              }
+            }
+            idx += 1
+          }
+
+        case typ: TArray =>
+          val ptrA = regionA.loadLong(addrA+offA)
+          val ptrB = regionB.loadLong(addrB+offB)
+          val lenA = regionA.loadInt(ptrA)
+          val lenB = regionB.loadInt(ptrB)
+          if (lenA != lenB) {
+            System.err.println(s"FAIL: ${name}.len ${lenA} != ${lenB} at ${ptrA.toHexString} and ${ptrB.toHexString}")
+            same = false
+          }
+          val haveMissing = !typ.elementType.required
+          if (haveMissing) {
+            var idx = 0
+            while (same && (idx < lenA)) {
+              val bitA = regionA.loadBit(ptrA+4, idx)
+              val bitB = regionB.loadBit(ptrB+4, idx)
+              if (bitA != bitB) {
+                System.err.println(s"FAIL: ${name}.missing(${idx})) ${bitA} != ${bitB}")
+                same = false
+              }
+              idx += 1
+            }
+          }          
+          var idx = 0
+          while (same && (idx < lenA)) {
+            if (typ.elementType.required || !regionA.loadBit(ptrA+4, idx)) {
+              val elementSame = sameRecurse(
+                typ.elementType,
+                ptrA, typ.elementOffset(0L, lenA, idx),
+                ptrB, typ.elementOffset(0L, lenA, idx),
+                name + s"[${idx}]"
+              )
+              if (same && !elementSame) {
+                same = false
+                System.err.println(s"FAIL: + ${name} at [${idx}] of length ${lenA}")
+              }
+            }
+            idx += 1
+          }
+
+        case typ: TBinary =>
+          val ptrA = regionA.loadLong(addrA+offA)
+          val ptrB = regionB.loadLong(addrB+offB)
+          val lenA = regionA.loadInt(ptrA)
+          val lenB = regionB.loadInt(ptrB)
+          if (lenA != lenB) {
+            System.err.println(s"FAIL: binary ${name}.len ${lenA} != ${lenB} at ${ptrA.toHexString} and ${ptrB.toHexString}")
+            same = false
+          }
+          var idx = 0
+          while (same && (idx < lenA)) {
+            val valA = regionA.loadByte(ptrA+4+idx)
+            val valB = regionB.loadByte(ptrB+4+idx)
+            if (valA != valB) {
+              System.err.println(s"FAIL: binary ${name}[${idx}] ${valA.toHexString} != ${valB.toHexString}")
+              same = false
+            }
+            idx += 1
+          }
+
+        case typ: TBoolean =>
+          val valA = regionA.loadByte(addrA+offA)
+          val valB = regionB.loadByte(addrB+offB)
+          if (valA != valB) {
+            System.err.println(s"FAIL: ${name} byte ${valA.toHexString} != ${valB.toHexString}")
+            same = false
+          }
+        case typ: TInt32 =>
+          val valA = regionA.loadInt(addrA+offA)
+          val valB = regionB.loadInt(addrB+offB)
+          if (valA != valB) {
+            System.err.println(s"FAIL: ${name} int ${valA} != ${valB}")
+            same = false
+          }          
+        case typ: TInt64 =>
+          val valA = regionA.loadLong(addrA+offA)
+          val valB = regionB.loadLong(addrB+offB)
+          if (valA != valB) {
+            System.err.println(s"FAIL: ${name} long ${valA} != ${valB}")
+            same = false
+          }
+        case typ: TFloat32 =>
+          val valA = regionA.loadFloat(addrA+offA)
+          val valB = regionB.loadFloat(addrB+offB)
+          if (valA != valB) {
+            System.err.println(s"FAIL: ${name} float ${valA} != ${valB}")
+            same = false
+          }        
+        case typ: TFloat64 =>
+          val valA = regionA.loadDouble(addrA+offA)
+          val valB = regionB.loadDouble(addrB+offB)
+          if (valA != valB) {
+            //System.err.println(s"FAIL: ${name} double ${valA} != ${valB}")
+            //same = false
+          }
+        
+        case _ =>
+          assert(false)
+      }
+      same
+    }
+
+    val result = sameRecurse(t, offset, 0L, b.offset, 0L, "root")
+    System.err.println(s"FAIL: sameVerbose() -> ${result}")
+    result
+  }
 }
 
 object SafeRow {

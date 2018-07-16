@@ -68,14 +68,21 @@ class AnnotationsSuite extends SparkSuite {
   }
 
   @Test def testReadWrite() {
+    System.err.println("DEBUG: testReadWrite A")
     val vds1 = hc.importVCF("src/test/resources/sample.vcf")
+    System.err.println("DEBUG: testReadWrite B")
     val vds2 = hc.importVCF("src/test/resources/sample.vcf")
+    System.err.println("DEBUG: testReadWrite C")
     assert(vds1.same(vds2))
 
+    System.err.println("DEBUG: testReadWrite D")
     val f = tmpDir.createTempFile("sample", extension = ".vds")
     vds1.write(f)
+    System.err.println("DEBUG: testReadWrite E")
     val vds3 = hc.readVDS(f)
+    System.err.println("DEBUG: testReadWrite F")
     assert(vds3.same(vds1))
+    System.err.println("DEBUG: testReadWrite G")
   }
 
   @Test def testExtendedOrdering() {

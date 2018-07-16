@@ -410,7 +410,7 @@ trait InputBuffer extends Closeable {
 
   def readBoolean(): Boolean = readByte() != 0
 
-  def speculativeRead(toBuf: Array[Byte], toOff: Int, n: Int): Int
+  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int
 }
 
 final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
@@ -474,7 +474,7 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
 
   def readDoubles(to: Array[Double], toOff: Int, n: Int): Unit = in.readDoubles(to, toOff, n)
 
-  def speculativeRead(toBuf: Array[Byte], toOff: Int, n: Int): Int = in.speculativeRead(toBuf, toOff, n)
+  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = in.speculativeRead(toAddr, toBuf, toOff, n)
 }
 
 final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends InputBlockBuffer {
@@ -499,7 +499,7 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     }
   }
 
-  def speculativeRead(toBuf: Array[Byte], toOff: Int, n: Int): Int = {
+  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
     var done = false
     var ngot = 0
     while (!done && (ngot < n)) {
@@ -516,7 +516,11 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       }
       if (have > 0) {
         val chunk = if (have <= n-ngot) have else n-ngot
-        Memory.memcpy(toBuf, toOff+ngot, decompBuf, pos, chunk)
+        if (toAddr != 0) {
+          Memory.memcpy(toAddr+ngot, decompBuf, pos, chunk)
+        } else {
+          Memory.memcpy(toBuf, toOff+ngot, decompBuf, pos, chunk)
+        }
         pos += chunk
         ngot += chunk
       }
@@ -656,7 +660,7 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     }
   }
 
-  def speculativeRead(toBuf: Array[Byte], toOff: Int, n: Int): Int = {
+  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
     var done = false
     var ngot = 0
     while (!done && (ngot < n)) {
@@ -675,7 +679,11 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       }
       if (have > 0) {
         val chunk = if (have <= n-ngot) have else n-ngot
-        Memory.memcpy(toBuf, toOff+ngot, buf, off, chunk)
+        if (toAddr != 0) {
+          Memory.memcpy(toAddr+ngot, buf, off, chunk)
+        } else {
+          Memory.memcpy(toBuf, toOff+ngot, buf, off, chunk)
+        }
         off += chunk
         ngot += chunk
       }
@@ -1278,7 +1286,7 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
   val bufOffset = decoder.getFieldOffset(8, "buf_")
   val sizeOffset = decoder.getFieldOffset(8, "size_")
   val rvBaseOffset = decoder.getFieldOffset(8, "rv_base_")
-  var tmpBuf = new Array[Byte](64*1024)
+  var tmpBuf = new Array[Byte](0)
   st.close()
   mod.close()
 
@@ -1294,13 +1302,7 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     val decoderBase = decoder.get()
     val decoderBuf = Memory.loadLong(decoderBase+bufOffset)
     val decoderSize = Memory.loadLong(decoderBase+sizeOffset)
-    if (tmpBuf.length < size) {
-      tmpBuf = new Array[Byte]((size.toInt + 0xfff) & ~0xfff)
-    }
-    val ngot = in.speculativeRead(tmpBuf, 0, size.toInt)
-    if (ngot > 0) {
-      Memory.memcpy(decoderBuf+decoderSize, tmpBuf, 0, ngot)
-    }
+    val ngot = in.speculativeRead(decoderBuf+decoderSize, tmpBuf, 0, size.toInt)
     ngot
   }
 
