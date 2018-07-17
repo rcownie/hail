@@ -8,7 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#define MYDEBUG
+//#define MYDEBUG
 
 #define BIG_METHOD_INLINE 0
 

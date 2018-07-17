@@ -84,6 +84,8 @@ class UnsafeSuite extends SparkSuite {
         val offset2 = dec.readRegionValue(region2)
         val ur2 = new UnsafeRow(t, region2, offset2)
         assert(t.typeCheck(ur2))
+        val fullSame = ur.sameVerbose(ur2)
+        assert(fullSame)
 
         region3.clear()
         val ais3 = new ByteArrayInputStream(aos.toByteArray)
