@@ -214,16 +214,18 @@ class UnsafeRow(var t: TBaseStruct,
     throw new NotImplementedException()
   }
 
-  def sameVerbose(b: UnsafeRow): Boolean = {
+  def sameVerbose(b: UnsafeRow, verbose: Boolean = false): Boolean = {
     val regionA = region
     val regionB = b.region
 
     // Step-by-step comparison with verbose error messages
     def sameRecurse(curType: Type, addrA: Long, offA: Long, addrB: Long, offB: Long, name: String): Boolean = {
       var same = true
+      if (verbose) System.err.println(s"DEBUG: ${name}")
       curType.fundamentalType match {
         case typ: TBaseStruct =>
           if (typ.nMissingBytes > 0) {
+            if (verbose) System.err.println(s"DEBUG: ${name}.missing")
             var idx = 0
             while (same && (idx < typ.fields.length)) {
               if (!typ.fieldRequired(idx)) {
@@ -261,8 +263,10 @@ class UnsafeRow(var t: TBaseStruct,
           }
 
         case typ: TArray =>
-          val ptrA = regionA.loadLong(addrA+offA)
-          val ptrB = regionB.loadLong(addrB+offB)
+          if (verbose) System.err.println(s"DEBUG: array ptr")
+          val ptrA = regionA.loadAddress(addrA+offA)
+          val ptrB = regionB.loadAddress(addrB+offB)
+          if (verbose) System.err.println(s"DEBUG: array len")
           val lenA = regionA.loadInt(ptrA)
           val lenB = regionB.loadInt(ptrB)
           if (lenA != lenB) {
@@ -271,6 +275,7 @@ class UnsafeRow(var t: TBaseStruct,
           }
           val haveMissing = !typ.elementType.required
           if (haveMissing) {
+            if (verbose && (lenA > 0)) System.err.println(s"DEBUG: array missing")
             var idx = 0
             while (same && (idx < lenA)) {
               val bitA = regionA.loadBit(ptrA+4, idx)
@@ -300,8 +305,8 @@ class UnsafeRow(var t: TBaseStruct,
           }
 
         case typ: TBinary =>
-          val ptrA = regionA.loadLong(addrA+offA)
-          val ptrB = regionB.loadLong(addrB+offB)
+          val ptrA = regionA.loadAddress(addrA+offA)
+          val ptrB = regionB.loadAddress(addrB+offB)
           val lenA = regionA.loadInt(ptrA)
           val lenB = regionB.loadInt(ptrB)
           if (lenA != lenB) {
@@ -320,6 +325,7 @@ class UnsafeRow(var t: TBaseStruct,
           }
 
         case typ: TBoolean =>
+          if (verbose) System.err.println(s"DEBUG: ${name} bool")
           val valA = regionA.loadByte(addrA+offA)
           val valB = regionB.loadByte(addrB+offB)
           if (valA != valB) {
@@ -327,6 +333,7 @@ class UnsafeRow(var t: TBaseStruct,
             same = false
           }
         case typ: TInt32 =>
+          if (verbose) System.err.println(s"DEBUG: ${name} int32")
           val valA = regionA.loadInt(addrA+offA)
           val valB = regionB.loadInt(addrB+offB)
           if (valA != valB) {
@@ -334,6 +341,7 @@ class UnsafeRow(var t: TBaseStruct,
             same = false
           }          
         case typ: TInt64 =>
+          if (verbose) System.err.println(s"DEBUG: ${name} int64")
           val valA = regionA.loadLong(addrA+offA)
           val valB = regionB.loadLong(addrB+offB)
           if (valA != valB) {
@@ -341,6 +349,7 @@ class UnsafeRow(var t: TBaseStruct,
             same = false
           }
         case typ: TFloat32 =>
+          if (verbose) System.err.println(s"DEBUG: ${name} float32")
           val valA = regionA.loadFloat(addrA+offA)
           val valB = regionB.loadFloat(addrB+offB)
           if (valA != valB) {
@@ -348,6 +357,7 @@ class UnsafeRow(var t: TBaseStruct,
             same = false
           }        
         case typ: TFloat64 =>
+          if (verbose) System.err.println(s"DEBUG: ${name} float64")
           val valA = regionA.loadDouble(addrA+offA)
           val valB = regionB.loadDouble(addrB+offB)
           if (valA != valB) {

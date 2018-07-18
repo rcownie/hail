@@ -31,6 +31,7 @@ object Region {
 //    within-Region references to/from absolute addresses.
 
 final class Region() extends NativeBase() {
+  var verbose = false
   @native def nativeCtor(): Unit
   nativeCtor()
   
@@ -56,12 +57,28 @@ final class Region() extends NativeBase() {
   final def allocate(a: Long, n: Long): Long = nativeAlignAllocate(a, n)
   final def allocate(n: Long): Long = nativeAllocate(n)
   
-  final def loadInt(addr: Long): Int = Memory.loadInt(addr)
-  final def loadLong(addr: Long): Long = Memory.loadLong(addr)
+  final def loadInt(addr: Long): Int = {
+    val result = Memory.loadInt(addr)
+    if (verbose) System.err.println(s"DEBUG: loadInt_(${addr.toHexString}) -> ${result}")
+    result
+  }
+  final def loadLong(addr: Long): Long = {
+    val result = Memory.loadLong(addr)
+    if (verbose) System.err.println(s"DEBUG: loadLong(${addr.toHexString}) -> ${result}")
+    result
+  }
   final def loadFloat(addr: Long): Float = Memory.loadFloat(addr)
   final def loadDouble(addr: Long): Double = Memory.loadDouble(addr)
-  final def loadAddress(addr: Long): Long = Memory.loadLong(addr)
-  final def loadByte(addr: Long): Byte = Memory.loadByte(addr)
+  final def loadAddress(addr: Long): Long = {
+    val result = Memory.loadLong(addr)
+    if (verbose) System.err.println(s"DEBUG: loadAddr(${addr.toHexString}) -> ${result.toHexString}")
+    result
+  }
+  final def loadByte(addr: Long): Byte = {
+    val result = Memory.loadByte(addr)
+    if (verbose) System.err.println(s"DEBUG: loadByte(${addr.toHexString}) -> ${result.toHexString}")
+    result
+  }
   
   final def storeInt(addr: Long, v: Int) = Memory.storeInt(addr, v)
   final def storeLong(addr: Long, v: Long) = Memory.storeLong(addr, v)
