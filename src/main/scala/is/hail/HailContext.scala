@@ -242,6 +242,7 @@ object HailContext {
           throw new NoSuchElementException("next on empty iterator")
 
         try {
+          System.err.println(s"DEBUG: ${dec.tag} readRowsPartition ...")
           rv.setOffset(dec.readRegionValue(region))
           cont = dec.readByte()
           if (metrics != null) {

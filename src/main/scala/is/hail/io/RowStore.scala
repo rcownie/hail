@@ -694,6 +694,8 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
 }
 
 trait Decoder extends Closeable {
+  def tag: String
+
   def close()
 
   def readRegionValue(region: Region): Long
@@ -1289,6 +1291,7 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
   val mod = new NativeModule(moduleKey, moduleBinary)
   var st = new NativeStatus()
   val make_decoder = mod.findPtrFuncL1(st, "make_decoder")
+  if (st.fail) System.err.println(s"ERROR: ${st}")
   assert(st.ok)
   val decode_until_done_or_need_push = mod.findLongFuncL3(st, "decode_until_done_or_need_push")
   assert(st.ok)
@@ -1299,10 +1302,15 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
   val sizeOffset = decoder.getFieldOffset(8, "size_")
   val rvBaseOffset = decoder.getFieldOffset(8, "rv_base_")
   var tmpBuf = new Array[Byte](0)
+  var numRows = 0
   st.close()
   mod.close()
+  val tag = ((decoder.get() & 0xffff) | 0x8000).toHexString
+  System.err.println(s"DEBUG: ${tag} new decoder")
+
 
   def close(): Unit = {
+    System.err.println(s"DEBUG: ${tag} close")
     in.close()
     decoder.close()
     make_decoder.close()
@@ -1328,13 +1336,17 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
         done = true;
       } else {
         pushSize = pushData(rc)
+        System.err.println(s"DEBUG: ${tag} pushSize ${pushSize} rc ${rc}")
         if (pushSize <= 0) {
+          System.err.println(s"DEBUG: ${tag} inject 0")
           rc = 0
           done = true
         }
       }
     }
     val result = rc.toByte
+    val tagEnd = if (result == 0) " END" else ""
+    System.err.println(s"DEBUG: ${tag} decode_one_byte() -> ${result}${tagEnd} at numRows ${numRows}")
     result
   }
 
@@ -1353,14 +1365,19 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     }
     if (rc == 0) {
       val rvAddr = Memory.loadLong(decoder.get()+rvBaseOffset)
+      numRows += 1
+      System.err.println(s"DEBUG: ${tag} readRegionValue() -> ${rvAddr.toHexString} numRows ${numRows}")
       rvAddr
     } else {
-      0L
+      throw new java.util.NoSuchElementException("NativePackDecoder bad RegionValue")
+      -1L
     }
   }
 }
 
 final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, InputBuffer, Long]) extends Decoder {
+  val tag = "CompiledPackDecoder"
+
   def close() {
     in.close()
   }
@@ -1373,6 +1390,8 @@ final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, I
 }
 
 final class PackDecoder(rowType: Type, in: InputBuffer) extends Decoder {
+  val tag = "PackDecoder"
+
   def close() {
     in.close()
   }

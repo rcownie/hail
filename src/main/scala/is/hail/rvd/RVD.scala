@@ -168,6 +168,7 @@ object RVD {
   ): RegionValue =
     using(new ByteArrayInputStream(bytes)) { bais =>
       using(makeDec(bais)) { dec =>
+        System.err.println(s"DEBUG: ${dec.tag} bytesToRegionValue ...")
         carrierRv.setOffset(dec.readRegionValue(r))
         carrierRv
       }
