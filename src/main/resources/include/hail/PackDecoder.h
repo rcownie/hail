@@ -61,7 +61,9 @@ inline void stretch_size(std::vector<char>& missing_vec, ssize_t minsize) {
 class DecoderBase : public NativeObj {
 private:
   static constexpr ssize_t kDefaultCapacity = (64*1024);
+  static constexpr int32_t kMagic = 0x33010203;
 public:
+  int32_t magic_;
   ssize_t capacity_;
   char*   buf_;
   ssize_t pos_;
@@ -70,6 +72,7 @@ public:
   
 public:
   DecoderBase(ssize_t bufCapacity = 0) :
+    magic_(kMagic),
     capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
     buf_((char*)malloc(capacity_)),
     pos_(0),
@@ -78,7 +81,16 @@ public:
   }
   
   virtual ~DecoderBase() {
-    if (buf_) free(buf_);
+    if (magic_ != kMagic) {
+      fflush(stdout);
+      fprintf(stderr, "ERROR: DecoderBase::dtor() called with magic_ = 0x%08x\n", magic_);
+      fflush(stderr);
+      return;
+    }
+    magic_ = 0xaabbcdd;
+    auto buf = buf_;
+    buf_ = nullptr;
+    if (buf) free(buf);
   }
   
   virtual int64_t get_field_offset(int field_size, const char* s) {
