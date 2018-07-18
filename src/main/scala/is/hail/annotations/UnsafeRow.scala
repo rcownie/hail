@@ -242,7 +242,7 @@ class UnsafeRow(var t: TBaseStruct,
           }
           var idx = 0
           while (same && (idx < typ.fields.length)) {
-            if (typ.fieldRequired(idx) || !regionA.loadBit(addrA, typ.missingIdx(idx))) {
+            if (typ.fieldRequired(idx) || !regionA.loadBit(addrA+offA, typ.missingIdx(idx))) {
               val fieldOffset = typ.byteOffsets(idx)
               val fieldSame = sameRecurse(
                 typ.types(idx),
