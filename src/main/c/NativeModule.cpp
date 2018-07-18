@@ -324,7 +324,6 @@ NativeModule::NativeModule(
   dlopen_handle_(nullptr),
   lib_name_(config.get_lib_name(key_)),
   new_name_(config.get_new_name(key_)) {
-  fprintf(stderr, "DEBUG: NativeModule::ctor pid %d\n", (int)getpid());
   // Master constructor - try to get module built in local file
   config.ensure_module_dir_exists();
   if (!force_build && file_exists(lib_name_)) {

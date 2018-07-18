@@ -1103,7 +1103,7 @@ object NativeDecode {
             mainCode.append(s"${ind}  { ssize_t data_offset = elements_offset(${len}, ${req}, ${ealign});\n")
             mainCode.append(s"${ind}    ssize_t size = data_offset + ${esize}*${len};\n")
             mainCode.append(s"${ind}    ${ptr} = region->allocate(${align}, size);\n");
-            mainCode.append(s"${ind}    memset(${ptr}, 0, size);\n")
+            mainCode.append(s"${ind}    memset(${ptr}, 0xff, size); // initialize all-missing\n")
             mainCode.append(s"${ind}    *(char**)${addr} = ${ptr};\n")
             mainCode.append(s"${ind}    ${data} = ${ptr} + data_offset;\n")
             mainCode.append(s"${ind}  }\n")
@@ -1141,7 +1141,7 @@ object NativeDecode {
           if (!skip) {
             if (depth == 0) { // top-level TBaseStruct must be allocated
               mainCode.append(s"${ind}  ${addr} = region->allocate(${wantStruct.alignment}, ${wantStruct.byteSize});\n")
-              mainCode.append(s"${ind}  memset(${addr}, 0, ${wantStruct.byteSize});\n")
+              mainCode.append(s"${ind}  memset(${addr}, 0xff, ${wantStruct.byteSize}); // initialize all-missing\n")
               mainCode.append(s"${ind}  this->rv_base_ = ${addr};\n")
             }            
             var wantIdx = 0
