@@ -264,8 +264,8 @@ class UnsafeRow(var t: TBaseStruct,
 
         case typ: TArray =>
           if (verbose) System.err.println(s"DEBUG: array ptr")
-          val ptrA = regionA.loadAddress(addrA+offA)
-          val ptrB = regionB.loadAddress(addrB+offB)
+          val ptrA = regionA.loadLong(addrA+offA)
+          val ptrB = regionB.loadLong(addrB+offB)
           if (verbose) System.err.println(s"DEBUG: array len")
           val lenA = regionA.loadInt(ptrA)
           val lenB = regionB.loadInt(ptrB)
@@ -305,8 +305,9 @@ class UnsafeRow(var t: TBaseStruct,
           }
 
         case typ: TBinary =>
-          val ptrA = regionA.loadAddress(addrA+offA)
-          val ptrB = regionB.loadAddress(addrB+offB)
+          if (verbose) System.err.println(s"DEBUG: binary ptr")
+          val ptrA = regionA.loadLong(addrA+offA)
+          val ptrB = regionB.loadLong(addrB+offB)
           val lenA = regionA.loadInt(ptrA)
           val lenB = regionB.loadInt(ptrB)
           if (lenA != lenB) {
