@@ -58,12 +58,12 @@ final class Region() extends NativeBase() {
   final def allocate(n: Long): Long = nativeAllocate(n)
   
   final def loadInt(addr: Long): Int = {
-    val result = Memory.loadInt(addr)
+    val result = if ((addr > 0) && ((addr & 0x3) == 0)) Memory.loadInt(addr) else -1
     if (verbose) System.err.println(s"DEBUG: loadInt_(${addr.toHexString}) -> ${result}")
     result
   }
   final def loadLong(addr: Long): Long = {
-    val result = Memory.loadLong(addr)
+    val result = if ((addr > 0) && ((addr & 0x3) == 0)) Memory.loadLong(addr) else -1L
     if (verbose) System.err.println(s"DEBUG: loadLong(${addr.toHexString}) -> ${result}")
     result
   }

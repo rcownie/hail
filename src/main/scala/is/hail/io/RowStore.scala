@@ -134,6 +134,7 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
       val st = new NativeStatus()
       mod.findOrBuild(st)
       if (st.fail) System.err.println(s"findOrBuild ${st}")
+      assert(st.ok)
       st.clear()
       val modKey = mod.getKey()
       val modBinary = mod.getBinary()
@@ -1141,7 +1142,9 @@ object NativeDecode {
           if (!skip) {
             if (depth == 0) { // top-level TBaseStruct must be allocated
               mainCode.append(s"${ind}  ${addr} = region->allocate(${wantStruct.alignment}, ${wantStruct.byteSize});\n")
-              mainCode.append(s"${ind}  memset(${addr}, 0xff, ${wantStruct.byteSize}); // initialize all-missing\n")
+              if (wantStruct.byteSize > 0) {
+                mainCode.append(s"${ind}  memset(${addr}, 0xff, ${wantStruct.byteSize}); // initialize all-missing\n")
+              }
               mainCode.append(s"${ind}  this->rv_base_ = ${addr};\n")
             }            
             var wantIdx = 0
