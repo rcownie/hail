@@ -1031,10 +1031,15 @@ object NativeDecode {
         case _ => true
       }
     }
+    
+    def isEmptyStruct(t: Type): Boolean = {
+      // A struct which no fields, except other empty structs
+      if (t.byteSize == 0) true else false
+    }
 
     def scan(depth: Int, numIndent: Int, name: String, typ: Type, wantType: Type, skip: Boolean) {
       val r1 = if (isResumePoint(typ)) allocState(name) else -1
-      val addr = if (skip) "addr_undefined" else stateVar("addr", depth)
+      val addr = if (skip || ((depth > 0) && isEmptyStruct(typ))) "addr_undefined" else stateVar("addr", depth)
       val ind = "  " * numIndent
       typ.fundamentalType match {
         case t: TBoolean =>
@@ -1117,7 +1122,7 @@ object NativeDecode {
           if (!t.elementType.required) {
             mainCode.append(s"${ind}    if (is_missing(${miss}, ${idx})) continue;\n")
           }
-          if (!skip) {
+          if (!skip && !isEmptyStruct(t.elementType)) {
             mainCode.append(  s"${ind}    ${stateVar("addr", depth+1)} = ${data} + ${idx}*${esize};\n")
           }
           scan(depth+1, numIndent+1, s"${name}(${idx})", t.elementType, wantArray.elementType, skip)
@@ -1196,13 +1201,15 @@ object NativeDecode {
                   val mbit = wantStruct.missingIdx(wantIdx)
                   mainCode.append(s"${ind}    ${addr}[${mbit>>3}] &= ~(1<<${mbit&0x7});\n")
                 }
-                mainCode.append(s"${ind}    ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
+                if (!isEmptyStruct(fieldType)) {
+                  mainCode.append(s"${ind}    ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
+                }
               }
               mainCode.append(s"${ind}    // ${name}.${field.name} fieldSkip ${fieldSkip} ${fieldType}\n")
               scan(depth+1, numIndent+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
               mainCode.append(s"${ind}  }\n")
             } else {
-              if (!fieldSkip) {
+              if (!fieldSkip && !isEmptyStruct(fieldType)) {
                 mainCode.append(s"${ind}  ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
               }
               scan(depth+1, numIndent, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
@@ -1279,8 +1286,11 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
   val mod = new NativeModule(moduleKey, moduleBinary)
   var st = new NativeStatus()
   val make_decoder = mod.findPtrFuncL1(st, "make_decoder")
+  assert(st.ok)
   val decode_until_done_or_need_push = mod.findLongFuncL3(st, "decode_until_done_or_need_push")
+  assert(st.ok)
   val decode_one_byte = mod.findLongFuncL2(st, "decode_one_byte")
+  assert(st.ok)
   val decoder = new NativePtr(make_decoder, st, in.decoderId)
   val bufOffset = decoder.getFieldOffset(8, "buf_")
   val sizeOffset = decoder.getFieldOffset(8, "size_")
