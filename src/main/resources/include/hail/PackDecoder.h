@@ -60,7 +60,7 @@ inline void stretch_size(std::vector<char>& missing_vec, ssize_t minsize) {
   
 class DecoderBase : public NativeObj {
 private:
-  static constexpr ssize_t kDefaultCapacity = (64*1024);
+  static constexpr ssize_t kDefaultCapacity = (32*1024);
   static constexpr int32_t kMagic = 0x33010203;
 public:
   int32_t magic_;

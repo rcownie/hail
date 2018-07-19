@@ -799,7 +799,7 @@ object OrderedRVD {
           val rv = RegionValue(region)
           it.map { case (k, bytes) =>
             assert(partBc.value.getSafePartition(k) == i)
-            System.err.println(s"DEBUG: shuffle ...")
+            System.err.println(s"DEBUG: part[${i}] shuffle ...")
             RVD.bytesToRegionValue(dec, region, rv)(bytes)
           }
       })
