@@ -296,7 +296,7 @@ public:
       // We lost the race to start the build
       return false;
     }
-    ::close(fd)
+    ::close(fd);
     // The .new file may look the same age as the .cpp file, but
     // the makefile is written to ignore the .new timestamp
     write_mak();
