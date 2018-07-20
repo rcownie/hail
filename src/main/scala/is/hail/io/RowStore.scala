@@ -220,7 +220,6 @@ final class StreamBlockInputBuffer(in: InputStream) extends InputBlockBuffer {
       val ngot = in.read(buf, 0, len)
       if (ngot < len) len = -1
     }
-    System.err.println(s"DEBUG: SBIB readBlock -> ${len}")
     len
   }
 }
@@ -533,7 +532,6 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
   def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
     val result = in.speculativeRead(toAddr, toBuf, toOff, n)
     if (result > 0) bytePos += result
-    System.err.println(s"DEBUG: LEB128 specRead(${n}) -> ${result}")
     result
   }
 }
@@ -560,7 +558,6 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       decompLen
     }
     lim = result
-    System.err.println(s"DEBUG: LZ4 readBlock -> ${result}")
     result
   }
 
@@ -569,11 +566,9 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     while ((pos <= lim) && (ngot < n)) {
       var have = (lim - pos)
       if (have == 0) {
-        System.err.println("DEBUG: LZ4 readBlock(decompBuf")
         have = readBlock(decompBuf) // -1 for end-of-file
         lim = have
         pos = 0
-        System.err.println(s"DEBUG: LZ4 readBlock -> ${have}")
       }
       if (have > 0) {
         val chunk = if (have < n-ngot) have else n-ngot
@@ -602,7 +597,6 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     blockBytePos += end
     end = in.readBlock(buf)
     off = 0
-    System.err.println(s"DEBUG: BIB readBlock -> ${end}")
   }
 
   private def ensure(n: Int) {
@@ -733,15 +727,12 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       if (have == 0) {
         blockBytePos += end
         have = in.readBlock(buf)
-        System.err.println(s"DEBUG specRead in.readBlock -> ${have}")
         if (have < 0) have = -1
         end = have
         off = 0
       }
       if (have > 0) {
         val chunk = if (have < n-ngot) have else n-ngot
-        System.err.println(s"DEBUG: specRead off ${off.toHexString} chunk ${chunk}")
-        ShowBuf(buf, off, chunk)
         if (toAddr != 0) { // copy directly to off-heap buffer
           Memory.memcpy(toAddr+toOff+ngot, buf, off, chunk)
         } else {
@@ -752,7 +743,6 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       }
     }
     val result = if (ngot > 0) ngot else -1
-    System.err.println(s"DEBUG: ${decoderId} specRead(${n}) -> ${result}")
     result
   }
 }
@@ -1316,7 +1306,6 @@ object NativeDecode {
     sb.append("    this->size_ += push_size;\n")
     sb.append(localDefs)
     sb.append("    int s = s_;\n")
-    sb.append(s"""fprintf(stderr, "DEBUG: decode resume at entry%d\\n", s_);\n""")
     sb.append("    switch (s) {\n")
     sb.append(entryCode)
     sb.append("    }\n")
@@ -1327,7 +1316,7 @@ object NativeDecode {
       sb.append("  pull:\n")
       sb.append("    s_ = s;\n")
       sb.append(flushCode)
-      if (true || verbose) {
+      if (verbose) {
         sb.append("fprintf(stderr, \"DEBUG: prepare_for_push(entry%d) pos_ %ld size_ %ld\\n\", s_, this->pos_, this->size_);\n")
       }
       sb.append("    return this->prepare_for_push();\n")
@@ -1373,10 +1362,8 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
   st.close()
   mod.close()
   val tag = ((decoder.get() & 0xffff) | 0x8000).toHexString
-  System.err.println(s"DEBUG: ${tag} new decoder in.decoderId ${in.decoderId}")
 
   def close(): Unit = {
-    System.err.println(s"DEBUG: ${tag} close")
     in.close()
     decoder.close()
     make_decoder.close()
@@ -1397,7 +1384,7 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
   def pushData(size: Long): Long = {
     val tellBefore = tell()
     val ngot = in.speculativeRead(decoderBuf+decoderSize, tmpBuf, 0, size.toInt)
-    System.err.println(s"DEBUG: ${tag} tell ${tellBefore} pushData(${size}) -> ${ngot} ${decoderStatus}")
+    // System.err.println(s"DEBUG: ${tag} tell ${tellBefore} pushData(${size}) -> ${ngot} ${decoderStatus}")
     ShowBuf(decoderBuf+decoderSize, ngot)
     ngot
   }
@@ -1413,13 +1400,13 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
         done = true
       } else {
         pushSize = pushData(rc)
-        System.err.println(s"DEBUG: ${tag} pushSize ${pushSize} rc ${rc}")
+        // System.err.println(s"DEBUG: ${tag} pushSize ${pushSize} rc ${rc}")
         assert(pushSize > 0)
       }
     }
     val result = rc.toByte
     val tagEnd = if (result == 0) " END" else ""
-    System.err.println(s"DEBUG: ${tag} tell ${tell()} readByte -> ${result}${tagEnd} numItems ${numItems}")
+    // System.err.println(s"DEBUG: ${tag} tell ${tell()} readByte -> ${result}${tagEnd} numItems ${numItems}")
     result
   }
 
@@ -1429,20 +1416,20 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     var done = false
     while (!done) {
       val startByte = (Memory.loadByte(decoderBuf+decoderPos) & 0xff)
-      System.err.println(s"DEBUG: ${tag} tell ${tell()-pushSize} decode start with ${startByte.toHexString}")
+      // System.err.println(s"DEBUG: ${tag} tell ${tell()-pushSize} decode start with ${startByte.toHexString}")
       rc = decode_until_done_or_need_push(st, decoder.get(), region.get(), pushSize)
       if (rc <= 0) {
         done = true
       } else {
         pushSize = pushData(rc)
-        System.err.println(s"DEBUG: ${tag} pushSize ${pushSize} rc ${rc}")
+        // System.err.println(s"DEBUG: ${tag} pushSize ${pushSize} rc ${rc}")
         assert(pushSize > 0)
       }
     }
     if (rc == 0) {
       val rvAddr = Memory.loadLong(decoder.get()+rvBaseOffset)
       numItems += 1
-      System.err.println(s"DEBUG: ${tag} tell ${tell()} readRegionValue numItems ${numItems} ${decoderStatus}")
+      // System.err.println(s"DEBUG: ${tag} tell ${tell()} readRegionValue numItems ${numItems} ${decoderStatus}")
       rvAddr
     } else {
       throw new java.util.NoSuchElementException("NativePackDecoder bad RegionValue")
@@ -1454,24 +1441,22 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
 final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, InputBuffer, Long]) extends Decoder {
   val tag = s"Compiled_${((hashCode() & 0xffff) | 0x8000).toHexString}"
   var numItems = 0
-  System.err.println(s"DEBUG: ${tag} new decoder in.decoderId ${in.decoderId}")
 
   def close() {
-    System.err.println(s"DEBUG: ${tag} close")
     in.close()
   }
 
   def readByte(): Byte = {
     val result = in.readByte()
     val tagEnd = if (result == 0) " END" else ""
-    System.err.println(s"DEBUG: ${tag} tell ${in.tell()} readByte -> ${result}${tagEnd} numItems ${numItems}")
+    // System.err.println(s"DEBUG: ${tag} tell ${in.tell()} readByte -> ${result}${tagEnd} numItems ${numItems}")
     result
   }
 
   def readRegionValue(region: Region): Long = {
     val result = f()(region, in)
     numItems += 1
-    System.err.println(s"DEBUG: ${tag} tell ${in.tell()} readRegionValue numItems ${numItems}")
+    // System.err.println(s"DEBUG: ${tag} tell ${in.tell()} readRegionValue numItems ${numItems}")
     result
   }
 }
@@ -1480,7 +1465,6 @@ final class PackDecoder(rowType: Type, in: InputBuffer) extends Decoder {
   val tag = "PackDecoder"
 
   def close() {
-    System.err.println(s"DEBUG: ${tag} close")
     in.close()
   }
 

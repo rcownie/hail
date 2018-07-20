@@ -1489,7 +1489,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
   }
 
   def same(that: MatrixTable, tolerance: Double = utils.defaultTolerance, absolute: Boolean = false): Boolean = {
-    System.err.println("DEBUG: same A")
     var metadataSame = true
     if (rowType.deepOptional() != that.rowType.deepOptional()) {
       metadataSame = false
@@ -1553,8 +1552,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
     val localRKF = rowKeysF
     val localColKeys = colKeys
 
-    System.err.println("DEBUG: same B")
-
     metadataSame &&
       rvd.crdd.czip(
         OrderedRVD.adjustBoundsAndShuffle(
@@ -1562,7 +1559,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
           rvd.partitioner.withKType(that.rvd.typ.partitionKey, that.rvd.typ.kType),
           that.rvd)
           .crdd) { (ctx, rv1, rv2) =>
-        System.err.println(s"DEBUG: adjustBoundsAndShuffle rv1, rv2 ...")
         var partSame = true
 
         val fullRow1 = new UnsafeRow(leftRVType)
@@ -1570,18 +1566,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
 
         fullRow1.set(rv1)
         fullRow2.set(rv2)
-        /*
-        System.err.println("DEBUG: fullRow1.sameVerbose(fullRow2) ...")
-        val fullSame = fullRow1.sameVerbose(fullRow2)
-        System.err.println(s"DEBUG: fullRow1.same(fullRow2) -> ${fullSame}")
-        if (!fullSame) {
-          rv1.region.verbose = true
-          rv2.region.verbose = true
-          val x = fullRow1.sameVerbose(fullRow2, true)
-          partSame = false
-          assert(false)
-        }
-        */
 
         val row1 = fullRow1.deleteField(localLeftEntriesIndex)
         val row2 = fullRow2.deleteField(localRightEntriesIndex)
