@@ -60,7 +60,7 @@ inline void stretch_size(std::vector<char>& missing_vec, ssize_t minsize) {
   
 class DecoderBase : public NativeObj {
 private:
-  static constexpr ssize_t kDefaultCapacity = (32*1024);
+  static constexpr ssize_t kDefaultCapacity = (64*1024);
   static constexpr int32_t kMagic = 0x33010203;
 public:
   int32_t magic_;
@@ -69,6 +69,7 @@ public:
   ssize_t pos_;
   ssize_t size_;
   char*   rv_base_;
+  char    tag_[8];
   
 public:
   DecoderBase(ssize_t bufCapacity = 0) :
@@ -78,6 +79,7 @@ public:
     pos_(0),
     size_(0),
     rv_base_(nullptr) {
+    sprintf(tag_, "%04lx", ((long)this & 0xffff) | 0x8000);
   }
   
   virtual ~DecoderBase() {
@@ -110,20 +112,21 @@ public:
   virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) = 0;
   
   ssize_t prepare_for_push() {
-    if (pos_ < size_) memcpy(buf_, buf_+pos_, size_-pos_);
+    if (pos_ < size_) {
+      fprintf(stderr, "DEBUG: %s prepare_for_push copies %ld bytes, start with 0x%02x\n", tag_, size_-pos_, buf_[pos_]&0xff);
+      memcpy(buf_, buf_+pos_, size_-pos_);
+    }
     size_ -= pos_;
     pos_ = 0;
-    return (capacity_ - size_);
+    return (capacity_ - size_); // capacity for new data
   }
   
   ssize_t decode_one_byte(ssize_t push_size) {
     size_ += push_size;
     if (pos_ >= size_) {
-      pos_ = 0;
-      size_ = 0;
-      return capacity_;
+      return prepare_for_push(); // returns > 0
     }
-    return (buf_[pos_++] & 0xff);
+    return -(buf_[pos_++] & 0xff); // returns <= 0
   }
 
   void hexify(char* out, ssize_t pos, char* p, ssize_t n) {    
@@ -171,12 +174,12 @@ class PackDecoderBase : public DecoderBase {
     if (pos >= size_) return false;
     *addr = *(int8_t*)(buf_+pos);
     pos_ = pos+1;
-    //fprintf(stderr, "DEBUG: A decode_byte() -> 0x%02x [%p]\n", (*addr) & 0xff, addr);
+    //fprintf(stderr, "DEBUG: %s A decode_byte() -> 0x%02x [%p]\n", tag_, (*addr) & 0xff, addr);
     return true;
   }
   
   bool skip_byte() {
-     ssize_t pos = pos_+1;
+    ssize_t pos = pos_+1;
     if (pos > size_) return false;
     pos_ = pos;
     return true;
@@ -188,7 +191,7 @@ class PackDecoderBase : public DecoderBase {
     *addr = *(int32_t*)&buf_[pos];
     pos_ = pos+4;
 #ifdef MYDEBUG
-    fprintf(stderr, "DEBUG: A decode_int() -> %d\n", *addr);
+    fprintf(stderr, "DEBUG: %s A decode_int() -> %d\n", tag_, *addr);
     char hex[256];
     hexify(hex, pos, buf_+pos, 4);
     fprintf(stderr, "%s", hex);
@@ -207,7 +210,7 @@ class PackDecoderBase : public DecoderBase {
     int32_t len = 0;
     if (!decode_int(&len)) return false;
 #ifdef MYDEBUG
-    fprintf(stderr, "DEBUG: A decode_length() -> %d\n", len);
+    fprintf(stderr, "DEBUG: %s A decode_length() -> %d\n", tag_, len);
 #endif
     *addr = (ssize_t)len;
     return true;
@@ -219,7 +222,7 @@ class PackDecoderBase : public DecoderBase {
     *addr = *(int64_t*)&buf_[pos];
     pos_ = pos+8;
 #ifdef MYDEBUG
-    fprintf(stderr, "DEBUG: A decode_long() -> %ld\n", (long)*addr);
+    fprintf(stderr, "DEBUG: %s A decode_long() -> %ld\n", tag_, (long)*addr);
     char hex[256];
     hexify(hex, pos, buf_+pos, 8);
     fprintf(stderr, "%s", hex);
@@ -240,7 +243,7 @@ class PackDecoderBase : public DecoderBase {
     *addr = *(float*)(buf_+pos);
     pos_ = (pos+4);
 #ifdef MYDEBUG
-    fprintf(stderr, "DEBUG: A decode_float() -> %12e\n", (double)*addr);
+    fprintf(stderr, "DEBUG: %s A decode_float() -> %12e\n", tag_, (double)*addr);
 #endif
     return true;
   }
@@ -258,7 +261,7 @@ class PackDecoderBase : public DecoderBase {
     *addr = *(double*)(buf_+pos);
     pos_ = (pos+8);
 #ifdef MYDEBUG
-    fprintf(stderr, "DEBUG: A decode_double() -> %12e\n", *addr);
+    fprintf(stderr, "DEBUG: %s A decode_double() -> %12e\n", tag_, *addr);
 #endif
     return true;
   }
@@ -281,7 +284,7 @@ class PackDecoderBase : public DecoderBase {
 #ifdef MYDEBUG
     char hex[256];
     hexify(hex, pos, buf_+pos, (ngot < 32) ? ngot : 32);
-    fprintf(stderr, "DEBUG: A decode_bytes(%ld) -> %ld\n", n, ngot);
+    fprintf(stderr, "DEBUG: %s A decode_bytes(%ld) -> %ld\n", tag_, n, ngot);
     fprintf(stderr, "%s", hex);
 #endif
     return ngot;
@@ -308,7 +311,7 @@ class PackDecoderBase<1> : public DecoderBase {
     *addr = *(int8_t*)(buf_+pos);
     pos_ = (pos+1);
 #ifdef MYDEBUG
-    fprintf(stderr, "DEBUG: B decode_byte() -> 0x%02x [%p]\n", (*addr) & 0xff, addr);
+    fprintf(stderr, "DEBUG: %s B decode_byte() -> 0x%02x [%p]\n", tag_, (*addr) & 0xff, addr);
 #endif
     return true;
   }
@@ -334,7 +337,7 @@ class PackDecoderBase<1> : public DecoderBase {
     int32_t len = 0;
     if (!decode_int(&len)) return false;
 #ifdef MYDEBUG
-    fprintf(stderr, "DEBUG: B decode_length() -> %d\n", len);
+    fprintf(stderr, "DEBUG: %s B decode_length() -> %d\n", tag_, len);
 #endif
     *addr = (ssize_t)len;
     return true;
@@ -357,7 +360,7 @@ class PackDecoderBase<1> : public DecoderBase {
     *addr = *(float*)(buf_+pos);
     pos_ = (pos+4);
 #ifdef MYDEBUG
-    fprintf(stderr, "DEBUG: B decode_float() -> %12e\n", (double)*addr);
+    fprintf(stderr, "DEBUG: %s B decode_float() -> %12e\n", tag_, (double)*addr);
 #endif
     return true;
   }
@@ -375,7 +378,7 @@ class PackDecoderBase<1> : public DecoderBase {
     *addr = *(double*)(buf_+pos);
     pos_ = (pos+8);
 #ifdef MYDEBUG
-    fprintf(stderr, "DEBUG: B decode_double() -> %12e\n", *addr);
+    fprintf(stderr, "DEBUG: %s B decode_double() -> %12e\n", tag_, *addr);
 #endif
     return true;
   }
@@ -408,7 +411,7 @@ MAYBE_INLINE bool PackDecoderBase<1>::decode_int(int32_t* addr) {
   }
   *addr = val;
 #ifdef MYDEBUG
-  fprintf(stderr, "DEBUG: B decode_int() -> %d\n", val);
+  fprintf(stderr, "DEBUG: %s B decode_int() -> %d\n", tag_, val);
   char hex[256];
   hexify(hex, pos_, buf_+pos_, pos-pos_);
   fprintf(stderr, "%s", hex);
@@ -428,7 +431,7 @@ MAYBE_INLINE bool PackDecoderBase<1>::decode_long(int64_t* addr) {
   }
   *addr = val;
 #ifdef MYDEBUG
-  fprintf(stderr, "DEBUG: B decode_long() -> %ld\n", val);
+  fprintf(stderr, "DEBUG: %s B decode_long() -> %ld\n", tag_, val);
   char hex[256];
   hexify(hex, pos_, buf_+pos_, pos-pos_);
   fprintf(stderr, "%s", hex);
@@ -448,7 +451,7 @@ MAYBE_INLINE ssize_t PackDecoderBase<1>::decode_bytes(char* addr, ssize_t n) {
 #ifdef MYDEBUG
   char hex[256];
   hexify(hex, pos, buf_+pos, (ngot < 32) ? ngot : 32);
-  fprintf(stderr, "DEBUG: B decode_bytes(%ld) -> %ld\n", n, ngot);
+  fprintf(stderr, "DEBUG: %s B decode_bytes(%ld) -> %ld\n", tag_, n, ngot);
   fprintf(stderr, "%s", hex);
 #endif
   return ngot;

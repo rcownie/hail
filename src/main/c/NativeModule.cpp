@@ -263,7 +263,7 @@ private:
     // Downgrading from -std=c++14 to -std=c++11 for CI w/ old compilers
     const char* cxxstd = (strstr(config.cxx_name_.c_str(), "clang") ? "-std=c++17" : "-std=c++11");
     fprintf(f, "CXXFLAGS  := \\\n");
-    fprintf(f, "  %s -fPIC -march=native -fno-strict-aliasing -Wall -Werror \\\n", cxxstd);
+    fprintf(f, "  %s -fPIC -march=native -fno-strict-aliasing -Wall \\\n", cxxstd);
     auto java_include = strip_suffix(config.java_home_, "/jre") + "/include";
     fprintf(f, "  -I%s \\\n", java_include.c_str());
     fprintf(f, "  -I%s/%s \\\n", java_include.c_str(), config.java_md_.c_str());
