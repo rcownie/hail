@@ -291,20 +291,19 @@ private:
 public:
   bool try_to_start_build() {
     // Try to create the .new file
-    FILE* f = fopen(hm_new_.c_str(), "w+");
-    if (!f) {
+    int fd = ::open(hm_new_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
+    if (fd < 0) {
       // We lost the race to start the build
       return false;
     }
-    fclose(f);
+    ::close(fd)
     // The .new file may look the same age as the .cpp file, but
     // the makefile is written to ignore the .new timestamp
     write_mak();
     write_cpp();
     std::stringstream ss;
-    // ss << "/usr/bin/nohup ";
     ss << "/usr/bin/make -C " << config.module_dir_ << " -f " << hm_mak_;
-    ss << " >/dev/null &";
+    ss << " 1>/dev/null 2>/dev/null &";
     int rc = system(ss.str().c_str());
     if (rc < 0) perror("system");
     return true;
