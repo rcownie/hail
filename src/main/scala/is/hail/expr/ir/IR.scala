@@ -108,6 +108,7 @@ final case class ArrayFor(a: IR, valueName: String, body: IR) extends IR {
 }
 
 final case class ApplyAggOp(a: IR, constructorArgs: IndexedSeq[IR], initOpArgs: Option[IndexedSeq[IR]], aggSig: AggSignature) extends InferIR {
+  assert(!(a +: (constructorArgs ++ initOpArgs.getOrElse(FastIndexedSeq.empty[IR]))).exists(ContainsScan(_)))
   assert(constructorArgs.map(_.typ) == aggSig.constructorArgs)
   assert(initOpArgs.map(_.map(_.typ)) == aggSig.initOpArgs)
 
@@ -116,14 +117,24 @@ final case class ApplyAggOp(a: IR, constructorArgs: IndexedSeq[IR], initOpArgs: 
   def hasInitOp = initOpArgs.isDefined
 
   def op: AggOp = aggSig.op
+}
 
-  def inputType: Type = aggSig.inputType
+final case class ApplyScanOp(a: IR, constructorArgs: IndexedSeq[IR], initOpArgs: Option[IndexedSeq[IR]], aggSig: AggSignature) extends InferIR {
+  assert(!(a +: (constructorArgs ++ initOpArgs.getOrElse(FastIndexedSeq.empty[IR]))).exists(ContainsAgg(_)))
+  assert(constructorArgs.map(_.typ) == aggSig.constructorArgs)
+  assert(initOpArgs.map(_.map(_.typ)) == aggSig.initOpArgs)
+
+  def nConstructorArgs = constructorArgs.length
+
+  def hasInitOp = initOpArgs.isDefined
+
+  def op: AggOp = aggSig.op
 }
 
 final case class InitOp(i: IR, args: IndexedSeq[IR], aggSig: AggSignature) extends IR {
   val typ = TVoid
 }
-final case class SeqOp(a: IR, i: IR, aggSig: AggSignature, args: IndexedSeq[IR] = FastIndexedSeq()) extends IR {
+final case class SeqOp(i: IR, args: IndexedSeq[IR], aggSig: AggSignature) extends IR {
   val typ = TVoid
 }
 
@@ -190,10 +201,12 @@ final case class Uniroot(argname: String, function: IR, min: IR, max: IR) extend
 
 final case class TableCount(child: TableIR) extends IR { val typ: Type = TInt64() }
 final case class TableAggregate(child: TableIR, query: IR) extends InferIR
+final case class MatrixAggregate(child: MatrixIR, query: IR) extends InferIR
 final case class TableWrite(
   child: TableIR,
   path: String,
   overwrite: Boolean = true,
+  stageLocally: Boolean = false,
   codecSpecJSONStr: String = null) extends IR {
   val typ: Type = TVoid
 }

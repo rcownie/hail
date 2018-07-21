@@ -5,7 +5,8 @@ import is.hail.expr.types._
 import is.hail.TestUtils._
 import is.hail.annotations.BroadcastRow
 import is.hail.expr.Parser
-import is.hail.table.Table
+import is.hail.io.vcf.LoadVCF
+import is.hail.table.{Ascending, Descending, SortField, Table}
 import is.hail.utils._
 import is.hail.variant.MatrixTable
 import org.apache.spark.sql.Row
@@ -257,6 +258,52 @@ class IRSuite extends SparkSuite {
     assertFatal(ArrayRange(I32(0), I32(5), I32(0)), "step size")
   }
 
+  @Test def testInsertFields() {
+    val s = TStruct("a" -> TInt64(), "b" -> TString())
+
+    assertEvalsTo(
+      InsertFields(
+        NA(s),
+        Seq()),
+      null)
+
+    assertEvalsTo(
+      InsertFields(
+        NA(s),
+        Seq("a" -> I64(5))),
+      Row(5L, null))
+
+    assertEvalsTo(
+      InsertFields(
+        NA(s),
+        Seq("c" -> F64(3.2))),
+      Row(null, null, 3.2))
+
+    assertEvalsTo(
+      InsertFields(
+        NA(s),
+        Seq("c" -> NA(TFloat64()))),
+      Row(null, null, null))
+
+    assertEvalsTo(
+      InsertFields(
+        MakeStruct(Seq("a" -> NA(TInt64()), "b" -> Str("abc"))),
+        Seq()),
+      Row(null, "abc"))
+
+    assertEvalsTo(
+      InsertFields(
+        MakeStruct(Seq("a" -> NA(TInt64()), "b" -> Str("abc"))),
+        Seq("a" -> I64(5))),
+      Row(5L, "abc"))
+
+    assertEvalsTo(
+      InsertFields(
+        MakeStruct(Seq("a" -> NA(TInt64()), "b" -> Str("abc"))),
+        Seq("c" -> F64(3.2))),
+      Row(null, "abc", 3.2))
+  }
+
   @Test def testTableCount() {
     assertEvalsTo(TableCount(TableRange(0, 4)), 0L)
     assertEvalsTo(TableCount(TableRange(7, 4)), 7L)
@@ -309,13 +356,13 @@ class IRSuite extends SparkSuite {
 
     val call = Ref("call", TCall())
 
-    val collectSig = AggSignature(Collect(), TInt32(), Seq(), None, Seq())
+    val collectSig = AggSignature(Collect(), Seq(), None, Seq(TInt32()))
 
-    val callStatsSig = AggSignature(CallStats(), TCall(), Seq(), Some(Seq(TInt32())), Seq())
+    val callStatsSig = AggSignature(CallStats(), Seq(), Some(Seq(TInt32())), Seq(TCall()))
 
-    val histSig = AggSignature(Histogram(), TFloat64(), Seq(TFloat64(), TFloat64(), TInt32()), None, Seq())
+    val histSig = AggSignature(Histogram(), Seq(TFloat64(), TFloat64(), TInt32()), None, Seq(TFloat64()))
 
-    val takeBySig = AggSignature(TakeBy(), TFloat64(), Seq(TInt32()), None, Seq(TInt32()))
+    val takeBySig = AggSignature(TakeBy(), Seq(TInt32()), None, Seq(TFloat64(), TInt32()))
 
     val irs = Array(
       i, I64(5), F32(3.14f), F64(3.14), str, True(), False(), Void(),
@@ -327,8 +374,7 @@ class IRSuite extends SparkSuite {
       ApplyBinaryPrimOp(Add(), i, j),
       ApplyUnaryPrimOp(Negate(), i),
       ApplyComparisonOp(EQ(TInt32()), i, j),
-      ApplyBinaryPrimOp(Add(), i, j),
-      MakeArray(FastSeq(I32(5), NA(TInt32()), I32(-3)), TArray(TInt32())),
+      MakeArray(FastSeq(i, NA(TInt32()), I32(-3)), TArray(TInt32())),
       ArrayRef(a, i),
       ArrayLen(a),
       ArrayRange(I32(0), I32(5), I32(1)),
@@ -348,8 +394,8 @@ class IRSuite extends SparkSuite {
       ApplyAggOp(call, FastIndexedSeq.empty, Some(FastIndexedSeq(I32(2))), callStatsSig),
       ApplyAggOp(F64(-2.11), FastIndexedSeq(I32(10)), None, takeBySig),
       InitOp(I32(0), FastIndexedSeq(I32(2)), callStatsSig),
-      SeqOp(i, I32(0), collectSig, FastIndexedSeq.empty),
-      SeqOp(F64(-2.11), I32(0), takeBySig, FastIndexedSeq(I32(17))),
+      SeqOp(I32(0), FastIndexedSeq(i), collectSig),
+      SeqOp(I32(0), FastIndexedSeq(F64(-2.11), I32(17)), takeBySig),
       Begin(IndexedSeq(Void())),
       MakeStruct(Seq("x" -> i)),
       SelectFields(s, Seq("x", "z")),
@@ -380,6 +426,7 @@ class IRSuite extends SparkSuite {
 
       val xs: Array[TableIR] = Array(
         TableUnkey(read),
+        TableDistinct(read),
         TableKeyBy(read, Array("m", "d"), Some(1)),
         TableFilter(read, b),
         read,
@@ -396,7 +443,7 @@ class IRSuite extends SparkSuite {
             TStruct("a" -> TInt32()),
             None,
             TStruct.empty()),
-          FastIndexedSeq(null, Row(5), Row(-3)),
+          FastIndexedSeq(Row(null), Row(5), Row(-3)),
           None),
         TableMapRows(read,
           MakeStruct(FastIndexedSeq(
@@ -410,8 +457,70 @@ class IRSuite extends SparkSuite {
         TableRange(100, 10),
         TableUnion(
           FastIndexedSeq(TableRange(100, 10), TableRange(50, 10))),
-        TableExplode(read, "mset")
+        TableExplode(read, "mset"),
+        TableUnkey(read),
+        TableOrderBy(TableUnkey(read), FastIndexedSeq(SortField("m", Ascending), SortField("m", Descending)))
       )
+      xs.map(x => Array(x))
+    } catch {
+      case t: Throwable =>
+        println(t)
+        println(t.printStackTrace())
+        throw t
+    }
+  }
+
+  @DataProvider(name = "matrixIRs")
+  def matrixIRs(): Array[Array[MatrixIR]] = {
+    try {
+      val tableRead = Table.read(hc, "src/test/resources/backward_compatability/1.0.0/table/0.ht")
+        .tir.asInstanceOf[TableRead]
+      val read = MatrixTable.read(hc, "src/test/resources/backward_compatability/1.0.0/matrix_table/0.hmt")
+        .ast.asInstanceOf[MatrixRead]
+      val range = MatrixTable.range(hc, 3, 7, None)
+        .ast.asInstanceOf[MatrixRead]
+      val vcf = hc.importVCF("src/test/resources/sample.vcf").ast.asInstanceOf[MatrixRead]
+
+      val b = True()
+
+      val newCol = MakeStruct(FastIndexedSeq(
+        "col_idx" -> GetField(Ref("sa", read.typ.colType), "col_idx"),
+        "new_f32" -> ApplyBinaryPrimOp(Add(),
+          GetField(Ref("sa", read.typ.colType), "col_f32"),
+          F32(-5.2f))))
+      val newRow = MakeStruct(FastIndexedSeq(
+        "row_idx" -> GetField(Ref("va", read.typ.rowType), "row_idx"),
+        "new_f32" -> ApplyBinaryPrimOp(Add(),
+          GetField(Ref("va", read.typ.rowType), "row_f32"),
+          F32(-5.2f))))
+
+      val xs = Array[MatrixIR](
+        read,
+        MatrixFilterRows(read, b),
+        MatrixFilterCols(read, b),
+        MatrixFilterEntries(read, b),
+        MatrixChooseCols(read, Array(0, 0, 0)),
+        MatrixMapCols(read, newCol, None),
+        MatrixMapRows(read, newRow, None),
+        MatrixMapEntries(read, MakeStruct(FastIndexedSeq(
+          "global_f32" -> ApplyBinaryPrimOp(Add(),
+            GetField(Ref("global", read.typ.globalType), "global_f32"),
+            F32(-5.2f))))),
+        MatrixCollectColsByKey(read),
+        MatrixAggregateColsByKey(read, newCol),
+        MatrixAggregateRowsByKey(read, newRow),
+        range,
+        vcf,
+        TableToMatrixTable(
+          tableRead,
+          Array("r1", "r2"),
+          Array("c1", "c2"),
+          Array("r1", "r2", "r3"),
+          Array("c1", "c2", "c3"),
+          Array("r1"),
+          None),
+        MatrixExplodeRows(read, FastIndexedSeq("row_mset")))
+
       xs.map(x => Array(x))
     } catch {
       case t: Throwable =>
@@ -432,6 +541,13 @@ class IRSuite extends SparkSuite {
   def testTableIRParser(x: TableIR) {
     val s = Pretty(x)
     val x2 = Parser.parse(Parser.table_ir, s)
+    assert(x2 == x)
+  }
+
+  @Test(dataProvider = "matrixIRs")
+  def testMatrixIRParser(x: MatrixIR) {
+    val s = Pretty(x)
+    val x2 = Parser.parse(Parser.matrix_ir, s)
     assert(x2 == x)
   }
 }

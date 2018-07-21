@@ -8,7 +8,7 @@ import is.hail.annotations.{Annotation, Region, RegionValueBuilder, SafeRow}
 import is.hail.expr.ir._
 import is.hail.expr.types._
 import is.hail.linalg.BlockMatrix
-import is.hail.methods.{KinshipMatrix, SplitMulti}
+import is.hail.methods.SplitMulti
 import is.hail.table.Table
 import is.hail.utils._
 import is.hail.testUtils._
@@ -110,7 +110,7 @@ object TestUtils {
   def keyTableBoxedDoubleToMap[T](kt: Table): Map[T, IndexedSeq[java.lang.Double]] =
     kt.collect().map { r =>
       val s = r.toSeq
-      s.head.asInstanceOf[T] -> s.tail.map(_.asInstanceOf[java.lang.Double]).toIndexedSeq
+      s.head.asInstanceOf[T] -> s.tail.map(_.asInstanceOf[java.lang.Double]).toFastIndexedSeq
     }.toMap
 
   def matrixToString(A: DenseMatrix[Double], separator: String): String = {
@@ -188,31 +188,6 @@ object TestUtils {
     } else
       None
   }
-  
-  def computeRRM(hc: HailContext, vds: MatrixTable): KinshipMatrix = {
-    var mt = vds
-    mt = mt.selectEntries("{gt: g.GT.nNonRefAlleles()}")
-      .annotateRowsExpr("AC" -> "AGG.map(g => g.gt.toInt64()).sum().toInt32()",
-                        "ACsq" -> "AGG.map(g => (g.gt * g.gt).toInt64()).sum().toInt32()",
-                        "nCalled" -> "AGG.filter(g => isDefined(g.gt)).count().toInt32()")
-      .filterRowsExpr("(va.AC > 0) && (va.AC < 2 * va.nCalled) && ((va.AC != va.nCalled) || (va.ACsq != va.nCalled))")
-    
-    val (nVariants, nSamples) = mt.count()
-    require(nVariants > 0, "Cannot run RRM: found 0 variants after filtering out monomorphic sites.")
-
-    mt = mt.annotateGlobal(nSamples.toDouble, TFloat64(), "nSamples")
-      .annotateRowsExpr("meanGT" -> "va.AC.toFloat64 / va.nCalled.toFloat64")
-    mt = mt.annotateRowsExpr("stdDev" ->
-      "((va.ACsq.toFloat64 + (global.nSamples - va.nCalled.toFloat64).toFloat64 * va.meanGT * va.meanGT) / global.nSamples - va.meanGT * va.meanGT).sqrt()")
-
-    val normalizedGT = "let norm_gt = (g.gt.toFloat64 - va.meanGT) / va.stdDev in if (isDefined(norm_gt)) norm_gt else 0.0"
-    val path = TempDir(hc.hadoopConf).createTempFile()
-    mt.selectEntries(s"{x: $normalizedGT}").writeBlockMatrix(path, "x")
-    val X = BlockMatrix.read(hc, path)
-    val rrm = X.transpose().dot(X).scalarDiv(nVariants).toIndexedRowMatrix()
-
-    KinshipMatrix(vds.hc, TString(), rrm, vds.stringSampleIds.map(s => s: Annotation).toArray, nVariants)
-  }
 
   def exportPlink(mt: MatrixTable, path: String): Unit = {
     mt.selectCols("""{fam_id: "0", id: sa.s, mat_id: "0", pat_id: "0", is_female: "0", pheno: "NA"}""", Some(FastIndexedSeq()))
@@ -263,13 +238,18 @@ object TestUtils {
         val substAggEnv = aggType.fields.foldLeft(Env.empty[IR]) { case (env, f) =>
             env.bind(f.name, GetField(Ref(aggVar, aggType), f.name))
         }
-        val (rvAggs, initOps, seqOps, aggResultType, f, resultType2) = CompileWithAggregators[Long, Long, Long, Long](
+        val (rvAggs, initOps, seqOps, aggResultType, postAggIR) = CompileWithAggregators[Long, Long, Long](
           argsVar, argsType,
           argsVar, argsType,
           aggVar, aggType,
-          MakeTuple(FastSeq(rewrite(Subst(x, substEnv, substAggEnv)))),
+          MakeTuple(FastSeq(rewrite(Subst(x, substEnv, substAggEnv)))), "AGGR",
           (i, x) => x,
           (i, x) => x)
+
+        val (resultType2, f) = Compile[Long, Long, Long](
+          "AGGR", aggResultType,
+          argsVar, argsType,
+          postAggIR)
         assert(resultType2 == resultType)
 
         Region.scoped { region =>

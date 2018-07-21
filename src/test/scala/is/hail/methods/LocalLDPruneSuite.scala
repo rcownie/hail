@@ -56,7 +56,7 @@ object LocalLDPruneSuite {
     rvRowType.fieldByName("alleles").typ)
 
   def makeRV(gs: Iterable[Annotation]): RegionValue = {
-    val gArr = gs.toIndexedSeq
+    val gArr = gs.toFastIndexedSeq
     val rvb = new RegionValueBuilder(Region())
     rvb.start(rvRowType)
     rvb.startStruct()
@@ -319,20 +319,6 @@ class LocalLDPruneSuite extends SparkSuite {
 
   @Test def testRandom() {
     Spec.check()
-  }
-
-  @Test def testInputs() {
-    // r2 negative
-    intercept[HailException](LocalLDPrune(vds, r2Threshold = -0.1, windowSize = 1000, maxQueueSize = 1))
-
-    // r2 > 1
-    intercept[HailException](LocalLDPrune(vds, r2Threshold = 1.1, windowSize = 1000, maxQueueSize = 1))
-
-    // windowSize negative
-    intercept[HailException](LocalLDPrune(vds, r2Threshold = 0.5, windowSize = -2, maxQueueSize = 1))
-
-    // max queue size < 1
-    intercept[HailException](LocalLDPrune(vds, r2Threshold = 0.5, windowSize = 1000, maxQueueSize = 0))
   }
 
   @Test def testNoPrune() {

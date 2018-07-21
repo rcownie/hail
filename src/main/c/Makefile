@@ -123,4 +123,3 @@ endif
 $(shared_library): libsimdpp-2.0-rc2 $(OBJECTS)
 	-mkdir -p $(basename $(shared_library))
 	$(CXX) $(LIBFLAGS) $(LIBDIRS) $(CXXFLAGS) $(OBJECTS) -o $@ 
-

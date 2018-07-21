@@ -27,7 +27,6 @@ object Interpret {
 
     var ir = ir0.unwrap
     if (optimize) {
-      log.info("interpret: PRE-OPT\n" + Pretty(ir))
       ir = Optimize(ir)
       TypeCheck(ir, typeEnv, agg.map { agg =>
         agg._2.fields.foldLeft(Env.empty[Type]) { case (env, f) =>
@@ -175,7 +174,7 @@ object Interpret {
             case GTEQ(t, _) => t.ordering.gteq(lValue, rValue)
           }
 
-      case MakeArray(elements, _) => elements.map(interpret(_, env, args, agg)).toIndexedSeq
+      case MakeArray(elements, _) => elements.map(interpret(_, env, args, agg)).toFastIndexedSeq
       case ArrayRef(a, i) =>
         val aValue = interpret(a, env, args, agg)
         val iValue = interpret(i, env, args, agg)
@@ -244,8 +243,8 @@ object Interpret {
           null
         else
           cValue match {
-            case s: Set[_] =>
-              s.toIndexedSeq.sorted(ordering)
+            case s: Set[Any] =>
+              s.toFastIndexedSeq.sorted(ordering)
             case d: Map[_, _] => d.iterator.map { case (k, v) => Row(k, v) }.toFastIndexedSeq.sorted(ordering)
             case a => a
           }
@@ -328,40 +327,54 @@ object Interpret {
         ()
       case Begin(xs) =>
         xs.foreach(x => Interpret(x))
-      case x@SeqOp(a, i, aggSig, seqOpArgs) =>
+      case x@SeqOp(i, seqOpArgs, aggSig) =>
         assert(i == I32(0))
         aggSig.op match {
           case Inbreeding() =>
-            val IndexedSeq(af) = seqOpArgs
+            val IndexedSeq(a, af) = seqOpArgs
             aggregator.get.asInstanceOf[InbreedingAggregator].seqOp(interpret(a), interpret(af))
           case TakeBy() =>
-            val IndexedSeq(key) = seqOpArgs
-            aggregator.get.asInstanceOf[TakeByAggregator[_]].seqOp(interpret(a), interpret(key))
+            val IndexedSeq(a, ordering) = seqOpArgs
+            aggregator.get.asInstanceOf[TakeByAggregator[_]].seqOp(interpret(a), interpret(ordering))
+          case Count() =>
+            assert(seqOpArgs.isEmpty)
+            aggregator.get.asInstanceOf[CountAggregator].seqOp(0) // 0 is a dummy value
+          case LinearRegression() =>
+            val IndexedSeq(y, xs) = seqOpArgs
+            aggregator.get.asInstanceOf[LinearRegressionAggregator].seqOp(interpret(y), interpret(xs))
           case _ =>
+            val IndexedSeq(a) = seqOpArgs
             aggregator.get.seqOp(interpret(a))
         }
       case x@ApplyAggOp(a, constructorArgs, initOpArgs, aggSig) =>
-        val aggType = aggSig.inputType
+        val seqOpArgTypes = aggSig.seqOpArgs
         assert(AggOp.getType(aggSig) == x.typ)
         val aggregator = aggSig.op match {
           case CallStats() =>
-            assert(aggType == TCall())
+            assert(seqOpArgTypes == FastIndexedSeq(TCall()))
             val nAlleles = interpret(initOpArgs.get(0))
             new CallStatsAggregator(_ => nAlleles)
           case Inbreeding() =>
-            assert(aggType == TCall())
+            assert(seqOpArgTypes == FastIndexedSeq(TCall(), TFloat64()))
             new InbreedingAggregator(null)
           case HardyWeinberg() =>
-            assert(aggType == TCall())
+            assert(seqOpArgTypes == FastIndexedSeq(TCall()))
             new HWEAggregator()
           case Count() => new CountAggregator()
-          case Collect() => new CollectAggregator(aggType)
-          case Counter() => new CounterAggregator(aggType)
-          case CollectAsSet() => new CollectSetAggregator(aggType)
+          case Collect() =>
+            val IndexedSeq(aggType) = seqOpArgTypes
+            new CollectAggregator(aggType)
+          case Counter() =>
+            val IndexedSeq(aggType) = seqOpArgTypes
+            new CounterAggregator(aggType)
+          case CollectAsSet() =>
+            val IndexedSeq(aggType) = seqOpArgTypes
+            new CollectSetAggregator(aggType)
           case Fraction() =>
-            assert(aggType == TBoolean())
+            assert(seqOpArgTypes == FastIndexedSeq(TBoolean()))
             new FractionAggregator(a => a)
           case Sum() =>
+            val IndexedSeq(aggType) = seqOpArgTypes
             aggType match {
               case TInt64(_) => new SumAggregator[Long]()
               case TFloat64(_) => new SumAggregator[Double]()
@@ -369,11 +382,13 @@ object Interpret {
               case TArray(TFloat64(_), _) => new SumArrayAggregator[Double]()
             }
           case Product() =>
+            val IndexedSeq(aggType) = seqOpArgTypes
             aggType match {
               case TInt64(_) => new ProductAggregator[Long]()
               case TFloat64(_) => new ProductAggregator[Double]()
             }
           case Min() =>
+            val IndexedSeq(aggType) = seqOpArgTypes
             aggType match {
               case TInt32(_) => new MinAggregator[Int, java.lang.Integer]()
               case TInt64(_) => new MinAggregator[Long, java.lang.Long]()
@@ -381,6 +396,7 @@ object Interpret {
               case TFloat64(_) => new MinAggregator[Double, java.lang.Double]()
             }
           case Max() =>
+            val IndexedSeq(aggType) = seqOpArgTypes
             aggType match {
               case TInt32(_) => new MaxAggregator[Int, java.lang.Integer]()
               case TInt64(_) => new MaxAggregator[Long, java.lang.Long]()
@@ -388,14 +404,18 @@ object Interpret {
               case TFloat64(_) => new MaxAggregator[Double, java.lang.Double]()
             }
           case Take() =>
-            val Seq(n) = constructorArgs
+            val IndexedSeq(n) = constructorArgs
+            val IndexedSeq(aggType) = seqOpArgTypes
             val nValue = interpret(n, Env.empty[Any], null, null).asInstanceOf[Int]
             new TakeAggregator(aggType, nValue)
           case TakeBy() =>
             val IndexedSeq(n) = constructorArgs
+            val IndexedSeq(aggType, _) = seqOpArgTypes
             val nValue = interpret(n, Env.empty[Any], null, null).asInstanceOf[Int]
-            val IndexedSeq(key) = a.asInstanceOf[SeqOp].args
-            val ord = key.typ.ordering.toOrdering
+            val seqOps = Extract(a, _.isInstanceOf[SeqOp]).map(_.asInstanceOf[SeqOp])
+            assert(seqOps.length == 1)
+            val IndexedSeq(_, ordering: IR) = seqOps.head.args
+            val ord = ordering.typ.ordering.toOrdering
             new TakeByAggregator(aggType, null, nValue)(ord)
           case Statistics() => new StatAggregator()
           case InfoScore() => new InfoScoreAggregator()
@@ -417,6 +437,10 @@ object Interpret {
 
             val indices = Array.tabulate(binsValue + 1)(i => startValue + i * binSize)
             new HistAggregator(indices)
+          case LinearRegression() =>
+            val Seq(nxs) = constructorArgs
+            val nxsValue = interpret(nxs, Env.empty[Any], null, null).asInstanceOf[Int]
+            new LinearRegressionAggregator(null, nxsValue)
         }
         val Some((aggElements, aggElementType)) = agg
         aggElements.foreach { element =>
@@ -427,6 +451,8 @@ object Interpret {
           interpret(a, env, FastIndexedSeq(), None, Some(aggregator))
         }
         aggregator.result
+      case x@ApplyScanOp(a, constructorArgs, initOpArgs, aggSig) =>
+        throw new UnsupportedOperationException("interpreter doesn't support scans right now.")
       case MakeStruct(fields) =>
         Row.fromSeq(fields.map { case (name, fieldIR) => interpret(fieldIR, env, args, agg) })
       case SelectFields(old, fields) =>
@@ -545,23 +571,28 @@ object Interpret {
       case MatrixWrite(child, f) =>
         val mv = child.execute(HailContext.get)
         f(mv)
-      case TableWrite(child, path, overwrite, codecSpecJSONStr) =>
+      case TableWrite(child, path, overwrite, stageLocally, codecSpecJSONStr) =>
         val hc = HailContext.get
         val tableValue = child.execute(hc)
-        tableValue.write(path, overwrite, codecSpecJSONStr)
+        tableValue.write(path, overwrite, stageLocally, codecSpecJSONStr)
       case TableExport(child, path, typesFile, header, exportType) =>
         val hc = HailContext.get
         val tableValue = child.execute(hc)
         tableValue.export(path, typesFile, header, exportType)
       case TableAggregate(child, query) =>
         val localGlobalSignature = child.typ.globalType
-        val (rvAggs, initOps, seqOps, aggResultType, f, t) = CompileWithAggregators[Long, Long, Long, Long](
+        val (rvAggs, initOps, seqOps, aggResultType, postAggIR) = CompileWithAggregators[Long, Long, Long](
           "global", child.typ.globalType,
           "global", child.typ.globalType,
           "row", child.typ.rowType,
-          MakeTuple(Array(query)),
+          MakeTuple(Array(query)), "AGGR",
           (nAggs: Int, initOpIR: IR) => initOpIR,
           (nAggs: Int, seqOpIR: IR) => seqOpIR)
+
+        val (t, f) = Compile[Long, Long, Long](
+          "AGGR", aggResultType,
+          "global", child.typ.globalType,
+          postAggIR)
 
         val value = child.execute(HailContext.get)
         val globalsBc = value.globals.broadcast
@@ -578,21 +609,110 @@ object Interpret {
             initOps()(region, rvAggs, globals, false)
           }
 
-          value.rvd.aggregate[Array[RegionValueAggregator]](rvAggs)({ case (rvaggs, rv) =>
-            // add globals to region value
-            val rowOffset = rv.offset
+          val zval = rvAggs
+          val combOp = { (rvAggs1: Array[RegionValueAggregator], rvAggs2: Array[RegionValueAggregator]) =>
+            rvAggs1.zip(rvAggs2).foreach { case (rvAgg1, rvAgg2) => rvAgg1.combOp(rvAgg2) }
+            rvAggs1
+          }
+          value.rvd.aggregateWithPartitionOp(rvAggs, ctx => {
+            val r = ctx.freshRegion
             val rvb = new RegionValueBuilder()
-            rvb.set(rv.region)
+            rvb.set(r)
             rvb.start(localGlobalSignature)
             rvb.addAnnotation(localGlobalSignature, globalsBc.value)
             val globalsOffset = rvb.end()
+            val seqOpsFunction = seqOps()
+            (globalsOffset, seqOpsFunction)
+          })( { case ((globalsOffset, seqOpsFunction), comb, rv) =>
+            seqOpsFunction(rv.region, comb, globalsOffset, false, rv.offset, false)
+          }, combOp)
+        } else
+          Array.empty[RegionValueAggregator]
 
-            seqOps()(rv.region, rvAggs, globalsOffset, false, rowOffset, false)
-            rvAggs
-          }, { (rvAggs1, rvAggs2) =>
+        Region.scoped { region =>
+          val rvb: RegionValueBuilder = new RegionValueBuilder()
+          rvb.set(region)
+
+          rvb.start(aggResultType)
+          rvb.startStruct()
+          aggResults.foreach(_.result(rvb))
+          rvb.endStruct()
+          val aggResultsOffset = rvb.end()
+
+          rvb.start(localGlobalSignature)
+          rvb.addAnnotation(localGlobalSignature, globalsBc.value)
+          val globalsOffset = rvb.end()
+
+          val resultOffset = f()(region, aggResultsOffset, false, globalsOffset, false)
+
+          SafeRow(coerce[TTuple](t), region, resultOffset)
+            .get(0)
+        }
+      case MatrixAggregate(child, query) =>
+        val localGlobalSignature = child.typ.globalType
+        val value = child.execute(HailContext.get)
+        val colArrayType = TArray(child.typ.colType)
+        val (rvAggs, initOps, seqOps, aggResultType, postAggIR) = CompileWithAggregators[Long, Long, Long, Long](
+          "global", child.typ.globalType,
+          "global", child.typ.globalType,
+          "sa", colArrayType,
+          "va", child.typ.rvRowType,
+          MakeTuple(Array(query)), "AGGR",
+          (nAggs: Int, initOpIR: IR) => initOpIR,
+          (nAggs: Int, seqOpIR: IR) =>
+            ArrayFor(
+              ArrayRange(I32(0), I32(value.nCols), I32(1)),
+              "idx",
+              Let(
+                "sa",
+                ArrayRef(Ref("sa", colArrayType), Ref("idx", TInt32Optional)),
+                Let(
+                  "g",
+                  ArrayRef(GetField(Ref("va", child.typ.rvRowType), MatrixType.entriesIdentifier), Ref("idx", TInt32Optional)),
+                  seqOpIR))))
+
+        val (t, f) = Compile[Long, Long, Long](
+          "AGGR", aggResultType,
+          "global", child.typ.globalType,
+          postAggIR)
+
+        val globalsBc = value.globals.broadcast
+        val colValuesBc = value.colValues.broadcast
+        val localColsType = TArray(child.typ.colType)
+
+        val aggResults = if (rvAggs.nonEmpty) {
+          Region.scoped { region =>
+            val rvb: RegionValueBuilder = new RegionValueBuilder()
+            rvb.set(region)
+
+            rvb.start(localGlobalSignature)
+            rvb.addAnnotation(localGlobalSignature, globalsBc.value)
+            val globals = rvb.end()
+
+            initOps()(region, rvAggs, globals, false)
+          }
+
+          val zval = rvAggs
+          val combOp = { (rvAggs1: Array[RegionValueAggregator], rvAggs2: Array[RegionValueAggregator]) =>
             rvAggs1.zip(rvAggs2).foreach { case (rvAgg1, rvAgg2) => rvAgg1.combOp(rvAgg2) }
             rvAggs1
-          })
+          }
+
+          value.rvd.aggregateWithPartitionOp(rvAggs, ctx => {
+            val r = ctx.freshRegion
+            val rvb = new RegionValueBuilder()
+            rvb.set(r)
+            rvb.start(localGlobalSignature)
+            rvb.addAnnotation(localGlobalSignature, globalsBc.value)
+            val globalsOffset = rvb.end()
+            rvb.start(localColsType)
+            rvb.addAnnotation(localColsType, colValuesBc.value)
+            val colsOffset = rvb.end()
+            val seqOpsFunction = seqOps()
+            (globalsOffset, colsOffset, seqOpsFunction)
+          })( { case ((globalsOffset, colsOffset, seqOpsFunction), comb, rv) =>
+            seqOpsFunction(rv.region, comb, globalsOffset, false, colsOffset, false, rv.offset, false)
+          }, combOp)
         } else
           Array.empty[RegionValueAggregator]
 

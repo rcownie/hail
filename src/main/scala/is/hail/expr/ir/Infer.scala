@@ -7,7 +7,7 @@ object Infer {
     ir match {
       case If(cond, cnsq, altr) =>
         assert(cond.typ.isOfType(TBoolean()))
-        assert(cnsq.typ == altr.typ, s"${ cnsq.typ }, ${ altr.typ }, $cond")
+        assert(cnsq.typ == altr.typ, s"mismatch:\n  ${ cnsq.typ }\n  ${ altr.typ }\n  $cond")
         cnsq.typ
 
       case Let(name, value, body) =>
@@ -46,6 +46,8 @@ object Infer {
         zero.typ
       case ApplyAggOp(a, constructorArgs, initOpArgs, aggSig) =>
         AggOp.getType(aggSig)
+      case ApplyScanOp(a, constructorArgs, initOpArgs, aggSig) =>
+        AggOp.getType(aggSig)
       case MakeStruct(fields) =>
         TStruct(fields.map { case (name, a) =>
           (name, a.typ)
@@ -74,6 +76,8 @@ object Infer {
         assert(idx >= 0 && idx < t.size)
         -t.types(idx)
       case TableAggregate(child, query) =>
+        query.typ
+      case MatrixAggregate(child, query) =>
         query.typ
     }
   }

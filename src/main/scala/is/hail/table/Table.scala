@@ -4,7 +4,7 @@ import is.hail.HailContext
 import is.hail.annotations._
 import is.hail.expr._
 import is.hail.expr.ir
-import is.hail.expr.ir.{IR, Pretty, TableAggregateByKey, TableExplode, TableFilter, TableIR, TableJoin, TableKeyBy, TableLiteral, TableMapGlobals, TableMapRows, TableParallelize, TableRange, TableRead, TableUnion, TableUnkey, TableValue}
+import is.hail.expr.ir.{IR, Pretty, TableAggregateByKey, TableExplode, TableFilter, TableIR, TableJoin, TableKeyBy, TableLiteral, TableMapGlobals, TableMapRows, TableOrderBy, TableParallelize, TableRange, TableRead, TableToMatrixTable, TableUnion, TableUnkey, TableValue}
 import is.hail.expr.types._
 import is.hail.io.plink.{FamFileConfig, LoadPlink}
 import is.hail.methods.Aggregators
@@ -32,11 +32,7 @@ case object Ascending extends SortOrder
 
 case object Descending extends SortOrder
 
-object SortColumn {
-  implicit def fromColumn(column: String): SortColumn = SortColumn(column, Ascending)
-}
-
-case class SortColumn(column: String, sortOrder: SortOrder)
+case class SortField(field: String, sortOrder: SortOrder)
 
 case class TableSpec(
   file_version: Int,
@@ -60,23 +56,8 @@ object Table {
     Table(hc, df.rdd, signature, key)
   }
 
-  def read(hc: HailContext, path: String, rowFields: Set[String] = null): Table = {
-    val successFile = path + "/_SUCCESS"
-    if (!hc.hadoopConf.exists(path + "/_SUCCESS"))
-      fatal(s"write failed: file not found: $successFile")
-
-    val spec = (RelationalSpec.read(hc, path): @unchecked) match {
-      case ts: TableSpec => ts
-      case _: MatrixTableSpec => fatal(s"file is a MatrixTable, not a Table: '$path'")
-    }
-
-    var typ = spec.table_type
-    if (rowFields != null)
-      typ = typ.copy(
-        rowType = typ.rowType.filterSet(rowFields)._1)
-
-    new Table(hc, TableRead(path, spec, typ, dropRows = false))
-  }
+  def read(hc: HailContext, path: String): Table =
+    new Table(hc, TableIR.read(hc, path, dropRows = false, None))
 
   def parallelize(hc: HailContext, rowsJSON: String, signature: TStruct,
     keyNames: Option[java.util.ArrayList[String]], nPartitions: Option[Int]): Table = {
@@ -230,10 +211,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
   def typ: TableType = tir.typ
   
   lazy val value: TableValue = {
-    log.info("in Table.value: pre-opt:\n" + ir.Pretty(tir))
     val opt = ir.Optimize(tir)
-    log.info("in Table.value: post-opt:\n" + ir.Pretty(opt))
-
     opt.execute(hc)
   }
 
@@ -542,9 +520,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
   }
 
   def distinctByKey(): Table = {
-    require(key.isDefined)
-    val sorted = keyBy(key.get.toArray, sort = true)
-    sorted.copy2(rvd = sorted.rvd.asInstanceOf[OrderedRVD].distinctByKey())
+    new Table(hc, ir.TableDistinct(tir))
   }
 
   def groupByKey(name: String): Table = {
@@ -577,162 +553,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
     partitionKeys: Array[String],
     nPartitions: Option[Int] = None
   ): MatrixTable = {
-
-    // no fields used twice
-    val fieldsUsed = mutable.Set.empty[String]
-    (rowKeys ++ colKeys ++ rowFields ++ colFields).foreach { f =>
-      assert(!fieldsUsed.contains(f))
-      fieldsUsed += f
-    }
-
-    val entryFields = fieldNames.filter(f => !fieldsUsed.contains(f))
-
-    // need keys for rows and cols
-    assert(rowKeys.nonEmpty)
-    assert(colKeys.nonEmpty)
-
-    // check partition key is appropriate and not empty
-    assert(rowKeys.startsWith(partitionKeys))
-    assert(partitionKeys.nonEmpty)
-
-    val fullRowType = signature
-
-    val colKeyIndices = colKeys.map(signature.fieldIdx(_))
-    val colValueIndices = colFields.map(signature.fieldIdx(_))
-
-    val localColData = rvd.mapPartitions { it =>
-      val ur = new UnsafeRow(fullRowType)
-      it.map { rv =>
-        val colKey = SafeRow.selectFields(fullRowType, rv)(colKeyIndices)
-        val colValues = SafeRow.selectFields(fullRowType, rv)(colValueIndices)
-        colKey -> colValues
-      }
-    }.reduceByKey({ case (l, _) => l }) // poor man's distinctByKey
-      .collect()
-
-    val nCols = localColData.length
-    info(s"found $nCols columns")
-
-    val colIndexBc = hc.sc.broadcast(localColData.zipWithIndex
-      .map { case ((k, _), i) => (k, i) }
-      .toMap)
-
-    val rowType = TStruct((rowKeys ++ rowFields).map(f => f -> signature.fieldByName(f).typ): _*)
-    val colType = TStruct((colKeys ++ colFields).map(f => f -> signature.fieldByName(f).typ): _*)
-    val entryType = TStruct(entryFields.map(f => f -> signature.fieldByName(f).typ): _*)
-
-    val colDataConcat = localColData.map { case (keys, values) => Row.fromSeq(keys.toSeq ++ values.toSeq): Annotation }
-
-    // allFieldIndices has all row + entry fields
-    val allFieldIndices = rowKeys.map(signature.fieldIdx(_)) ++ rowFields.map(signature.fieldIdx(_)) ++ entryFields.map(signature.fieldIdx(_))
-
-    // FIXME replace with field namespaces
-    val INDEX_UID = "*** COL IDX ***"
-
-    // row and entry fields, plus an integer index
-    val rowEntryStruct = rowType ++ entryType ++ TStruct(INDEX_UID -> TInt32Optional)
-
-    val rowEntryRVD = rvd.mapPartitions(rowEntryStruct) { it =>
-      val ur = new UnsafeRow(fullRowType)
-      val rvb = new RegionValueBuilder()
-      val rv2 = RegionValue()
-
-      it.map { rv =>
-        rvb.set(rv.region)
-
-        rvb.start(rowEntryStruct)
-        rvb.startStruct()
-
-        // add all non-col fields
-        var i = 0
-        while (i < allFieldIndices.length) {
-          rvb.addField(fullRowType, rv, allFieldIndices(i))
-          i += 1
-        }
-
-        // look up col key, replace with int index
-        ur.set(rv)
-        val colKey = Row.fromSeq(colKeyIndices.map(ur.get))
-        val idx = colIndexBc.value(colKey)
-        rvb.addInt(idx)
-
-        rvb.endStruct()
-        rv2.set(rv.region, rvb.end())
-        rv2
-      }
-    }
-
-    val ordType = new OrderedRVDType(partitionKeys, rowKeys ++ Array(INDEX_UID), rowEntryStruct)
-    val ordered = OrderedRVD.coerce(ordType, rowEntryRVD)
-
-    val matrixType: MatrixType = MatrixType.fromParts(
-      globalSignature,
-      colKeys,
-      colType,
-      partitionKeys,
-      rowKeys,
-      rowType,
-      entryType)
-
-    val orderedEntryIndices = entryFields.map(rowEntryStruct.fieldIdx)
-    val orderedRKIndices = rowKeys.map(rowEntryStruct.fieldIdx)
-    val orderedRowIndices = (rowKeys ++ rowFields).map(rowEntryStruct.fieldIdx)
-
-    val idxIndex = rowEntryStruct.fieldIdx(INDEX_UID)
-    assert(idxIndex == rowEntryStruct.size - 1)
-
-    val newRVType = matrixType.rvRowType
-    val orderedRKStruct = matrixType.rowKeyStruct
-
-    val newRVD = ordered.boundary.mapPartitionsPreservesPartitioning(matrixType.orvdType, { (ctx, it) =>
-      val region = ctx.region
-      val rvb = ctx.rvb
-      val outRV = RegionValue(region)
-
-      OrderedRVIterator(
-        new OrderedRVDType(partitionKeys, rowKeys, rowEntryStruct),
-        it,
-        ctx
-      ).staircase.map { rowIt =>
-        rvb.start(newRVType)
-        rvb.startStruct()
-        var i = 0
-        while (i < orderedRowIndices.length) {
-          rvb.addField(rowEntryStruct, rowIt.value, orderedRowIndices(i))
-          i += 1
-        }
-        rvb.startArray(nCols)
-        i = 0
-        for (rv <- rowIt) {
-          val nextInt = rv.region.loadInt(rowEntryStruct.fieldOffset(rv.offset, idxIndex))
-          while (i < nextInt) {
-            rvb.setMissing()
-            i += 1
-          }
-          rvb.startStruct()
-          var j = 0
-          while (j < orderedEntryIndices.length) {
-            rvb.addField(rowEntryStruct, rv, orderedEntryIndices(j))
-            j += 1
-          }
-          rvb.endStruct()
-          i += 1
-        }
-        while (i < nCols) {
-          rvb.setMissing()
-          i += 1
-        }
-        rvb.endArray()
-        rvb.endStruct()
-        outRV.setOffset(rvb.end())
-        outRV
-      }
-    })
-    new MatrixTable(hc,
-      matrixType,
-      globals,
-      BroadcastIndexedSeq(colDataConcat, TArray(matrixType.colType), hc.sc),
-      newRVD)
+    new MatrixTable(hc, TableToMatrixTable(tir, rowKeys, colKeys, rowFields, colFields, partitionKeys, nPartitions))
   }
 
   def aggregateByKey(expr: String, oldAggExpr: String, nPartitions: Option[Int] = None): Table = {
@@ -815,8 +636,8 @@ class Table(val hc: HailContext, val tir: TableIR) {
   }
 
 
-  def write(path: String, overwrite: Boolean = false, codecSpecJSONStr: String = null) {
-    ir.Interpret(ir.TableWrite(tir, path, overwrite, codecSpecJSONStr))
+  def write(path: String, overwrite: Boolean = false, stageLocally: Boolean = false, codecSpecJSONStr: String = null) {
+    ir.Interpret(ir.TableWrite(tir, path, overwrite, stageLocally, codecSpecJSONStr))
   }
 
   def cache(): Table = persist("MEMORY_ONLY")
@@ -834,36 +655,8 @@ class Table(val hc: HailContext, val tir: TableIR) {
 
   def unpersist(): Table = copy2(rvd = rvd.unpersist())
 
-  def orderBy(sortCols: SortColumn*): Table =
-    orderBy(sortCols.toArray)
-
-  def orderBy(sortCols: Array[SortColumn]): Table = {
-    val sortColIndexOrd = sortCols.map { case SortColumn(n, so) =>
-      val i = signature.fieldIdx(n)
-      val f = signature.fields(i)
-      val fo = f.typ.ordering
-      (i, if (so == Ascending) fo else fo.reverse)
-    }
-
-    val ord: Ordering[Annotation] = new Ordering[Annotation] {
-      def compare(a: Annotation, b: Annotation): Int = {
-        var i = 0
-        while (i < sortColIndexOrd.length) {
-          val (fi, ford) = sortColIndexOrd(i)
-          val c = ford.compare(
-            a.asInstanceOf[Row].get(fi),
-            b.asInstanceOf[Row].get(fi))
-          if (c != 0) return c
-          i += 1
-        }
-
-        0
-      }
-    }
-
-    val act = implicitly[ClassTag[Annotation]]
-    // FIXME: need to add sortBy on rvd?
-    copy(rdd = rdd.sortBy(identity[Annotation], ascending = true)(ord, act))
+  def orderBy(sortFields: Array[SortField]): Table = {
+    new Table(hc, TableOrderBy(ir.TableUnkey(tir), sortFields))
   }
 
   def repartition(n: Int, shuffle: Boolean = true): Table = copy2(rvd = rvd.coalesce(n, shuffle))

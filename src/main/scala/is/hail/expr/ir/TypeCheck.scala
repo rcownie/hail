@@ -28,6 +28,7 @@ object TypeCheck {
 
       case NA(t) =>
         assert(t != null)
+        assert(!t.required)
       case IsNA(v) =>
         check(v)
 
@@ -137,15 +138,15 @@ object TypeCheck {
         val tarray = coerce[TArray](a.typ)
         check(body, env = env.bind(valueName -> -tarray.elementType))
         assert(body.typ == TVoid)
-      case x@InitOp(i, args, _) =>
+      case x@InitOp(i, args, aggSig) =>
         args.foreach(check(_))
         check(i)
+        assert(Some(args.map(_.typ)) == aggSig.initOpArgs)
         assert(i.typ.isInstanceOf[TInt32])
-      case x@SeqOp(a, i, aggSig, args) =>
-        check(a)
+      case x@SeqOp(i, args, aggSig) =>
         check(i)
         args.foreach(check(_))
-        assert(a.typ == aggSig.inputType)
+        assert(args.map(_.typ) == aggSig.seqOpArgs)
         assert(i.typ.isInstanceOf[TInt32])
       case x@Begin(xs) =>
         xs.foreach { x =>
@@ -154,6 +155,12 @@ object TypeCheck {
         }
       case x@ApplyAggOp(a, constructorArgs, initOpArgs, aggSig) =>
         check(a, env = aggEnv.get)
+        constructorArgs.foreach(check(_))
+        initOpArgs.foreach(_.foreach(check(_)))
+        assert(a.typ == TVoid)
+        assert(x.typ == AggOp.getType(aggSig))
+      case x@ApplyScanOp(a, constructorArgs, initOpArgs, aggSig) =>
+        check(a)
         constructorArgs.foreach(check(_))
         initOpArgs.foreach(_.foreach(check(_)))
         assert(a.typ == TVoid)
@@ -230,7 +237,21 @@ object TypeCheck {
               env.bind(n, t)
           }))
         assert(x.typ == query.typ)
-      case TableWrite(_, _, _, _) =>
+      case x@MatrixAggregate(child, query) =>
+        val aggregationST = Map(
+          "global" -> (0, child.typ.globalType),
+          "g" -> (1, child.typ.entryType),
+          "va" -> (2, child.typ.rvRowType),
+          "sa" -> (3, child.typ.colType))
+        val env = Env.empty[Type]
+          .bind("global" -> child.typ.globalType)
+          .bind("AGG" -> TAggregable(child.typ.entryType, aggregationST))
+        val aggEnv = Env.empty[Type].bind(aggregationST.toArray.map { case (name, (_, t)) => name -> t }: _*)
+        check(query,
+          env = env,
+          aggEnv = Some(aggEnv))
+        assert(x.typ == query.typ)
+      case TableWrite(_, _, _, _, _) =>
       case TableExport(_, _, _, _, _) =>
       case TableCount(_) =>
     }

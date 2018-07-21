@@ -32,6 +32,18 @@ object Simplify {
     }
   }
 
+  private[this] def areFieldSelects(fields: Seq[(String, IR)]): Boolean = {
+    assert(fields.nonEmpty)
+    fields.head match {
+      case (_, GetField(s1, _)) =>
+        fields.forall {
+          case (f1, GetField(s2, f2)) if f1 == f2 && s1 == s2 => true
+          case _ => false
+        }
+      case _ => false
+    }
+  }
+
   def apply(ir: BaseIR): BaseIR = {
     RewriteBottomUp(ir, matchErrorToNone {
       // optimize IR
@@ -71,6 +83,13 @@ object Simplify {
       case ArrayFilter(a, _, True()) => a
 
       case Let(n, v, b) if !Mentions(b, n) => b
+
+      case Let(n, v, b) if CountMentions(b, n) == 1 =>
+        Subst(b, Env.empty[IR].bind(n, v))
+
+      case Let(_, _, Begin(Seq())) => Begin(FastIndexedSeq())
+
+      case ArrayFor(_, _, Begin(Seq())) => Begin(FastIndexedSeq())
 
       case ArrayFold(ArrayMap(a, n1, b), zero, accumName, valueName, body) => ArrayFold(a, zero, accumName, n1, Let(valueName, b, body))
 
@@ -120,6 +139,9 @@ object Simplify {
 
       case GetTupleElement(MakeTuple(xs), idx) => xs(idx)
 
+      case ApplyIR("annotate", Seq(s1, MakeStruct(Seq())), _) =>
+        s1
+
       // optimize TableIR
       case TableFilter(t, True()) => t
 
@@ -130,6 +152,12 @@ object Simplify {
         TableFilter(t,
           ApplySpecial("&&", Array(p1, p2)))
 
+      case TableFilter(TableOrderBy(child, sortFields), pred) =>
+        TableOrderBy(TableFilter(child, pred), sortFields)
+
+      case TableKeyBy(TableOrderBy(child, sortFields), keys, nPartitionKeys, true) =>
+        TableKeyBy(child, keys, nPartitionKeys, true)
+
       case TableCount(TableMapGlobals(child, _, _)) => TableCount(child)
 
       case TableCount(TableMapRows(child, _, _, _)) => TableCount(child)
@@ -139,11 +167,19 @@ object Simplify {
 
       case TableCount(TableKeyBy(child, _, _, _)) => TableCount(child)
 
+      case TableCount(TableOrderBy(child, _)) => TableCount(child)
+
       case TableCount(TableUnkey(child)) => TableCount(child)
 
       case TableCount(TableRange(n, _)) => I64(n)
 
       case TableCount(TableParallelize(_, rows, _)) => I64(rows.length)
+
+      case ApplyIR("annotate", Seq(s, MakeStruct(fields)), _) =>
+        InsertFields(s, fields)
+
+      case SelectFields(SelectFields(old, _), fields) =>
+        SelectFields(old, fields)
 
         // flatten unions
       case TableUnion(children) if children.exists(_.isInstanceOf[TableUnion]) =>
@@ -155,23 +191,61 @@ object Simplify {
       // optimize MatrixIR
 
       // Equivalent rewrites for the new Filter{Cols,Rows}IR
-      case MatrixFilterRows(MatrixRead(typ, partitionCounts, dropCols, _, reader), False() | NA(_)) =>
-        MatrixRead(typ, partitionCounts, dropCols, dropRows = true, reader)
+      case MatrixFilterRows(MatrixRead(typ, dropCols, _, reader), False() | NA(_)) =>
+        MatrixRead(typ, dropCols, dropRows = true, reader)
 
-      case MatrixFilterCols(MatrixRead(typ, partitionCounts, _, dropRows, reader), False() | NA(_)) =>
-        MatrixRead(typ, partitionCounts, dropCols = true, dropRows, reader)
+      case MatrixFilterCols(MatrixRead(typ, _, dropRows, reader), False() | NA(_)) =>
+        MatrixRead(typ, dropCols = true, dropRows, reader)
 
       // Ignore column or row data that is immediately dropped
-      case MatrixRowsTable(MatrixRead(typ, partitionCounts, false, dropRows, reader)) =>
-        MatrixRowsTable(MatrixRead(typ, partitionCounts, dropCols = true, dropRows, reader))
+      case MatrixRowsTable(MatrixRead(typ, false, dropRows, reader)) =>
+        MatrixRowsTable(MatrixRead(typ, dropCols = true, dropRows, reader))
 
-      case MatrixColsTable(MatrixRead(typ, partitionCounts, dropCols, false, reader)) =>
-        MatrixColsTable(MatrixRead(typ, partitionCounts, dropCols, dropRows = true, reader))
+      case MatrixColsTable(MatrixRead(typ, dropCols, false, reader)) =>
+        MatrixColsTable(MatrixRead(typ, dropCols, dropRows = true, reader))
 
       // Keep all rows/cols = do nothing
       case MatrixFilterRows(m, True()) => m
 
       case MatrixFilterCols(m, True()) => m
+
+      case MatrixRowsTable(MatrixFilterRows(child, newRow))
+        if !Mentions(newRow, "g") && !Mentions(newRow, "sa") && !ContainsAgg(newRow) =>
+        val mrt = MatrixRowsTable(child)
+        TableFilter(
+          mrt,
+          Subst(newRow, Env.empty[IR].bind("va" -> Ref("row", mrt.typ.rowType))))
+      case MatrixRowsTable(MatrixMapGlobals(child, newRow, value)) => TableMapGlobals(MatrixRowsTable(child), newRow, value)
+      case MatrixRowsTable(MatrixMapCols(child, _, _)) => MatrixRowsTable(child)
+      case MatrixRowsTable(MatrixMapEntries(child, _)) => MatrixRowsTable(child)
+      case MatrixRowsTable(MatrixFilterEntries(child, _)) => MatrixRowsTable(child)
+      case MatrixRowsTable(MatrixFilterCols(child, _)) => MatrixRowsTable(child)
+      case MatrixRowsTable(MatrixAggregateColsByKey(child, _)) => MatrixRowsTable(child)
+      case MatrixRowsTable(MatrixChooseCols(child, _)) => MatrixRowsTable(child)
+      case MatrixRowsTable(MatrixCollectColsByKey(child)) => MatrixRowsTable(child)
+
+      case MatrixColsTable(MatrixMapCols(child, newRow, newKey))
+        if newKey.isEmpty && !Mentions(newRow, "g") && !Mentions(newRow, "va") && !ContainsAgg(newRow) =>
+        val mct = MatrixColsTable(child)
+        TableMapRows(
+          mct,
+          Subst(newRow, Env.empty[IR].bind("sa" -> Ref("row", mct.typ.rowType))),
+          Some(child.typ.colKey),
+          Some(child.typ.colKey.length))
+      case MatrixColsTable(MatrixFilterCols(child, newRow))
+        if !Mentions(newRow, "g") && !Mentions(newRow, "va") && !ContainsAgg(newRow) =>
+        val mct = MatrixColsTable(child)
+        TableFilter(
+          mct,
+          Subst(newRow, Env.empty[IR].bind("sa" -> Ref("row", mct.typ.rowType))))
+      case MatrixColsTable(MatrixMapGlobals(child, newRow, value)) => TableMapGlobals(MatrixColsTable(child), newRow, value)
+      case MatrixColsTable(MatrixMapRows(child, _, _)) => MatrixColsTable(child)
+      case MatrixColsTable(MatrixMapEntries(child, _)) => MatrixColsTable(child)
+      case MatrixColsTable(MatrixFilterEntries(child, _)) => MatrixColsTable(child)
+      case MatrixColsTable(MatrixFilterRows(child, _)) => MatrixColsTable(child)
+      case MatrixColsTable(MatrixAggregateRowsByKey(child, _)) => MatrixColsTable(child)
+
+      case TableCount(TableAggregateByKey(child, _)) => TableCount(TableDistinct(child))
     })
   }
 }

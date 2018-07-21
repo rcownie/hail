@@ -7,10 +7,28 @@ import is.hail.expr.types._
 import is.hail.expr.{TableAnnotationImpex, ir}
 import is.hail.rvd._
 import is.hail.sparkextras.ContextRDD
-import is.hail.table.TableSpec
+import is.hail.table.{Ascending, SortField, TableSpec}
 import is.hail.utils._
 import is.hail.variant._
 import org.apache.spark.sql.Row
+
+
+import scala.reflect.ClassTag
+
+object TableIR {
+  def read(hc: HailContext, path: String, dropRows: Boolean = false, requestedType: Option[TableType]): TableIR = {
+    val successFile = path + "/_SUCCESS"
+    if (!hc.hadoopConf.exists(path + "/_SUCCESS"))
+      fatal(s"write failed: file not found: $successFile")
+
+    val spec = (RelationalSpec.read(hc, path): @unchecked) match {
+      case ts: TableSpec => ts
+      case _: MatrixTableSpec => fatal(s"file is a MatrixTable, not a Table: '$path'")
+    }
+
+    TableRead(path, spec, requestedType.getOrElse(spec.table_type), dropRows = false)
+  }
+}
 
 abstract sealed class TableIR extends BaseIR {
   def typ: TableType
@@ -269,6 +287,15 @@ case class TableFilter(child: TableIR, pred: IR) extends TableIR {
 
   def execute(hc: HailContext): TableValue = {
     val ktv = child.execute(hc)
+
+    if (pred == True())
+      return ktv
+    else if (pred == False())
+      return ktv.copy(rvd = ktv.rvd match {
+        case orvd: OrderedRVD => OrderedRVD.empty(hc.sc, orvd.typ)
+        case urvd: UnpartitionedRVD => UnpartitionedRVD.empty(hc.sc, urvd.rowType)
+      })
+
     val (rTyp, f) = ir.Compile[Long, Long, Boolean](
       "row", child.typ.rowType,
       "global", child.typ.globalType,
@@ -410,14 +437,53 @@ case class TableMapRows(child: TableIR, newRow: IR, newKey: Option[IndexedSeq[St
 
   def execute(hc: HailContext): TableValue = {
     val tv = child.execute(hc)
-    val (rTyp, f) = ir.Compile[Long, Long, Long](
-      "row", child.typ.rowType,
-      "global", child.typ.globalType,
-      newRow)
-    assert(rTyp == typ.rowType)
     val globalsBc = tv.globals.broadcast
     val gType = typ.globalType
-    val itF = { (ctx: RVDContext, it: Iterator[RegionValue]) =>
+
+    val (scanAggs, scanInitOps, scanSeqOps, scanResultType, postScanIR) = ir.CompileWithAggregators[Long, Long, Long](
+      "global", gType,
+      "global", gType,
+      "row", tv.typ.rowType,
+      CompileWithAggregators.liftScan(newRow), "SCANR",
+      (nAggs: Int, initOp: IR) => initOp,
+      (nAggs: Int, seqOp: IR) => seqOp)
+
+    val scanAggsPerPartition = if (scanAggs.nonEmpty) {
+      Region.scoped { region =>
+        val rvb = new RegionValueBuilder(region)
+        rvb.start(gType)
+        rvb.addAnnotation(gType, globalsBc.value)
+        val globals = rvb.end()
+        scanInitOps()(region, scanAggs, globals, false)
+      }
+      tv.rvd.collectPerPartition { (ctx, it) =>
+        val rvb = new RegionValueBuilder(ctx.freshRegion)
+        rvb.start(gType)
+        rvb.addAnnotation(gType, globalsBc.value)
+        val globals = rvb.end()
+        it.foreach { rv =>
+          scanSeqOps()(rv.region, scanAggs, globals, false, rv.offset, false)
+          ctx.region.clear()
+        }
+        scanAggs
+      }.scanLeft(scanAggs) { (a1, a2) =>
+        (a1, a2).zipped.map { (agg1, agg2) =>
+          val newAgg = agg1.copy()
+          newAgg.combOp(agg2)
+          newAgg
+        }
+      }
+    } else Array.fill(tv.rvd.getNumPartitions)(Array.empty[RegionValueAggregator])
+
+    val (rTyp, f) = ir.Compile[Long, Long, Long, Long](
+      "SCANR", scanResultType,
+      "global", child.typ.globalType,
+      "row", child.typ.rowType,
+      postScanIR)
+    assert(rTyp == typ.rowType)
+
+    val itF = { (i: Int, ctx: RVDContext, it: Iterator[RegionValue]) =>
+      val partitionAggs = scanAggsPerPartition(i)
       val rvb = new RegionValueBuilder(ctx.freshRegion)
       rvb.start(gType)
       rvb.addAnnotation(gType, globalsBc.value)
@@ -425,7 +491,18 @@ case class TableMapRows(child: TableIR, newRow: IR, newKey: Option[IndexedSeq[St
       val rv2 = RegionValue()
       val newRow = f()
       it.map { rv =>
-        rv2.set(rv.region, newRow(rv.region, rv.offset, false, globals, false))
+        rvb.start(scanResultType)
+        rvb.startStruct()
+        var j = 0
+        while (j < partitionAggs.length) {
+          partitionAggs(j).result(rvb)
+          j += 1
+        }
+        rvb.endStruct()
+        val scanOffset = rvb.end()
+
+        rv2.set(rv.region, newRow(rv.region, scanOffset, false, globals, false, rv.offset, false))
+        scanSeqOps()(rv.region, partitionAggs, globals, false, rv.offset, false)
         rv2
       }
     }
@@ -439,19 +516,19 @@ case class TableMapRows(child: TableIR, newRow: IR, newKey: Option[IndexedSeq[St
                 partitionKey = key.take(pkLength).toArray,
                 key = key.toArray,
                 rowType = typ.rowType)
-              ordered.mapPartitionsPreservesPartitioning(newType, itF)
+              ordered.mapPartitionsWithIndexPreservesPartitioning(newType, itF)
             } else {
               val newType = ordered.typ.copy(
                 partitionKey = key.toArray,
                 key = key.toArray,
                 rowType = typ.rowType)
-              OrderedRVD.coerce(newType, ordered.mapPartitions(typ.rowType, itF))
+              OrderedRVD.coerce(newType, ordered.mapPartitionsWithIndex(typ.rowType, itF))
             }
           case None =>
-            ordered.mapPartitions(typ.rowType, itF)
+            ordered.mapPartitionsWithIndex(typ.rowType, itF)
         }
       case unordered: UnpartitionedRVD =>
-        unordered.mapPartitions(typ.rowType, itF)
+        unordered.mapPartitionsWithIndex(typ.rowType, itF)
     }
 
     TableValue(typ, tv.globals, newRVD)
@@ -646,6 +723,24 @@ case class MatrixEntriesTable(child: MatrixIR) extends TableIR {
   }
 }
 
+case class TableDistinct(child: TableIR) extends TableIR {
+  require(child.typ.key.isDefined)
+
+  def children: IndexedSeq[BaseIR] = Array(child)
+
+  def copy(newChildren: IndexedSeq[BaseIR]): TableDistinct = {
+    val IndexedSeq(newChild) = newChildren
+    TableDistinct(newChild.asInstanceOf[TableIR])
+  }
+
+  val typ: TableType = child.typ
+
+  def execute(hc: HailContext): TableValue = {
+    val prev = child.execute(hc)
+    prev.copy(rvd = prev.enforceOrderingRVD.asInstanceOf[OrderedRVD].distinctByKey())
+  }
+}
+
 // follows key_by non-empty key
 case class TableAggregateByKey(child: TableIR, expr: IR) extends TableIR {
   require(child.typ.keyOrEmpty.nonEmpty)
@@ -664,13 +759,18 @@ case class TableAggregateByKey(child: TableIR, expr: IR) extends TableIR {
     val prev = child.execute(hc)
     val prevRVD = prev.rvd.asInstanceOf[OrderedRVD]
 
-    val (rvAggs, makeInit, makeSeq, aggResultType, makeAnnotate, rTyp) = ir.CompileWithAggregators[Long, Long, Long, Long](
+    val (rvAggs, makeInit, makeSeq, aggResultType, postAggIR) = ir.CompileWithAggregators[Long, Long, Long](
       "global", child.typ.globalType,
       "global", child.typ.globalType,
       "row", child.typ.rowType,
-      expr,
+      expr, "AGGR",
       (nAggs, initializeIR) => initializeIR,
       (nAggs, sequenceIR) => sequenceIR)
+
+    val (rTyp, makeAnnotate) = ir.Compile[Long, Long, Long](
+      "AGGR", aggResultType,
+      "global", child.typ.globalType,
+      postAggIR)
 
     val nAggs = rvAggs.length
 
@@ -784,5 +884,56 @@ case class TableAggregateByKey(child: TableIR, expr: IR) extends TableIR {
     })
 
     prev.copy(rvd = newRVD, typ = typ)
+  }
+}
+
+case class TableOrderBy(child: TableIR, sortFields: IndexedSeq[SortField]) extends TableIR {
+  // TableOrderBy expects an unkeyed child, so that we can better optimize by
+  // pushing these two steps around as needed
+  require(child.typ.key.isEmpty)
+
+  val children: IndexedSeq[BaseIR] = FastIndexedSeq(child)
+
+  def copy(newChildren: IndexedSeq[BaseIR]): BaseIR = {
+    val IndexedSeq(newChild) = newChildren
+    TableOrderBy(newChild.asInstanceOf[TableIR], sortFields)
+  }
+
+  val typ: TableType = child.typ.copy(key = None)
+
+  def execute(hc: HailContext): TableValue = {
+    val prev = child.execute(hc)
+
+    val rowType = child.typ.rowType
+    val sortColIndexOrd = sortFields.map { case SortField(n, so) =>
+      val i = rowType.fieldIdx(n)
+      val f = rowType.fields(i)
+      val fo = f.typ.ordering
+      (i, if (so == Ascending) fo else fo.reverse)
+    }
+
+    val ord: Ordering[Annotation] = new Ordering[Annotation] {
+      def compare(a: Annotation, b: Annotation): Int = {
+        var i = 0
+        while (i < sortColIndexOrd.length) {
+          val (fi, ford) = sortColIndexOrd(i)
+          val c = ford.compare(
+            a.asInstanceOf[Row].get(fi),
+            b.asInstanceOf[Row].get(fi))
+          if (c != 0) return c
+          i += 1
+        }
+
+        0
+      }
+    }
+
+    val act = implicitly[ClassTag[Annotation]]
+
+    // FIXME: uses SafeRow, very bad!!!
+    val rdd = prev.rdd.sortBy(identity[Annotation], ascending = true)(ord, act)
+    val rvd = ContextRDD.weaken[RVDContext](rdd)
+      .cmapPartitions((ctx, it) => it.toRegionValueIterator(ctx.region, rowType))
+    TableValue(typ, prev.globals, new UnpartitionedRVD(rowType, rvd))
   }
 }

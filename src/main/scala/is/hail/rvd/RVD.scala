@@ -304,6 +304,9 @@ trait RVD {
 
   def map[T](f: (RegionValue) => T)(implicit tct: ClassTag[T]): RDD[T] = clearingRun(crdd.map(f))
 
+  def mapPartitionsWithIndex(newRowType: TStruct, f: (Int, RVDContext, Iterator[RegionValue]) => Iterator[RegionValue]): RVD =
+    new UnpartitionedRVD(newRowType, crdd.cmapPartitionsWithIndex(f))
+
   def mapPartitionsWithIndex[T](f: (Int, Iterator[RegionValue]) => Iterator[T])(implicit tct: ClassTag[T]): RDD[T] = clearingRun(crdd.mapPartitionsWithIndex(f))
 
   def mapPartitionsWithIndex[T: ClassTag](
@@ -332,6 +335,20 @@ trait RVD {
       u2
     }
     crdd.treeAggregate(zeroValue, clearingSeqOp, combOp, depth)
+  }
+
+  def aggregateWithPartitionOp[PC, U: ClassTag](
+    zeroValue: U, makePC: RVDContext => PC
+  )(seqOp: (PC, U, RegionValue) => Unit, combOp: (U, U) => U): U = {
+    crdd.cmapPartitions[U] { (ctx, it) =>
+      val pc = makePC(ctx)
+      var comb = zeroValue
+      it.foreach { rv =>
+        seqOp(pc, comb, rv)
+        ctx.region.clear()
+      }
+      Iterator.single(comb)
+    }.fold(zeroValue, combOp)
   }
 
   def aggregate[U: ClassTag](
@@ -365,6 +382,11 @@ trait RVD {
         ctx.region.clear()
       }
       Iterator.single(count)
+    }.collect()
+
+  def collectPerPartition[T : ClassTag](f: (RVDContext, Iterator[RegionValue]) => T): Array[T] =
+    crdd.cmapPartitions { (ctx, it) =>
+      Iterator.single(f(ctx, it))
     }.collect()
 
   protected def persistRVRDD(level: StorageLevel): PersistedRVRDD = {
@@ -427,8 +449,8 @@ trait RVD {
 
   protected def rvdSpec(codecSpec: CodecSpec, partFiles: Array[String]): RVDSpec
 
-  final def write(path: String, codecSpec: CodecSpec): Array[Long] = {
-    val (partFiles, partitionCounts) = crdd.writeRows(path, rowType, codecSpec)
+  final def write(path: String, stageLocally: Boolean, codecSpec: CodecSpec): Array[Long] = {
+    val (partFiles, partitionCounts) = crdd.writeRows(path, rowType, stageLocally, codecSpec)
     rvdSpec(codecSpec, partFiles).write(sparkContext.hadoopConfiguration, path)
     partitionCounts
   }

@@ -403,7 +403,6 @@ class Table(ExprContainer):
 
         analyze(caller, row, self._row_indices)
         base, cleanup = self._process_joins(row)
-
         return cleanup(base._select_scala(row, preserved_key, preserved_key_new, new_key))
 
     @typecheck_method(key_struct=oneof(nullable(expr_struct()), exactly("default")),
@@ -415,7 +414,7 @@ class Table(ExprContainer):
         jt = self._jt
         if self.key is not None and preserved_key != list(self.key):
             jt = jt.keyBy(preserved_key)
-        jt = jt.select(row._ast.to_hql(), preserved_key_new, len(preserved_key) if preserved_key else None)
+        jt = jt.select(row._ast.to_hql(), preserved_key_new, len(preserved_key) if preserved_key is not None else None)
         if new_key != preserved_key_new:
             jt = jt.keyBy(new_key)
         return Table(jt)
@@ -1143,8 +1142,10 @@ class Table(ExprContainer):
 
     @typecheck_method(output=str,
                       overwrite=bool,
+                      stage_locally=bool,
                       _codec_spec=nullable(str))
-    def write(self, output, overwrite=False, _codec_spec=None):
+    def write(self, output: str, overwrite = False, stage_locally: bool = False,
+              _codec_spec: Optional[str] = None):
         """Write to disk.
 
         Examples
@@ -1160,11 +1161,14 @@ class Table(ExprContainer):
         ----------
         output : str
             Path at which to write.
+        stage_locally: bool
+            If ``True``, major output will be written to temporary local storage
+            before being copied to ``output``.
         overwrite : bool
             If ``True``, overwrite an existing file at the destination.
         """
 
-        self._jt.write(output, overwrite, _codec_spec)
+        self._jt.write(output, overwrite, stage_locally, _codec_spec)
 
     @typecheck_method(n=int, width=int, truncate=nullable(int), types=bool)
     def show(self, n=10, width=90, truncate=None, types=True):
@@ -1227,10 +1231,12 @@ class Table(ExprContainer):
 
         Using `key` as the sole index expression is equivalent to passing all
         key fields individually:
+
         >>> table_result = table1.select(B = table2.index(table1.key).B)
 
         It is also possible to use non-key fields or expressions as the index
         expressions:
+
         >>> table_result = table1.select(B = table2.index(table1.C1 % 4).B)
         >>> table_result.show()
         +-------+-------+
@@ -2100,7 +2106,7 @@ class Table(ExprContainer):
 
     @typecheck_method(exprs=oneof(str, Expression, Ascending, Descending))
     def order_by(self, *exprs):
-        """Sort by the specified fields.
+        """Sort by the specified fields. Unkeys the table, if keyed.
 
         Examples
         --------
@@ -2119,6 +2125,10 @@ class Table(ExprContainer):
         Missing values are sorted after non-missing values. When multiple
         fields are passed, the table will be sorted first by the first
         argument, then the second, etc.
+
+        Note
+        ----
+        This method unkeys the table.
 
         Parameters
         ----------
@@ -2157,7 +2167,7 @@ class Table(ExprContainer):
                         raise ValueError("Sort fields must be row-indexed, found global field '{}'".format(e))
                     e.col = self._fields_inverse[e.col]
                     sort_cols.append(e._j_obj())
-        return Table(self._jt.orderBy(jarray(Env.hail().table.SortColumn, sort_cols)))
+        return Table(self._jt.orderBy(jarray(Env.hail().table.SortField, sort_cols)))
 
     @typecheck_method(field=oneof(str, Expression),
                       name=nullable(str))

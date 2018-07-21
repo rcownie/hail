@@ -10,6 +10,8 @@ from hail.genetics.reference_genome import reference_genome_type
 from hail.methods.misc import require_biallelic, require_row_key_variant, require_row_key_variant_w_struct_locus, require_col_key_str
 import hail as hl
 
+_cached_loadvcf = None
+
 
 def locus_interval_expr(contig, start, end, includes_start, includes_end,
                         reference_genome, skip_invalid_intervals):
@@ -497,7 +499,7 @@ def import_locus_intervals(path, reference_genome='default', skip_invalid_interv
 
     if t.row.dtype == tstruct(f0=tstr):
         if reference_genome:
-            t = t.select(interval=hl.parse_locus_interval(t['f0'], 
+            t = t.select(interval=hl.parse_locus_interval(t['f0'],
                                                           reference_genome))
         else:
             interval_regex = r"([^:]*):(\d+)\-(\d+)"
@@ -536,12 +538,12 @@ def import_locus_intervals(path, reference_genome='default', skip_invalid_interv
                                                   skip_invalid_intervals))
 
     elif t.row.dtype == tstruct(f0=tstr, f1=tint32, f2=tint32, f3=tstr, f4=tstr):
-        t = t.select(interval=locus_interval_expr(t['f0'], 
-                                                  t['f1'], 
-                                                  t['f2'], 
-                                                  True, 
-                                                  True, 
-                                                  reference_genome, 
+        t = t.select(interval=locus_interval_expr(t['f0'],
+                                                  t['f1'],
+                                                  t['f2'],
+                                                  True,
+                                                  True,
+                                                  reference_genome,
                                                   skip_invalid_intervals),
                      target=t['f4'])
 
@@ -642,28 +644,28 @@ def import_bed(path, reference_genome='default', skip_invalid_intervals=False) -
     # UCSC BED spec defined here: https://genome.ucsc.edu/FAQ/FAQformat.html#format1
 
     t = import_table(path, no_header=True, delimiter="\s+", impute=False,
-                     skip_blank_lines=True, types={'f0': tstr, 'f1': tint32, 
-                                                   'f2': tint32, 'f3': tstr, 
+                     skip_blank_lines=True, types={'f0': tstr, 'f1': tint32,
+                                                   'f2': tint32, 'f3': tstr,
                                                    'f4': tstr},
                      comment=["""^browser.*""", """^track.*""",
                               r"""^\w+=("[\w\d ]+"|\d+).*"""])
 
     if t.row.dtype == tstruct(f0=tstr, f1=tint32, f2=tint32):
-        t = t.select(interval=locus_interval_expr(t['f0'], 
-                                                  t['f1'] + 1, 
+        t = t.select(interval=locus_interval_expr(t['f0'],
+                                                  t['f1'] + 1,
                                                   t['f2'],
-                                                  True, 
-                                                  True, 
-                                                  reference_genome, 
+                                                  True,
+                                                  True,
+                                                  reference_genome,
                                                   skip_invalid_intervals))
 
     elif len(t.row) >= 4 and tstruct(**dict([(n, typ) for n, typ in t.row.dtype._field_types.items()][:4])) == tstruct(f0=tstr, f1=tint32, f2=tint32, f3=tstr):
-        t = t.select(interval=locus_interval_expr(t['f0'], 
-                                                  t['f1'] + 1, 
+        t = t.select(interval=locus_interval_expr(t['f0'],
+                                                  t['f1'] + 1,
                                                   t['f2'],
-                                                  True, 
-                                                  True, 
-                                                  reference_genome, 
+                                                  True,
+                                                  True,
+                                                  reference_genome,
                                                   skip_invalid_intervals),
                      target=t['f3'])
 
@@ -701,7 +703,7 @@ def import_fam(path, quant_pheno=False, delimiter=r'\\s+', missing='NA') -> Tabl
 
     In Hail, unlike PLINK, the user must *explicitly* distinguish between
     case-control and quantitative phenotypes. Importing a quantitative
-    phenotype without ``quant_pheno=True`` will return an error
+    phenotype with ``quant_pheno=False`` will return an error
     (unless all values happen to be `0`, `1`, `2`, or `-9`):
 
     The resulting :class:`.Table` will have fields, types, and values that are interpreted as missing.
@@ -718,6 +720,12 @@ def import_fam(path, quant_pheno=False, delimiter=r'\\s+', missing='NA') -> Tabl
        non-numeric or the ``missing`` argument, if given.
      - *quant_pheno* (:py:data:`.tfloat64`) -- Quantitative phenotype (missing = "NA" or
        the ``missing`` argument, if given.
+
+    Warning
+    -------
+    Hail will interpret the value "-9" as a valid quantitative phenotype, which
+    differs from default PLINK behavior. Use ``missing='-9'`` to interpret this
+    value as missing.
 
     Parameters
     ----------
@@ -783,7 +791,8 @@ def grep(regex, path, max_count=100):
 @typecheck(path=oneof(str, sequenceof(str)),
            sample_file=nullable(str),
            entry_fields=sequenceof(enumeration('GT', 'GP', 'dosage')),
-           min_partitions=nullable(int),
+           n_partitions=nullable(int),
+           block_size=nullable(int),
            reference_genome=nullable(reference_genome_type),
            contig_recoding=nullable(dictof(str, str)),
            skip_invalid_loci=bool,
@@ -792,7 +801,8 @@ def grep(regex, path, max_count=100):
 def import_bgen(path,
                 entry_fields,
                 sample_file=None,
-                min_partitions=None,
+                n_partitions=None,
+                block_size=None,
                 reference_genome='default',
                 contig_recoding=None,
                 skip_invalid_loci=False,
@@ -832,6 +842,10 @@ def import_bgen(path,
     Each BGEN file must have a corresponding index file, which can be generated
     with :func:`.index_bgen`. To load multiple files at the same time,
     use :ref:`Hadoop Glob Patterns <sec-hadoop-glob>`.
+
+    If n_partitions and block_size are both specified, block_size is
+    used.  If neither are specified, the default is a 128MB block
+    size.
 
     **Column Fields**
 
@@ -891,8 +905,10 @@ def import_bgen(path,
     sample_file : :obj:`str`, optional
         Sample file to read the sample ids from. If specified, the number of
         samples in the file must match the number in the BGEN file(s).
-    min_partitions : :obj:`int`, optional
+    n_partitions : :obj:`int`, optional
         Number of partitions.
+    block_size : :obj:`int`, optional
+        Block size, in MB.
     reference_genome : :obj:`str` or :class:`.ReferenceGenome`, optional
         Reference genome to use.
     contig_recoding : :obj:`dict` of :obj:`str` to :obj:`str`, optional
@@ -907,7 +923,11 @@ def import_bgen(path,
     Returns
     -------
     :class:`.MatrixTable`
+
     """
+
+    if n_partitions is None and block_size is None:
+        block_size = 128
 
     rg = reference_genome._jrep if reference_genome else None
 
@@ -920,7 +940,7 @@ def import_bgen(path,
     jmt = Env.hc()._jhc.importBgens(jindexed_seq_args(path), joption(sample_file),
                                     'GT' in entry_set, 'GP' in entry_set, 'dosage' in entry_set,
                                     'varid' in row_set, 'rsid' in row_set, 'file_row_idx' in row_set,
-                                    joption(min_partitions), joption(rg), joption(contig_recoding),
+                                    joption(n_partitions), joption(block_size), joption(rg), joption(contig_recoding),
                                     skip_invalid_loci, tdict(tstr, tarray(tint32))._convert_to_j(_variants_per_file))
     return MatrixTable(jmt)
 
@@ -1500,6 +1520,12 @@ def import_plink(bed, bim, fam,
 
         * `GT` (:py:data:`.tcall`) -- Genotype call (diploid, unphased).
 
+    Warning
+    -------
+    Hail will interpret the value "-9" as a valid quantitative phenotype, which
+    differs from default PLINK behavior. Use ``missing='-9'`` to interpret this
+    value as missing.
+
     Parameters
     ----------
     bed : :obj:`str`
@@ -1778,16 +1804,25 @@ def import_vcf(path,
     :class:`.MatrixTable`
     """
 
-    rg = reference_genome._jrep if reference_genome else None
+    rg = reference_genome.name if reference_genome else None
 
-    if contig_recoding:
-        contig_recoding = tdict(tstr, tstr)._convert_to_j(contig_recoding)
+    global _cached_loadvcf
+    if _cached_loadvcf is None:
+        _cached_loadvcf = Env.hail().io.vcf.LoadVCF
 
-    jmt = Env.hc()._jhc.importVCFs(jindexed_seq_args(path), force, force_bgz, joption(header_file),
-                                   joption(min_partitions), drop_samples, jset_args(call_fields),
-                                   joption(rg), joption(contig_recoding), array_elements_required,
-                                   skip_invalid_loci)
-
+    jmt = _cached_loadvcf.pyApply(
+        wrap_to_list(path),
+        wrap_to_list(call_fields),
+        header_file,
+        joption(min_partitions),
+        drop_samples,
+        rg,
+        contig_recoding,
+        array_elements_required,
+        skip_invalid_loci,
+        force_bgz,
+        force
+    )
     return MatrixTable(jmt)
 
 
@@ -1818,9 +1853,8 @@ def index_bgen(path):
     Env.hc()._jhc.indexBgen(jindexed_seq_args(path))
 
 
-@typecheck(path=str,
-           _row_fields=nullable(sequenceof(str)))
-def read_table(path, _row_fields=None) -> Table:
+@typecheck(path=str)
+def read_table(path) -> Table:
     """Read in a :class:`.Table` written with :meth:`.Table.write`.
 
     Parameters
@@ -1832,7 +1866,7 @@ def read_table(path, _row_fields=None) -> Table:
     -------
     :class:`.Table`
     """
-    return Table(Env.hc()._jhc.readTable(path, _row_fields))
+    return Table(Env.hc()._jhc.readTable(path))
 
 @typecheck(t=Table,
            host=str,

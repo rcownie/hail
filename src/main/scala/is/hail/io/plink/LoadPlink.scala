@@ -77,10 +77,19 @@ object LoadPlink {
           case _ => fatal(s"Invalid sex: `$isFemale'. Male is `1', female is `2', unknown is `0'")
         }
 
+        var warnedAbout9 = false
         val pheno1 =
           if (ffConfig.isQuantPheno)
             pheno match {
               case ffConfig.missingValue => null
+              case "-9" =>
+                if (!warnedAbout9) {
+                  warn(
+                    s"""Interpreting value '-9' as a valid quantitative phenotype, which differs from default PLINK behavior.
+                       |  Use missing='-9' to interpret '-9' as a missing value.""".stripMargin)
+                  warnedAbout9 = true
+                }
+                -9d
               case numericRegex() => pheno.toDouble
               case _ => fatal(s"Invalid quantitative phenotype: `$pheno'. Value must be numeric or `${ ffConfig.missingValue }'")
             }
@@ -207,7 +216,7 @@ object LoadPlink {
     new MatrixTable(hc, matrixType,
       BroadcastRow(Row.empty, matrixType.globalType, sc),
       BroadcastIndexedSeq(sampleAnnotations, TArray(matrixType.colType), sc),
-      OrderedRVD.coerce(matrixType.orvdType, rdd2, Some(fastKeys), None))
+      OrderedRVD.coerce(matrixType.orvdType, rdd2, fastKeys))
   }
 
   def apply(hc: HailContext, bedPath: String, bimPath: String, famPath: String, ffConfig: FamFileConfig,

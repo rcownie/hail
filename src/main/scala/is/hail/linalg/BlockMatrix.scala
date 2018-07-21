@@ -10,7 +10,6 @@ import is.hail.annotations._
 import is.hail.table.Table
 import is.hail.expr.types._
 import is.hail.io._
-import is.hail.methods.UpperIndexBounds
 import is.hail.rvd.RVDContext
 import is.hail.sparkextras.ContextRDD
 import is.hail.utils._
@@ -695,7 +694,7 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
     result
   }
 
-  def write(uri: String, forceRowMajor: Boolean = false) {
+  def write(uri: String, forceRowMajor: Boolean = false, stageLocally: Boolean = false) {
     val hadoop = blocks.sparkContext.hadoopConfiguration
     hadoop.mkDir(uri)
 
@@ -710,7 +709,7 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
       1
     }
 
-    val (partFiles, _) = blocks.writePartitions(uri, writeBlock)
+    val (partFiles, _) = blocks.writePartitions(uri, stageLocally, writeBlock)
 
     hadoop.writeDataFile(uri + metadataRelativePath) { os =>
       implicit val formats = defaultJSONFormats
@@ -1189,14 +1188,6 @@ class BlockMatrix(val blocks: RDD[((Int, Int), BDM[Double])],
     }
 
     new Table(hc, entriesRDD, rvRowType, Some(Array("i", "j")))
-  }
-  
-  /* positions is an ordered table with one value field of type int32, which will be grouped by key field(s) if present.
-  returns the entry table of the block matrix, filtered to pairs (i, j) such that i <= j, key[i] == key[j], 
-  and position[j] - position[i] <= radius. If includeDiagonal=false, require i < j rather than i <= j.*/
-  def filteredEntriesTable(positions: Table, radius: Int, includeDiagonal: Boolean): Table = {
-    val blocksToKeep = UpperIndexBounds.computeCoverByUpperTriangularBlocks(positions, gp, radius, includeDiagonal)
-    filterBlocks(blocksToKeep).entriesTable(positions.hc)
   }
 }
 

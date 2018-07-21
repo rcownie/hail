@@ -4,7 +4,7 @@ import is.hail.SparkSuite
 import is.hail.annotations.BroadcastRow
 import is.hail.expr._
 import is.hail.expr.types._
-import is.hail.table.{Table, TableSpec}
+import is.hail.table.{Ascending, SortField, Table, TableSpec}
 import is.hail.utils._
 import is.hail.variant.MatrixTable
 import org.apache.spark.sql.Row
@@ -71,11 +71,12 @@ class PruneSuite extends SparkSuite {
 
   val tab = TableLiteral(Table.parallelize(
     hc,
-    FastIndexedSeq(Row("hi", FastIndexedSeq(Row(1)), "bye", Row(2, FastIndexedSeq(Row("bar"))))),
+    FastIndexedSeq(Row("hi", FastIndexedSeq(Row(1)), "bye", Row(2, FastIndexedSeq(Row("bar"))), "foo")),
     TStruct("1" -> TString(),
       "2" -> TArray(TStruct("2A" -> TInt32())),
       "3" -> TString(),
-      "4" -> TStruct("A" -> TInt32(), "B" -> TArray(TStruct("i" -> TString())))),
+      "4" -> TStruct("A" -> TInt32(), "B" -> TArray(TStruct("i" -> TString()))),
+      "5" -> TString()),
     None, None).annotateGlobal(5, TInt32(), "g1").annotateGlobal(10, TInt32(), "g2").value)
 
   val tr = TableRead("", TableSpec(0, "", "", tab.typ, Map.empty), tab.typ, false)
@@ -86,12 +87,15 @@ class PruneSuite extends SparkSuite {
     TStruct("ck" -> TString(), "c2" -> TInt32(), "c3" -> TArray(TStruct("cc" -> TInt32()))),
     FastIndexedSeq("rk"),
     FastIndexedSeq("rk"),
-    TStruct("rk" -> TInt32(), "r2" -> TStruct("x" -> TInt32()), "r3" -> TArray(TInt32())),
+    TStruct("rk" -> TInt32(), "r2" -> TStruct("x" -> TInt32()), "r3" -> TArray(TStruct("rr" -> TInt32()))),
     TStruct("e1" -> TFloat64(), "e2" -> TFloat64())), null)
 
-  val mr = MatrixRead(mat.typ, None, false, false,
+  val mr = MatrixRead(mat.typ, false, false,
     new MatrixReader {
       def apply(mr: MatrixRead): MatrixValue = ???
+      def partitionCounts: Option[IndexedSeq[Long]] = ???
+      def columnCount: Option[Int] = ???
+      def fullType: MatrixType = mat.typ
     })
 
   val emptyTableDep = TableType(TStruct(), None, TStruct())
@@ -140,16 +144,6 @@ class PruneSuite extends SparkSuite {
     MakeStruct(FastIndexedSeq("foo" -> matrixRefBoolean(mt, fields: _*)))
   }
 
-  def subsetType(t: Type, path: Array[String], index: Int): Type = {
-    if (index == path.length)
-      PruneDeadFields.minimal(t)
-    else
-      t match {
-        case ts: TStruct => TStruct(ts.required, path(index) -> subsetType(ts.field(path(index)).typ, path, index + 1))
-        case ta: TArray => TArray(subsetType(ta.elementType, path, index), ta.required)
-      }
-  }
-
   def subsetTable(tt: TableType, fields: String*): TableType = {
     val rowFields = new ArrayBuilder[TStruct]()
     val globalFields = new ArrayBuilder[TStruct]()
@@ -159,7 +153,7 @@ class PruneSuite extends SparkSuite {
         case "row" => tt.rowType -> rowFields
         case "global" => tt.globalType -> globalFields
       }
-      ab += subsetType(head, split, 1).asInstanceOf[TStruct]
+      ab += PruneDeadFields.subsetType(head, split, 1).asInstanceOf[TStruct]
     }
     val min = PruneDeadFields.minimal(tt)
     tt.copy(
@@ -181,7 +175,7 @@ class PruneSuite extends SparkSuite {
         case "g" => mt.entryType -> entryFields
         case "global" => mt.globalType -> globalFields
       }
-      ab += subsetType(head, split, 1).asInstanceOf[TStruct]
+      ab += PruneDeadFields.subsetType(head, split, 1).asInstanceOf[TStruct]
     }
     val min = PruneDeadFields.minimal(mt)
     mt.copyParts(
@@ -271,6 +265,11 @@ class PruneSuite extends SparkSuite {
       Array(subsetTable(tk.typ, "row.2")))
   }
 
+  @Test def testTableOrderByMemo() {
+    val tob = TableOrderBy(tab, Array(SortField("2", Ascending)))
+    checkMemo(tob, subsetTable(tob.typ), Array(subsetTable(tab.typ, "row.2", "row.2.2A")))
+  }
+
   @Test def testMatrixFilterColsMemo() {
     val mfc = MatrixFilterCols(mat, matrixRefBoolean(mat.typ, "global.g1", "sa.c2"))
     checkMemo(mfc,
@@ -312,10 +311,30 @@ class PruneSuite extends SparkSuite {
   }
 
   @Test def testCollectColsByKeyMemo() {
-    val ccbk = CollectColsByKey(mat)
+    val ccbk = MatrixCollectColsByKey(mat)
     checkMemo(ccbk,
       subsetMatrixTable(ccbk.typ, "g.e2", "sa.c2"),
       Array(subsetMatrixTable(mat.typ, "g.e2", "sa.c2")))
+  }
+
+  @Test def testTableToMatrixTableMemo() {
+    val ttmt = TableToMatrixTable(tab,
+      rowKey = FastIndexedSeq("1"),
+      colKey = FastIndexedSeq("2"),
+      rowFields = FastIndexedSeq("5"),
+      colFields = FastIndexedSeq("4"),
+      partitionKey = FastIndexedSeq("1")
+    )
+
+    checkMemo(ttmt,
+      subsetMatrixTable(ttmt.typ, "sa.4.A"), Array(subsetTable(tab.typ, "row.1", "row.2.2A", "row.4.A")))
+  }
+
+  @Test def testMatrixExplodeRowsMemo() {
+    val mer = MatrixExplodeRows(mat, FastIndexedSeq("r3"))
+    checkMemo(mer,
+      subsetMatrixTable(mer.typ, "va.r2"),
+      Array(subsetMatrixTable(mat.typ, "va.r2", "va.r3")))
   }
 
   @Test def testMatrixAggregateRowsByKeyMemo() {
@@ -430,9 +449,15 @@ class PruneSuite extends SparkSuite {
   }
 
   @Test def testTableAggregateMemo() {
-    checkMemo(TableAggregate(tab, GetField(Ref("global", tab.typ.globalType), "g1")),
-      TInt32(),
+    checkMemo(TableAggregate(tab, tableRefBoolean(tab.typ, "global.g1")),
+      TBoolean(),
       Array(subsetTable(tab.typ, "global.g1"), null))
+  }
+
+  @Test def testMatrixAggregateMemo() {
+    checkMemo(MatrixAggregate(mat, matrixRefBoolean(mat.typ, "global.g1")),
+      TBoolean(),
+      Array(subsetMatrixTable(mat.typ, "global.g1"), null))
   }
 
   @Test def testTableImportRebuild() {
@@ -568,6 +593,22 @@ class PruneSuite extends SparkSuite {
     )
   }
 
+  @Test def testTableToMatrixTableRebuild() {
+    val ttmt = TableToMatrixTable(tr,
+      rowKey = FastIndexedSeq("1"),
+      colKey = FastIndexedSeq("2"),
+      rowFields = FastIndexedSeq("5"),
+      colFields = FastIndexedSeq("4"),
+      partitionKey = FastIndexedSeq("1")
+    )
+
+    checkRebuild(ttmt, subsetMatrixTable(ttmt.typ),
+      (_: BaseIR, r: BaseIR) => {
+        val ttmt = r.asInstanceOf[TableToMatrixTable]
+        ttmt.rowFields.isEmpty && ttmt.colFields.isEmpty && ttmt.typ.entryType.size == 0
+      })
+  }
+
   val ts = TStruct(
     "a" -> TInt32(),
     "b" -> TInt64(),
@@ -658,6 +699,15 @@ class PruneSuite extends SparkSuite {
       (_: BaseIR, r: BaseIR) => {
         val ir = r.asInstanceOf[TableAggregate]
         ir.child.typ == subsetTable(tr.typ, "row.2")
+      })
+  }
+
+  @Test def testMatrixAggregateRebuild() {
+    val ma = MatrixAggregate(mr, matrixRefBoolean(mr.typ, "va.r2"))
+    checkRebuild(ma, TBoolean(),
+      (_: BaseIR, r: BaseIR) => {
+        val ir = r.asInstanceOf[MatrixAggregate]
+        ir.child.typ == subsetMatrixTable(mr.typ, "va.r2")
       })
   }
 }

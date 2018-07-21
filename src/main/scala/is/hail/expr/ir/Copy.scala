@@ -93,13 +93,20 @@ object Copy {
         GetField(o, name)
       case InitOp(_, _, aggSig) =>
         InitOp(newChildren.head.asInstanceOf[IR], newChildren.tail.map(_.asInstanceOf[IR]), aggSig)
-      case SeqOp(_, _, aggSig, args) =>
-        SeqOp(newChildren(0).asInstanceOf[IR], newChildren(1).asInstanceOf[IR], aggSig, newChildren.drop(2).map(_.asInstanceOf[IR]))
+      case SeqOp(_, _, aggSig) =>
+        SeqOp(newChildren.head.asInstanceOf[IR], newChildren.tail.map(_.asInstanceOf[IR]), aggSig)
       case Begin(_) =>
         Begin(newChildren.map(_.asInstanceOf[IR]))
       case x@ApplyAggOp(_, _, initOpArgs, aggSig) =>
         val args = newChildren.map(_.asInstanceOf[IR])
         ApplyAggOp(
+          args.head,
+          args.tail.take(x.nConstructorArgs),
+          initOpArgs.map(_ => args.drop(x.nConstructorArgs + 1)),
+          aggSig)
+      case x@ApplyScanOp(_, _, initOpArgs, aggSig) =>
+        val args = newChildren.map(_.asInstanceOf[IR])
+        ApplyScanOp(
           args.head,
           args.tail.take(x.nConstructorArgs),
           initOpArgs.map(_ => args.drop(x.nConstructorArgs + 1)),
@@ -137,9 +144,12 @@ object Copy {
       case TableAggregate(_, _) =>
         val IndexedSeq(child: TableIR, query: IR) = newChildren
         TableAggregate(child, query)
-      case TableWrite(_, path, overwrite, codecSpecJSONStr) =>
+      case MatrixAggregate(_, _) =>
+        val IndexedSeq(child: MatrixIR, query: IR) = newChildren
+        MatrixAggregate(child, query)
+      case TableWrite(_, path, overwrite, stageLocally, codecSpecJSONStr) =>
         val IndexedSeq(child: TableIR) = newChildren
-        TableWrite(child, path, overwrite, codecSpecJSONStr)
+        TableWrite(child, path, overwrite, stageLocally, codecSpecJSONStr)
       case TableExport(_, path, typesFile, header, exportType) =>
         val IndexedSeq(child: TableIR) = newChildren
         TableExport(child, path, typesFile, header, exportType)

@@ -850,10 +850,25 @@ def gp_dosage(gp) -> Float64Expression:
 
 @typecheck(pl=expr_array(expr_int32))
 def pl_dosage(pl) -> Float64Expression:
-    """
+    r"""
     Return expected genotype dosage from array of Phred-scaled genotype
     likelihoods with uniform prior. Only defined for bi-allelic variants. The
     `pl` argument must be length 3.
+
+    For a PL array ``[a, b, c]``, let:
+
+    .. math::
+
+        a^\prime = 10^{-a/10} \\
+        b^\prime = 10^{-b/10} \\
+        c^\prime = 10^{-c/10} \\
+
+    The genotype dosage is given by:
+
+    .. math::
+
+        \frac{b^\prime + 2 c^\prime}
+             {a^\prime + b^\prime +c ^\prime}
 
     Examples
     --------
@@ -870,7 +885,35 @@ def pl_dosage(pl) -> Float64Expression:
     -------
     :class:`.Expression` of type :py:data:`.tfloat64`
     """
-    return _func("plDosage", tfloat64, pl)
+    return hl.sum(pl_to_gp(pl) * [0, 1, 2])
+
+
+@typecheck(pl=expr_array(expr_int32), _cache_size=int)
+def pl_to_gp(pl, _cache_size=2048) -> ArrayNumericExpression:
+    """
+    Return the linear-scaled genotype probabilities from an array of Phred-scaled genotype likelihoods.
+
+    Examples
+    --------
+    >>> hl.pl_to_gp([0, 10, 100]).value
+    [0.9090909090082644, 0.09090909090082644, 9.090909090082645e-11]
+
+    Notes
+    -----
+    This function assumes a uniform prior on the possible genotypes.
+
+    Parameters
+    ----------
+    pl : :class:`.ArrayNumericExpression` of type :py:data:`.tint32`
+        Array of Phred-scaled genotype likelihoods.
+
+    Returns
+    -------
+   :class:`.ArrayNumericExpression` of type :py:data:`.tfloat64`
+    """
+    phred_table = hl.literal([10 ** (-x/10.0) for x in builtins.range(_cache_size)])
+    gp = hl.bind(lambda pls: pls.map(lambda x: hl.cond(x >= _cache_size, 10 ** (-x/10.0), phred_table[x])), pl)
+    return hl.bind(lambda gp: gp / hl.sum(gp), gp)
 
 
 @typecheck(start=expr_any, end=expr_any,

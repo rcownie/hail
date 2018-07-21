@@ -1,12 +1,14 @@
+import numpy as np
+import itertools
+from enum import IntEnum
+
 import hail as hl
+import hail.expr.aggregators as agg
 from hail.utils import new_temp_file, new_local_temp_file, local_path_uri, storage_level
 from hail.utils.java import Env, jarray, joption
 from hail.typecheck import *
 from hail.table import Table
 from hail.expr.expressions import expr_float64, matrix_table_source, check_entry_indexed
-import numpy as np
-import itertools
-from enum import IntEnum
 
 block_matrix_type = lazy()
 
@@ -278,13 +280,10 @@ class BlockMatrix(object):
         if not block_size:
             block_size = BlockMatrix.default_block_size()
 
-        n_entries = n_rows * n_cols
-        if n_entries >= 1 << 31:
-            raise ValueError(f'number of entries must be less than 2^31, found {n_entries}')
-
-        hc = Env.hc()
-        bdm = Env.hail().utils.richUtils.RichDenseMatrixDouble.importFromDoubles(hc._jhc, uri, n_rows, n_cols, True)
-        return cls(Env.hail().linalg.BlockMatrix.fromBreezeMatrix(hc._jsc, bdm, block_size))
+        return cls(Env.hail().linalg.BlockMatrix.fromBreezeMatrix(
+            Env.hc()._jsc,
+            _breeze_fromfile(uri, n_rows, n_cols),
+            block_size))
 
     @classmethod
     @typecheck_method(ndarray=np.ndarray,
@@ -335,41 +334,43 @@ class BlockMatrix(object):
 
     @classmethod
     @typecheck_method(entry_expr=expr_float64,
+                      mean_impute=bool,
+                      center=bool,
+                      normalize=bool,
                       block_size=nullable(int))
-    def from_entry_expr(cls, entry_expr, block_size=None):
-        """Create a block matrix using a matrix table entry expression.
+    def from_entry_expr(cls, entry_expr, mean_impute=False, center=False, normalize=False, block_size=None):
+        """Creates a block matrix using a matrix table entry expression.
 
         Examples
         --------
         >>> mt = hl.balding_nichols_model(3, 25, 50)
         >>> bm = BlockMatrix.from_entry_expr(mt.GT.n_alt_alleles())
 
-        Notes
-        -----
-        Do not use this method if you want to store a copy of the resulting
-        block matrix. Instead, use :meth:`write_from_entry_expr` followed by
-        :meth:`BlockMatrix.read`.
-
-        If a pipelined transformation significantly downsamples the rows of the
-        underlying matrix table, then repartitioning the matrix table ahead of
-        this method will greatly improve its performance.
-
-        The method will fail if any values are missing. To be clear, special
-        float values like ``nan`` are not missing values.
+        Warning
+        -------
+        This convenience method writes the block matrix to a temporary file and
+        then reads the file. Use :meth:`write_from_entry_expr` directly if you
+        want to store the resulting block matrix; see
+        :meth:`write_from_entry_expr` for further documentation.
 
         Parameters
         ----------
         entry_expr: :class:`.Float64Expression`
             Entry expression for numeric matrix entries.
+        mean_impute: :obj:`bool`
+            If true, set missing values to the row mean before centering or
+            normalizing. If false, missing values will raise an error.
+        center: :obj:`bool`
+            If true, subtract the row mean.
+        normalize: :obj:`bool`
+            If true and ``center=False``, divide by the row magnitude.
+            If true and ``center=True``, divide the centered value by the
+            centered row magnitude.
         block_size: :obj:`int`, optional
             Block size. Default given by :meth:`.BlockMatrix.default_block_size`.
-
-        Returns
-        -------
-        :class:`.BlockMatrix`
         """
         path = new_temp_file()
-        cls.write_from_entry_expr(entry_expr, path, block_size)
+        cls.write_from_entry_expr(entry_expr, path, mean_impute, center, normalize, block_size)
         return cls.read(path)
 
     @classmethod
@@ -514,8 +515,9 @@ class BlockMatrix(object):
         return self._jbm.toBreezeMatrix().apply(0, 0)
 
     @typecheck_method(path=str,
-                      force_row_major=bool)
-    def write(self, path, force_row_major=False):
+                      force_row_major=bool,
+                      stage_locally=bool)
+    def write(self, path, force_row_major=False, stage_locally=False):
         """Writes the block matrix.
 
         Parameters
@@ -526,14 +528,20 @@ class BlockMatrix(object):
             If ``True``, transform blocks in column-major format
             to row-major format before writing.
             If ``False``, write blocks in their current format.
+        stage_locally: :obj:`bool`
+            If ``True``, major output will be written to temporary local storage
+            before being copied to ``output``.
         """
-        self._jbm.write(path, force_row_major)
+        self._jbm.write(path, force_row_major, stage_locally)
 
     @staticmethod
     @typecheck(entry_expr=expr_float64,
                path=str,
+               mean_impute=bool,
+               center=bool,
+               normalize=bool,
                block_size=nullable(int))
-    def write_from_entry_expr(entry_expr, path, block_size=None):
+    def write_from_entry_expr(entry_expr, path, mean_impute=False, center=False, normalize=False, block_size=None):
         """Writes a block matrix from a matrix table entry expression.
 
         Examples
@@ -545,13 +553,35 @@ class BlockMatrix(object):
         Notes
         -----
         The resulting file can be loaded with :meth:`BlockMatrix.read`.
+        Blocks are stored row-major.
 
         If a pipelined transformation significantly downsamples the rows of the
         underlying matrix table, then repartitioning the matrix table ahead of
         this method will greatly improve its performance.
 
-        The method will fail if any values are missing. To be clear, special
-        float values like ``nan`` are not missing values.
+        By default, this method will fail if any values are missing (to be clear,
+        special float values like ``nan`` are not missing values).
+
+        - Set `mean_impute` to replace missing values with the row mean before
+          possibly centering or normalizing. If all values are missing, the row
+          mean is ``nan``.
+
+        - Set `center` to shift each row to have mean zero before possibly
+          normalizing.
+
+        - Set `normalize` to normalize each row to have unit length.
+
+        To standardize each row, regarded as an empirical distribution, to have
+        mean 0 and variance 1, set `center` and `normalize` and then multiply
+        the result by ``sqrt(n_cols)``.
+
+        Warning
+        -------
+        This method opens ``n_cols / block_size`` files concurrently per task.
+        To not blow out memory when the number of columns is very large,
+        limit the Hadoop write buffer size; e.g. on GCP, set this property on
+        cluster startup (the defualt is 64MB):
+        ``--properties 'core:fs.gs.io.buffersize.write=1048576``.
 
         Parameters
         ----------
@@ -559,6 +589,15 @@ class BlockMatrix(object):
             Entry expression for numeric matrix entries.
         path: :obj:`str`
             Path for output.
+        mean_impute: :obj:`bool`
+            If true, set missing values to the row mean before centering or
+            normalizing. If false, missing values will raise an error.
+        center: :obj:`bool`
+            If true, subtract the row mean.
+        normalize: :obj:`bool`
+            If true and ``center=False``, divide by the row magnitude.
+            If true and ``center=True``, divide the centered value by the
+            centered row magnitude.
         block_size: :obj:`int`, optional
             Block size. Default given by :meth:`.BlockMatrix.default_block_size`.
         """
@@ -566,16 +605,45 @@ class BlockMatrix(object):
             block_size = BlockMatrix.default_block_size()
 
         check_entry_indexed('BlockMatrix.write_from_entry_expr', entry_expr)
-
         mt = matrix_table_source('BlockMatrix.write_from_entry_expr', entry_expr)
 
-        #  FIXME: remove once select_entries on a field is free
-        if entry_expr in mt._fields_inverse:
+        if (not (mean_impute or center or normalize)) and (entry_expr in mt._fields_inverse):
+            #  FIXME: remove once select_entries on a field is free
             field = mt._fields_inverse[entry_expr]
             mt._jvds.writeBlockMatrix(path, field, block_size)
         else:
+            n_cols = mt.count_cols()
+            mt = mt.select_entries(__x=entry_expr)
+            mt = mt.select_rows(__count=agg.count_where(hl.is_defined(mt['__x'])),
+                                __sum=agg.sum(mt['__x']),
+                                __sum_sq=agg.sum(mt['__x'] * mt['__x']))
+            mt = mt.select_rows(__mean=mt['__sum'] / mt['__count'],
+                                __centered_length=hl.sqrt(mt['__sum_sq'] - 
+                                                          (mt['__sum'] ** 2) / mt['__count']),
+                                __length=hl.sqrt(mt['__sum_sq'] +
+                                                 (n_cols - mt['__count']) *
+                                                 ((mt['__sum'] / mt['__count']) ** 2)))
+            expr = mt['__x']
+            if normalize:
+                if center:
+                    expr = (expr - mt['__mean']) / mt['__centered_length']
+                    if mean_impute:
+                        expr = hl.or_else(expr, 0.0)
+                else:
+                    if mean_impute:
+                        expr = hl.or_else(expr, mt['__mean'])
+                    expr = expr / mt['__length']
+            else:
+                if center:
+                    expr = expr - mt['__mean']
+                    if mean_impute:
+                        expr = hl.or_else(expr, 0.0)
+                else:
+                    if mean_impute:
+                        expr = hl.or_else(expr, mt['__mean'])
+
             field = Env.get_uid()
-            mt.select_entries(**{field: entry_expr})._jvds.writeBlockMatrix(path, field, block_size)
+            mt.select_entries(**{field: expr})._jvds.writeBlockMatrix(path, field, block_size)
 
     @staticmethod
     def _check_indices(indices, size):
@@ -845,8 +913,8 @@ class BlockMatrix(object):
 
         return self.sparsify_band(lower_band, upper_band, blocks_only)
 
-    @typecheck_method(starts=sequenceof(int),
-                      stops=sequenceof(int),
+    @typecheck_method(starts=oneof(sequenceof(int), np.ndarray),
+                      stops=oneof(sequenceof(int), np.ndarray),
                       blocks_only=bool)
     def sparsify_row_intervals(self, starts, stops, blocks_only=False):
         """Creates a block-sparse matrix by filtering to an interval for each row.
@@ -901,9 +969,9 @@ class BlockMatrix(object):
 
         Parameters
         ----------
-        starts: :obj:`list` of :obj:`int`
+        starts: :obj:`list` of :obj:`int`, or :class:`ndarray` of :obj:`int32` or :obj:`int64`
             Start indices for each row (inclusive).
-        stops: :obj:`list` of :obj:`int`
+        stops: :obj:`list` of :obj:`int`, or :class:`ndarray` of :obj:`int32` or :obj:`int64`
             Stop indices for each row (exclusive).
         blocks_only: :obj:`bool`
             If ``False``, set all elements outside row intervals to zero.
@@ -914,6 +982,15 @@ class BlockMatrix(object):
         :class:`.BlockMatrix`
             Sparse block matrix.
         """
+        if isinstance(starts, np.ndarray):
+            if not (starts.dtype == np.int32 or starts.dtype == np.int64):
+                raise ValueError("sparsify_row_intervals: starts ndarray must have dtype 'int32' or 'int64'")
+            starts = [int(s) for s in starts]
+        if isinstance(stops, np.ndarray):
+            if not (stops.dtype == np.int32 or stops.dtype == np.int64):
+                raise ValueError("sparsify_row_intervals: stops ndarray must have dtype 'int32' or 'int64'")
+            stops = [int(s) for s in stops]
+
         n_rows = self.n_rows
         n_cols = self.n_cols
         if n_rows >= (1 << 31):
@@ -1090,7 +1167,7 @@ class BlockMatrix(object):
 
         Notes
         -----
-        This function will have no effect on a dataset that was not previously
+        This function will have no effect on a block matrix that was not previously
         persisted.
 
         Returns
@@ -1867,3 +1944,25 @@ def _ndarray_from_jarray(ja):
     uri = local_path_uri(path)
     Env.hail().utils.richUtils.RichArray.exportToDoubles(Env.hc()._jhc, uri, ja)
     return np.fromfile(path)
+
+
+def _breeze_fromfile(uri, n_rows, n_cols):
+    n_entries = n_rows * n_cols
+    if n_entries >= 1 << 31:
+        raise ValueError(f'number of entries must be less than 2^31, found {n_entries}')
+
+    return Env.hail().utils.richUtils.RichDenseMatrixDouble.importFromDoubles(Env.hc()._jhc, uri, n_rows, n_cols, True)
+
+
+def _breeze_from_ndarray(nd):
+    if any(i == 0 for i in nd.shape):
+        raise ValueError(f'from_numpy: ndarray dimensions must be non-zero, found shape {nd.shape}')
+
+    nd = _ndarray_as_2d(nd)
+    nd = _ndarray_as_float64(nd)
+    n_rows, n_cols = nd.shape
+
+    path = new_local_temp_file()
+    uri = local_path_uri(path)
+    nd.tofile(path)
+    return _breeze_fromfile(uri, n_rows, n_cols)
