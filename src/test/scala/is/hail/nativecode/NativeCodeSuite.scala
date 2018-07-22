@@ -75,7 +75,7 @@ class NativeCodeSuite extends SparkSuite {
     val t1 = System.currentTimeMillis()
     val usecsPerCall = ((t1 - t0) * 1000.0) / numCalls
     System.err.println(s"funcHash1() ~ ${usecsPerCall}usecs")
-    assert(usecsPerCall < 0.050)
+    assert(usecsPerCall < 0.2)
   }
 
   @Test def testNativeBuild() = {

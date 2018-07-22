@@ -143,7 +143,7 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
     if (true) {
       val sb = new StringBuilder()
       NativeDecode.appendCode(sb, t, requestedType)
-      val mod = new NativeModule("-g -O1", sb.toString(), true)
+      val mod = new NativeModule("-O2", sb.toString(), true)
       val st = new NativeStatus()
       mod.findOrBuild(st)
       if (st.fail) System.err.println(s"findOrBuild ${st}")
@@ -152,17 +152,7 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
       val modKey = mod.getKey()
       val modBinary = mod.getBinary()
       mod.close()
-      val f = EmitPackDecoder(t, requestedType)
-      val result =
-        (in: InputStream) => {
-          val inBuf = child.buildInputBuffer(in)
-          val wantToFail = true
-          if (wantToFail && (inBuf.decoderId == 1))
-            new NativePackDecoder(inBuf, modKey, modBinary)
-          else
-            new CompiledPackDecoder(inBuf, f)
-        }
-      result
+      (in: InputStream) => new NativePackDecoder(child.buildInputBuffer(in), modKey, modBinary)
     } else {
       val f = EmitPackDecoder(t, requestedType)
       (in: InputStream) => new CompiledPackDecoder(child.buildInputBuffer(in), f)
