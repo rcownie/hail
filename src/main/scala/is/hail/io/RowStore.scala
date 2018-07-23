@@ -544,7 +544,6 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       val compLen = blockLen - 4
       val decompLen = Memory.loadInt(comp, 0)
       LZ4Utils.decompress(buf, 0, decompLen, comp, 4, compLen)
-      System.err.println(s"DEBUG: LZ4 decompress(${compLen}) -> ${decompLen}")
       decompLen
     }
     lim = result
@@ -1377,8 +1376,6 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
   def pushData(size: Long): Long = {
     val tellBefore = tell()
     val ngot = in.speculativeRead(decoderBuf+decoderSize, tmpBuf, 0, size.toInt)
-    // System.err.println(s"DEBUG: ${tag} tell ${tellBefore} pushData(${size}) -> ${ngot} ${decoderStatus}")
-    ShowBuf(decoderBuf+decoderSize, ngot)
     ngot
   }
 
@@ -1393,13 +1390,10 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
         done = true
       } else {
         pushSize = pushData(rc)
-        // System.err.println(s"DEBUG: ${tag} pushSize ${pushSize} rc ${rc}")
         assert(pushSize > 0)
       }
     }
     val result = rc.toByte
-    val tagEnd = if (result == 0) " END" else ""
-    // System.err.println(s"DEBUG: ${tag} tell ${tell()} readByte -> ${result}${tagEnd} numItems ${numItems}")
     result
   }
 
@@ -1409,20 +1403,17 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     var done = false
     while (!done) {
       val startByte = (Memory.loadByte(decoderBuf+decoderPos) & 0xff)
-      // System.err.println(s"DEBUG: ${tag} tell ${tell()-pushSize} decode start with ${startByte.toHexString}")
       rc = decode_until_done_or_need_push(st, decoder.get(), region.get(), pushSize)
       if (rc <= 0) {
         done = true
       } else {
         pushSize = pushData(rc)
-        // System.err.println(s"DEBUG: ${tag} pushSize ${pushSize} rc ${rc}")
         assert(pushSize > 0)
       }
     }
     if (rc == 0) {
       val rvAddr = Memory.loadLong(decoder.get()+rvBaseOffset)
       numItems += 1
-      // System.err.println(s"DEBUG: ${tag} tell ${tell()} readRegionValue numItems ${numItems} ${decoderStatus}")
       rvAddr
     } else {
       throw new java.util.NoSuchElementException("NativePackDecoder bad RegionValue")
@@ -1439,17 +1430,11 @@ final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, I
     in.close()
   }
 
-  def readByte(): Byte = {
-    val result = in.readByte()
-    val tagEnd = if (result == 0) " END" else ""
-    // System.err.println(s"DEBUG: ${tag} tell ${in.tell()} readByte -> ${result}${tagEnd} numItems ${numItems}")
-    result
-  }
+  def readByte(): Byte = in.readByte()
 
   def readRegionValue(region: Region): Long = {
     val result = f()(region, in)
     numItems += 1
-    // System.err.println(s"DEBUG: ${tag} tell ${in.tell()} readRegionValue numItems ${numItems}")
     result
   }
 }
