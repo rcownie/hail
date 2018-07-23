@@ -4,6 +4,7 @@ import is.hail.annotations._
 import is.hail.expr.JSONAnnotationImpex
 import is.hail.expr.types._
 import is.hail.io.compress.LZ4Utils
+import is.hail.nativecode._
 import is.hail.rvd.{OrderedRVDPartitioner, OrderedRVDSpec, RVDContext, RVDSpec, UnpartitionedRVDSpec}
 import is.hail.sparkextras._
 import is.hail.utils._
@@ -11,6 +12,7 @@ import org.apache.spark.rdd.RDD
 import org.json4s.{Extraction, JValue}
 import org.json4s.jackson.JsonMethods
 import java.io.{Closeable, InputStream, OutputStream, PrintWriter}
+import scala.collection.mutable.ArrayBuffer
 
 import is.hail.asm4s._
 import is.hail.expr.ir.{EmitUtils, EstimableEmitter, MethodBuilderLike}
@@ -101,16 +103,60 @@ trait CodecSpec extends Serializable {
   }
 }
 
+object ShowBuf {
+
+  def apply(buf: Array[Byte], pos: Int, n: Int): Unit = {
+    val sb = new StringBuilder()
+    val len = if (n < 32) n else 32
+    var j = 0
+    while (j < len) {
+      val x = (buf(pos+j).toInt & 0xff)
+      if (x <= 0xf) sb.append(s" 0${x.toHexString}") else sb.append(s" ${x.toHexString}")
+      if ((j & 0x7) == 0x7) sb.append("\n")
+      j += 1
+    }
+    System.err.println(sb.toString())
+  }
+
+  def apply(addr: Long, n: Int): Unit = {
+    val sb = new StringBuilder()
+    val len = if (n < 32) n else 32
+    var j = 0
+    while (j < len) {
+      val x = (Memory.loadByte(addr+j).toInt & 0xff)
+      if (x <= 0xf) sb.append(s" 0${x.toHexString}") else sb.append(s" ${x.toHexString}")
+      if ((j & 0x7) == 0x7) sb.append("\n")
+      j += 1
+    }
+    System.err.println(sb.toString())
+  }
+
+}
+
 final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
+
   def buildEncoder(t: Type): (OutputStream) => Encoder = { out: OutputStream =>
     new PackEncoder(t, child.buildOutputBuffer(out))
   }
 
-  // def buildDecoder(t: Type)(in: InputStream): Decoder = new PackDecoder(t, child.buildInputBuffer(in))
-
   def buildDecoder(t: Type, requestedType: Type): (InputStream) => Decoder = {
-    val f = EmitPackDecoder(t, requestedType)
-    (in: InputStream) => new CompiledPackDecoder(child.buildInputBuffer(in), f)
+    if (true) {
+      val sb = new StringBuilder()
+      NativeDecode.appendCode(sb, t, requestedType)
+      val mod = new NativeModule("-O2", sb.toString(), true)
+      val st = new NativeStatus()
+      mod.findOrBuild(st)
+      if (st.fail) System.err.println(s"findOrBuild ${st}")
+      assert(st.ok)
+      st.clear()
+      val modKey = mod.getKey()
+      val modBinary = mod.getBinary()
+      mod.close()
+      (in: InputStream) => new NativePackDecoder(child.buildInputBuffer(in), modKey, modBinary)
+    } else {
+      val f = EmitPackDecoder(t, requestedType)
+      (in: InputStream) => new CompiledPackDecoder(child.buildInputBuffer(in), f)
+    }
   }
 }
 
@@ -146,9 +192,24 @@ final class StreamBlockInputBuffer(in: InputStream) extends InputBlockBuffer {
   }
 
   def readBlock(buf: Array[Byte]): Int = {
-    in.readFully(lenBuf, 0, 4)
-    val len = Memory.loadInt(lenBuf, 0)
-    in.readFully(buf, 0, len)
+    // Returns -1 for end-of-file
+    var done = false
+    var len = 0
+    var shift = 0
+    while (!done && (shift < 32)) {
+      val c = in.read();
+      if (c == -1) {
+        len = -1;
+        done = true
+      } else {
+        len |= ((c & 0xff) << shift)
+      }
+      shift += 8
+    }
+    if (len > 0) {
+      val ngot = in.read(buf, 0, len)
+      if (ngot < len) len = -1
+    }
     len
   }
 }
@@ -325,6 +386,10 @@ final class BlockingOutputBuffer(blockSize: Int, out: OutputBlockBuffer) extends
 }
 
 trait InputBuffer extends Closeable {
+  def decoderId: Int
+
+  def tell(): Long
+
   def close(): Unit
 
   def readByte(): Byte
@@ -358,6 +423,8 @@ trait InputBuffer extends Closeable {
   def readDoubles(to: Array[Double]): Unit = readDoubles(to, 0, to.length)
 
   def readBoolean(): Boolean = readByte() != 0
+
+  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int
 }
 
 final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
@@ -365,7 +432,16 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
     in.close()
   }
 
-  def readByte(): Byte = in.readByte()
+  def decoderId = 1
+
+  var bytePos = 0L
+
+  def tell(): Long = bytePos
+
+  def readByte(): Byte = {
+    bytePos += 1
+    in.readByte()
+  }
 
   def readInt(): Int = {
     var b: Byte = readByte()
@@ -391,13 +467,25 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
     x
   }
 
-  def readFloat(): Float = in.readFloat()
+  def readFloat(): Float = {
+    bytePos += 4
+    in.readFloat()
+  }
 
-  def readDouble(): Double = in.readDouble()
+  def readDouble(): Double = {
+    bytePos += 8
+    in.readDouble()
+  }
 
-  def readBytes(toRegion: Region, toOff: Long, n: Int): Unit = in.readBytes(toRegion, toOff, n)
+  def readBytes(toRegion: Region, toOff: Long, n: Int): Unit = {
+    bytePos += n
+    in.readBytes(toRegion, toOff, n)
+  }
 
-  def skipByte(): Unit = in.skipByte()
+  def skipByte(): Unit = {
+    bytePos += 1
+    in.skipByte()
+  }
 
   def skipInt() {
     var b: Byte = readByte()
@@ -411,17 +499,38 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
       b = readByte()
   }
 
-  def skipFloat(): Unit = in.skipFloat()
+  def skipFloat(): Unit = {
+    bytePos += 4
+    in.skipFloat()
+  }
 
-  def skipDouble(): Unit = in.skipDouble()
+  def skipDouble(): Unit = {
+    bytePos += 8
+    in.skipDouble()
+  }
 
-  def skipBytes(n: Int): Unit = in.skipBytes(n)
+  def skipBytes(n: Int): Unit = {
+    bytePos += n
+    in.skipBytes(n)
+  }
 
-  def readDoubles(to: Array[Double], toOff: Int, n: Int): Unit = in.readDoubles(to, toOff, n)
+  def readDoubles(to: Array[Double], toOff: Int, n: Int): Unit = {
+    bytePos += n*8
+    in.readDoubles(to, toOff, n)
+  }
+
+  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
+    val result = in.speculativeRead(toAddr, toBuf, toOff, n)
+    if (result > 0) bytePos += result
+    result
+  }
 }
 
 final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends InputBlockBuffer {
   private val comp = new Array[Byte](4 + LZ4Utils.maxCompressedLength(blockSize))
+  private var decompBuf = new Array[Byte](blockSize)
+  private var pos = 0
+  private var lim = 0
 
   def close() {
     in.close()
@@ -429,12 +538,40 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
 
   def readBlock(buf: Array[Byte]): Int = {
     val blockLen = in.readBlock(comp)
-    val compLen = blockLen - 4
-    val decompLen = Memory.loadInt(comp, 0)
+    val result = if (blockLen == -1) {
+      -1
+    } else {
+      val compLen = blockLen - 4
+      val decompLen = Memory.loadInt(comp, 0)
+      LZ4Utils.decompress(buf, 0, decompLen, comp, 4, compLen)
+      System.err.println(s"DEBUG: LZ4 decompress(${compLen}) -> ${decompLen}")
+      decompLen
+    }
+    lim = result
+    result
+  }
 
-    LZ4Utils.decompress(buf, 0, decompLen, comp, 4, compLen)
-
-    decompLen
+  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
+    var ngot = 0
+    while ((pos <= lim) && (ngot < n)) {
+      var have = (lim - pos)
+      if (have == 0) {
+        have = readBlock(decompBuf) // -1 for end-of-file
+        lim = have
+        pos = 0
+      }
+      if (have > 0) {
+        val chunk = if (have < n-ngot) have else n-ngot
+        if (toAddr != 0) { // copy directly to off-heap buffer
+          Memory.memcpy(toAddr+toOff+ngot, decompBuf, pos, chunk)
+        } else {
+          Memory.memcpy(toBuf, toOff+ngot, decompBuf, pos, chunk)
+        }
+        pos += chunk
+        ngot += chunk
+      }
+    }
+    if (ngot > 0) ngot else -1
   }
 }
 
@@ -443,8 +580,11 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
   private var end: Int = 0
   private var off: Int = 0
 
+  var blockBytePos = 0L
+
   private def readBlock() {
     assert(off == end)
+    blockBytePos += end
     end = in.readBlock(buf)
     off = 0
   }
@@ -458,6 +598,10 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
   def close() {
     in.close()
   }
+
+  def decoderId = 0
+
+  def tell(): Long = blockBytePos+off
 
   def readByte(): Byte = {
     ensure(1)
@@ -565,9 +709,37 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       off += (p << 3)
     }
   }
+
+  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
+    var ngot = 0
+    while ((off <= end) && (ngot < n)) {
+      var have = (end - off)
+      if (have == 0) {
+        blockBytePos += end
+        have = in.readBlock(buf)
+        if (have < 0) have = -1
+        end = have
+        off = 0
+      }
+      if (have > 0) {
+        val chunk = if (have < n-ngot) have else n-ngot
+        if (toAddr != 0) { // copy directly to off-heap buffer
+          Memory.memcpy(toAddr+toOff+ngot, buf, off, chunk)
+        } else {
+          Memory.memcpy(toBuf, toOff+ngot, buf, off, chunk)
+        }
+        off += chunk
+        ngot += chunk
+      }
+    }
+    val result = if (ngot > 0) ngot else -1
+    result
+  }
 }
 
 trait Decoder extends Closeable {
+  def tag: String
+
   def close()
 
   def readRegionValue(region: Region): Long
@@ -841,19 +1013,450 @@ object EmitPackDecoder {
   }
 }
 
+//
+// Generate the Type-specific C++ code for a PackDecoder
+//
+object NativeDecode {
+
+  def appendCode(sb: StringBuilder, rowType: Type, wantType: Type): Unit = {
+    val verbose = false
+    var seen = new ArrayBuffer[Int]()
+    val stateDefs = new StringBuilder()
+    val localDefs = new StringBuilder()
+    val flushCode = new StringBuilder()
+    val entryCode = new StringBuilder()
+    val mainCode = new StringBuilder()
+    
+    def stateVarType(name: String): String = {
+      name match {
+        case "len" => "ssize_t"
+        case "idx" => "ssize_t"
+        case "miss" => "std::vector<char>"
+        case _ => "char*"
+      }
+    }
+
+    def stateVar(name: String, depth: Int): String = {
+      val bit = name match {
+        case "len"  => 0x01
+        case "idx"  => 0x02
+        case "addr" => 0x04
+        case "ptr"  => 0x08
+        case "data" => 0x10
+        case "miss" => 0x20
+      }
+      if (seen.length <= depth) seen = seen.padTo(depth+1, 0)
+      val hasLocal = !name.equals("miss")
+      val result = s"${name}${depth}"
+      if ((seen(depth) & bit) == 0) {
+        seen(depth) = (seen(depth) | bit)
+        val typ = stateVarType(name)
+        val initStr =
+          if (typ.equals("std::vector<char>")) ""
+          else if (!typ.equals("char*")) " = 0"
+          else if ((depth == 0) && (name.equals("addr"))) " = (char*)&this->rv_base_"
+          else " = nullptr"
+        stateDefs.append(s"  ${typ} ${result}_${initStr};\n")
+        if (hasLocal) {
+          localDefs.append(s"    ${typ} ${result} = ${result}_;\n")
+          flushCode.append(s"    ${result}_ = ${result};\n")
+        }
+      }
+      if (hasLocal) result else result+"_"
+    }
+
+    var numStates = 0
+    def allocState(name: String): Int = {
+      val s = numStates
+      numStates += 1
+      entryCode.append(s"      case ${s}: goto entry${s};\n")
+      mainCode.append(s"    entry${s}: // ${name}\n")
+      if (verbose) mainCode.append(s"""    fprintf(stderr, "DEBUG: %p entry${s} ${name}\\n", this);\n""")
+      s
+    }
+
+    def isResumePoint(t: Type): Boolean = {
+      t match {
+        case _: TBaseStruct => false
+        case _ => true
+      }
+    }
+    
+    def isEmptyStruct(t: Type): Boolean = {
+      // A struct which no fields, except other empty structs
+      if (t.byteSize == 0) true else false
+    }
+
+    def scan(depth: Int, numIndent: Int, name: String, typ: Type, wantType: Type, skip: Boolean) {
+      val r1 = if (isResumePoint(typ)) allocState(name) else -1
+      val addr = if (skip || ((depth > 0) && isEmptyStruct(typ))) "addr_undefined" else stateVar("addr", depth)
+      val ind = "  " * numIndent
+      typ.fundamentalType match {
+        case t: TBoolean =>
+          val call = if (skip) "this->skip_byte()" else s"this->decode_byte((int8_t*)${addr})"
+          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
+        case t: TInt32 =>
+          val call = if (skip) "this->skip_int()" else s"this->decode_int((int32_t*)${addr})"
+          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
+        case t: TInt64 =>
+          val call = if (skip) "this->skip_long()" else s"this->decode_long((int64_t*)${addr})"
+          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
+        case t: TFloat32 =>
+          val call = if (skip) "this->skip_float()" else s"this->decode_float((float*)${addr})"
+          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
+        case t: TFloat64 =>
+          val call = if (skip) "this->skip_double()" else s"this->decode_double((double*)${addr})"
+          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
+
+        case t: TBinary =>
+          // TBinary - usually a string - has an int length, followed by that number of bytes
+          val ptr = stateVar("ptr", depth)
+          val len = stateVar("len", depth)
+          val idx = stateVar("idx", depth)
+          mainCode.append(s"${ind}  if (!this->decode_length(&${len})) { s = ${r1}; goto pull; }\n")
+          if (skip) {
+            mainCode.append(s"${ind}  for (${idx} = 0; ${idx} < ${len};) {\n")
+            val r2 = allocState(s"${name}.bytes");
+            mainCode.append(s"${ind}    auto ngot = this->skip_bytes(${len}-${idx});\n")
+            mainCode.append(s"${ind}    if (ngot <= 0) { s = ${r2}; goto pull; }\n")
+            mainCode.append(s"${ind}    ${idx} += ngot;\n")
+            mainCode.append(s"${ind}  }\n")            
+          } else {
+            mainCode.append(s"${ind}  ${ptr} = region->allocate(4, 4+${len});\n")
+            mainCode.append(s"${ind}  *(char**)${addr} = ${ptr};\n")
+            mainCode.append(s"${ind}  *(int32_t*)${ptr} = ${len};\n")
+            mainCode.append(s"${ind}  for (${idx} = 0; ${idx} < ${len};) {\n")
+            val r2 = allocState(s"${name}.bytes");
+            mainCode.append(s"${ind}    auto ngot = this->decode_bytes(${ptr}+4+${idx}, ${len}-${idx});\n")
+            mainCode.append(s"${ind}    if (ngot <= 0) { s = ${r2}; goto pull; }\n")
+            mainCode.append(s"${ind}    ${idx} += ngot;\n")
+            mainCode.append(s"${ind}  }\n")
+          }
+
+        case t: TArray =>
+          val len = stateVar("len", depth)
+          val idx = stateVar("idx", depth)
+          val ptr = stateVar("ptr", depth)
+          val data = if (skip) "data_undefined" else stateVar("data", depth)
+          var miss = if (t.elementType.required || !skip) "miss_undefined" else stateVar("miss", depth)
+          mainCode.append(s"${ind}  if (!this->decode_length(&${len})) { s = ${r1}; goto pull; }\n")
+          val wantArray = wantType.asInstanceOf[TArray]
+          val ealign = wantArray.elementType.alignment
+          val align = if (ealign > 4) ealign else 4
+          val esize = wantArray.elementByteSize
+          val req = if (t.elementType.required) "true" else "false"          
+          if (skip) {
+            if (!t.elementType.required) {
+              mainCode.append(s"${ind}  stretch_size(${miss}, missing_bytes(${len}));\n")
+            }
+          } else {
+            mainCode.append(s"${ind}  { ssize_t data_offset = elements_offset(${len}, ${req}, ${ealign});\n")
+            mainCode.append(s"${ind}    ssize_t size = data_offset + ${esize}*${len};\n")
+            mainCode.append(s"${ind}    ${ptr} = region->allocate(${align}, size);\n");
+            mainCode.append(s"${ind}    memset(${ptr}, 0xff, size); // initialize all-missing\n")
+            mainCode.append(s"${ind}    *(char**)${addr} = ${ptr};\n")
+            mainCode.append(s"${ind}    ${data} = ${ptr} + data_offset;\n")
+            mainCode.append(s"${ind}  }\n")
+            mainCode.append(s"${ind}  *(int32_t*)${ptr} = ${len};\n")
+            miss = s"(${ptr}+4)"
+          }
+          if (!t.elementType.required) {
+            mainCode.append(s"${ind}  for (${idx} = 0; ${idx} < missing_bytes(${len});) {\n")
+            val r2 = allocState(s"${name}.missing");
+            mainCode.append(s"${ind}    auto ngot = this->decode_bytes(&${miss}[${idx}], missing_bytes(${len})-${idx});\n")
+            mainCode.append(s"${ind}    if (ngot <= 0) { s = ${r2}; goto pull; }\n")
+            mainCode.append(s"${ind}    ${idx} += ngot;\n")
+            mainCode.append(s"${ind}  }\n")
+          }
+          mainCode.append(  s"${ind}  for (${idx} = 0; ${idx} < ${len}; ++${idx}) {\n")
+          if (!t.elementType.required) {
+            mainCode.append(s"${ind}    if (is_missing(${miss}, ${idx})) continue;\n")
+          }
+          if (!skip && !isEmptyStruct(t.elementType)) {
+            mainCode.append(  s"${ind}    ${stateVar("addr", depth+1)} = ${data} + ${idx}*${esize};\n")
+          }
+          scan(depth+1, numIndent+1, s"${name}(${idx})", t.elementType, wantArray.elementType, skip)
+          mainCode.append(  s"${ind}  }\n")
+
+        case t: TBaseStruct =>
+          val wantStruct = wantType.fundamentalType.asInstanceOf[TBaseStruct];
+          var miss = "miss_undefined"
+          var shuffleMissingBits = false
+          var fieldToWantIdx = new Array[Int](t.fields.length)
+          if ((t.nMissingBytes > 0) && 
+            (skip || (wantStruct.fields.length < t.fields.length))) {
+            miss = stateVar("miss", depth)
+            mainCode.append(s"${ind}  stretch_size(${miss}, ${t.nMissingBytes});\n")
+          }
+          if (!skip) {
+            if (depth == 0) { // top-level TBaseStruct must be allocated
+              mainCode.append(s"${ind}  ${addr} = region->allocate(${wantStruct.alignment}, ${wantStruct.byteSize});\n")
+              if (wantStruct.byteSize > 0) {
+                mainCode.append(s"${ind}  memset(${addr}, 0xff, ${wantStruct.byteSize}); // initialize all-missing\n")
+              }
+              mainCode.append(s"${ind}  this->rv_base_ = ${addr};\n")
+            }            
+            var wantIdx = 0
+            var fieldIdx = 0
+            while (fieldIdx < t.fields.length) {
+              val wantName = if (wantIdx < wantStruct.fields.length) wantStruct.fields(wantIdx).name else "~Bad Name~"
+              if (t.fields(fieldIdx).name.equals(wantName)) {
+                fieldToWantIdx(fieldIdx) = wantIdx
+                wantIdx += 1
+              } else {
+                fieldToWantIdx(fieldIdx) = -1
+                shuffleMissingBits = true
+              }
+              fieldIdx += 1
+            }
+            var maxMissingBit = -1
+            var j = 0
+            while (j < wantStruct.missingIdx.length) {
+              val bit = wantStruct.missingIdx(j)
+              if (maxMissingBit < bit) maxMissingBit = bit
+              j += 1
+            }
+            if (shuffleMissingBits) {
+              if (maxMissingBit >= 0) {
+                mainCode.append(s"${ind}  set_all_missing(${addr}, ${maxMissingBit+1});\n")
+              }
+            } else {
+              miss = addr
+            }
+          }
+          if (t.nMissingBytes == 1) {
+            val r2 = allocState(s"${name}.missing");
+            mainCode.append(s"${ind}  if (this->decode_bytes(&${miss}[0], 1) <= 0) { s = ${r2}; goto pull; }\n")
+          } else if (t.nMissingBytes > 1) {
+            // Ack! We have to read this missing bytes, but shuffle bits needed for wantStruct
+            val idx = stateVar("idx", depth)
+            mainCode.append(s"${ind}  for (${idx} = 0; ${idx} < ${t.nMissingBytes};) {\n")
+            val r2 = allocState(s"${name}.missing")
+            mainCode.append(s"${ind}    auto ngot = this->decode_bytes(&${miss}[${idx}], ${t.nMissingBytes}-${idx});\n")
+            mainCode.append(s"${ind}    if (ngot <= 0) { s = ${r2}; goto pull; }\n")
+            mainCode.append(s"${ind}    ${idx} += ngot;\n")
+            mainCode.append(s"${ind}  }\n")
+          }
+          var fieldIdx = 0
+          while (fieldIdx < t.fields.length) {
+            val field = t.fields(fieldIdx)
+            val wantIdx = fieldToWantIdx(fieldIdx)
+            val fieldSkip = skip || (wantIdx < 0)
+            val fieldType = t.types(fieldIdx)
+            val wantType = if (fieldSkip) fieldType else wantStruct.types(wantIdx)
+            val wantOffset = if (fieldSkip) -1 else wantStruct.byteOffsets(wantIdx)
+            if (!t.fieldRequired(fieldIdx)) {
+              val m = t.missingIdx(fieldIdx)
+              mainCode.append(s"${ind}  if (!is_missing(${miss}, ${m})) {\n")
+              if (!fieldSkip) {
+                if (shuffleMissingBits) {
+                  val mbit = wantStruct.missingIdx(wantIdx)
+                  mainCode.append(s"${ind}    ${addr}[${mbit>>3}] &= ~(1<<${mbit&0x7});\n")
+                }
+                if (!isEmptyStruct(fieldType)) {
+                  mainCode.append(s"${ind}    ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
+                }
+              }
+              mainCode.append(s"${ind}    // ${name}.${field.name} fieldSkip ${fieldSkip} ${fieldType}\n")
+              scan(depth+1, numIndent+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
+              mainCode.append(s"${ind}  }\n")
+            } else {
+              if (!fieldSkip && !isEmptyStruct(fieldType)) {
+                mainCode.append(s"${ind}  ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
+              }
+              scan(depth+1, numIndent, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
+            }
+            fieldIdx += 1
+          }
+        
+        case _ =>
+          mainCode.append(s"${ind}  // unknown type ${typ}\n")
+          assert(false)
+                   
+      }
+    }
+
+    allocState("init")
+    scan(0, 1, "root", rowType, wantType, false)
+
+    sb.append("#include \"hail/hail.h\"\n")
+    sb.append("#include \"hail/PackDecoder.h\"\n")
+    sb.append("#include \"hail/NativeStatus.h\"\n")
+    sb.append("#include \"hail/Region.h\"\n")
+    sb.append("#include <cstdint>\n")
+    sb.append("#include <cstring>\n")
+    if (verbose) sb.append("#include <cstdio>\n")
+    sb.append("\n")
+    sb.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
+    sb.append("\n")
+    sb.append("template<int DecoderId>\n")
+    sb.append("class Decoder : public PackDecoderBase<DecoderId> {\n")
+    sb.append(" public:\n")
+    sb.append("  int s_ = 0;\n")
+    sb.append(stateDefs)
+    sb.append("\n")
+    sb.append("  virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) {\n")
+    sb.append("    this->size_ += push_size;\n")
+    sb.append(localDefs)
+    sb.append("    int s = s_;\n")
+    sb.append("    switch (s) {\n")
+    sb.append(entryCode)
+    sb.append("    }\n")
+    sb.append(mainCode)
+    sb.append("    s_ = 0; // initialize for next RegionValue\n")
+    sb.append("    return 0;\n")
+    if (rowType.byteSize > 0) {
+      sb.append("  pull:\n")
+      sb.append("    s_ = s;\n")
+      sb.append(flushCode)
+      if (verbose) {
+        sb.append("fprintf(stderr, \"DEBUG: prepare_for_push(entry%d) pos_ %ld size_ %ld\\n\", s_, this->pos_, this->size_);\n")
+      }
+      sb.append("    return this->prepare_for_push();\n")
+    }
+    sb.append("  }\n")
+    sb.append("};\n")
+    sb.append("\n")
+    sb.append("NativeObjPtr make_decoder(NativeStatus*, long decoderId) {\n")
+    sb.append("  if (decoderId == 0) return std::make_shared< Decoder<0> >();\n")
+    sb.append("  if (decoderId == 1) return std::make_shared< Decoder<1> >();\n")
+    sb.append("  return NativeObjPtr();\n")
+    sb.append("}\n")
+    sb.append("\n")
+    sb.append("ssize_t decode_until_done_or_need_push(NativeStatus*, long decoder, long region, long push_size) {\n")
+    sb.append("  return ((DecoderBase*)decoder)->decode_until_done_or_need_push((Region*)region, push_size);\n")
+    sb.append("}\n")
+    sb.append("\n")
+    sb.append("ssize_t decode_one_byte(NativeStatus*, long decoder, long push_size) {\n")
+    sb.append("  return ((DecoderBase*)decoder)->decode_one_byte(push_size);\n")
+    sb.append("}\n")
+    sb.append("\n")
+    sb.append("NAMESPACE_HAIL_MODULE_END\n")
+  }
+}
+
+final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: Array[Byte]) extends Decoder {
+  val mod = new NativeModule(moduleKey, moduleBinary)
+  var st = new NativeStatus()
+  val make_decoder = mod.findPtrFuncL1(st, "make_decoder")
+  if (st.fail) System.err.println(s"ERROR: ${st}")
+  assert(st.ok)
+  val decode_until_done_or_need_push = mod.findLongFuncL3(st, "decode_until_done_or_need_push")
+  assert(st.ok)
+  val decode_one_byte = mod.findLongFuncL2(st, "decode_one_byte")
+  assert(st.ok)
+  val decoder = new NativePtr(make_decoder, st, in.decoderId)
+  val bufOffset = decoder.getFieldOffset(8, "buf_")
+  val posOffset = decoder.getFieldOffset(8, "pos_")
+  val sizeOffset = decoder.getFieldOffset(8, "size_")
+  val rvBaseOffset = decoder.getFieldOffset(8, "rv_base_")
+  var tmpBuf = new Array[Byte](0)
+  var numItems = 0
+  st.close()
+  mod.close()
+  val tag = ((decoder.get() & 0xffff) | 0x8000).toHexString
+
+  def close(): Unit = {
+    in.close()
+    decoder.close()
+    make_decoder.close()
+    decode_until_done_or_need_push.close()
+    decode_one_byte.close()
+  }
+
+  def decoderBuf = Memory.loadLong(decoder.get()+bufOffset)
+  def decoderPos = Memory.loadLong(decoder.get()+posOffset)
+  def decoderSize = Memory.loadLong(decoder.get()+sizeOffset)
+  def decoderStatus = s"buf_ ${decoderBuf.toHexString} pos_ ${decoderPos} size_ ${decoderSize}"
+
+  def tell(): Long = {
+    val remnant = (decoderSize - decoderPos)
+    in.tell()-remnant
+  }
+
+  def pushData(size: Long): Long = {
+    val tellBefore = tell()
+    val ngot = in.speculativeRead(decoderBuf+decoderSize, tmpBuf, 0, size.toInt)
+    // System.err.println(s"DEBUG: ${tag} tell ${tellBefore} pushData(${size}) -> ${ngot} ${decoderStatus}")
+    ShowBuf(decoderBuf+decoderSize, ngot)
+    ngot
+  }
+
+  def readByte(): Byte = {
+    var rc = 0L
+    var pushSize = 0L
+    var done = false
+    while (!done) {
+      rc = decode_one_byte(st, decoder.get(), pushSize)
+      if (rc <= 0) {
+        rc = -rc
+        done = true
+      } else {
+        pushSize = pushData(rc)
+        // System.err.println(s"DEBUG: ${tag} pushSize ${pushSize} rc ${rc}")
+        assert(pushSize > 0)
+      }
+    }
+    val result = rc.toByte
+    val tagEnd = if (result == 0) " END" else ""
+    // System.err.println(s"DEBUG: ${tag} tell ${tell()} readByte -> ${result}${tagEnd} numItems ${numItems}")
+    result
+  }
+
+  def readRegionValue(region: Region): Long = {
+    var rc = 0L
+    var pushSize = 0L
+    var done = false
+    while (!done) {
+      val startByte = (Memory.loadByte(decoderBuf+decoderPos) & 0xff)
+      // System.err.println(s"DEBUG: ${tag} tell ${tell()-pushSize} decode start with ${startByte.toHexString}")
+      rc = decode_until_done_or_need_push(st, decoder.get(), region.get(), pushSize)
+      if (rc <= 0) {
+        done = true
+      } else {
+        pushSize = pushData(rc)
+        // System.err.println(s"DEBUG: ${tag} pushSize ${pushSize} rc ${rc}")
+        assert(pushSize > 0)
+      }
+    }
+    if (rc == 0) {
+      val rvAddr = Memory.loadLong(decoder.get()+rvBaseOffset)
+      numItems += 1
+      // System.err.println(s"DEBUG: ${tag} tell ${tell()} readRegionValue numItems ${numItems} ${decoderStatus}")
+      rvAddr
+    } else {
+      throw new java.util.NoSuchElementException("NativePackDecoder bad RegionValue")
+      -1L
+    }
+  }
+}
+
 final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, InputBuffer, Long]) extends Decoder {
+  val tag = s"Compiled_${((hashCode() & 0xffff) | 0x8000).toHexString}"
+  var numItems = 0
+
   def close() {
     in.close()
   }
 
-  def readByte(): Byte = in.readByte()
+  def readByte(): Byte = {
+    val result = in.readByte()
+    val tagEnd = if (result == 0) " END" else ""
+    // System.err.println(s"DEBUG: ${tag} tell ${in.tell()} readByte -> ${result}${tagEnd} numItems ${numItems}")
+    result
+  }
 
   def readRegionValue(region: Region): Long = {
-    f()(region, in)
+    val result = f()(region, in)
+    numItems += 1
+    // System.err.println(s"DEBUG: ${tag} tell ${in.tell()} readRegionValue numItems ${numItems}")
+    result
   }
 }
 
 final class PackDecoder(rowType: Type, in: InputBuffer) extends Decoder {
+  val tag = "PackDecoder"
+
   def close() {
     in.close()
   }
