@@ -1046,6 +1046,7 @@ object NativeDecode {
         case "miss" => 0x20
       }
       if (seen.length <= depth) seen = seen.padTo(depth+1, 0)
+      val hasLocal = !name.equals("miss")
       val result = s"${name}${depth}"
       if ((seen(depth) & bit) == 0) {
         seen(depth) = (seen(depth) | bit)
@@ -1056,10 +1057,12 @@ object NativeDecode {
           else if ((depth == 0) && (name.equals("addr"))) " = (char*)&this->rv_base_"
           else " = nullptr"
         stateDefs.append(s"  ${typ} ${result}_${initStr};\n")
-        localDefs.append(s"    ${typ} ${result} = ${result}_;\n")
-        flushCode.append(s"    ${result}_ = ${result};\n")
+        if (hasLocal) {
+          localDefs.append(s"    ${typ} ${result} = ${result}_;\n")
+          flushCode.append(s"    ${result}_ = ${result};\n")
+        }
       }
-      result
+      if (hasLocal) result else result+"_"
     }
 
     var numStates = 0
