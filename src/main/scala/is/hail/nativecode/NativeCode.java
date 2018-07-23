@@ -4,6 +4,7 @@ import java.io.*;
 import java.util.*;
 import java.net.URL;
 import com.sun.jna.*;
+import org.apache.log4j.*;
 
 public class NativeCode {
   static {
@@ -23,8 +24,14 @@ public class NativeCode {
         System.load(libHail);
       }
     } catch (Exception e) {
-      System.err.println("ERROR: NativeCode.init caught exception");
+      handleException(e);
     }
+  }
+  
+  private static void handleException(Exception e) {
+    String msg = "NativeCode.init caught exception: " + e.toString();
+    LogManager.getLogger("Hail").error(msg);
+    LogManager.getRootLogger().error(msg);
   }
   
   private static Boolean isLinux() {
@@ -51,7 +58,7 @@ public class NativeCode {
       );
       path = file.getAbsoluteFile().toPath().toString();
     } catch (Exception e) {
-      System.err.println("ERROR: NativeCode.init caught exception");
+      handleException(e);
       path = libName + "_resource_not_found";
     }
     return path;
