@@ -1,12 +1,14 @@
 #include "hail/NativePtr.h"
 #include "hail/NativeObj.h"
 #include <cassert>
+#include <csignal>
 #include <cstdio>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 #include <jni.h>
+#include <execinfo.h>
 
 namespace hail {
 
@@ -18,6 +20,28 @@ namespace hail {
 namespace {
 
 void check_assumptions();
+
+void on_signal(int sig) {
+  const char* signame = "UNKNOWN";
+  if      (sig == SIGSEGV) signame = "SIGSEGV";
+  else if (sig == SIGFPE)  signame = "SIGFPE";
+  else if (sig == SIGBUS)  signame = "SIGBUS";
+  else if (sig == SIGILL)  signame = "SIGILL";
+  else if (sig == SIGABRT) signame = "SIGABRT";
+  fprintf(stderr, "FATAL: caught signal %d %s\n", sig, signame);
+  void* callstack[20];
+  int depth = backtrace(callstack, 20);
+  backtrace_symbols_fd(callstack, depth, 2);
+  exit(1);
+}
+
+void catch_signals() {
+  signal(SIGABRT, on_signal);
+  //signal(SIGBUS,  on_signal);
+  signal(SIGFPE,  on_signal);
+  signal(SIGILL,  on_signal);
+  //signal(SIGSEGV, on_signal);
+}
 
 class NativePtrInfo {
 public:
@@ -33,6 +57,7 @@ public:
     addrA_id_ = env->GetFieldID(class_ref_, "addrA", "J");
     addrB_id_ = env->GetFieldID(class_ref_, "addrB", "J");
     check_assumptions();
+    catch_signals();
   }
 };
 
