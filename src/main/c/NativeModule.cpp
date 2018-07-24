@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -412,9 +413,14 @@ bool NativeModule::try_load() {
     } else if (!try_wait_for_build()) {
       load_state_ = kFail;
     } else {
-      auto handle = dlopen(lib_name_.c_str(), RTLD_GLOBAL|RTLD_LAZY);
+      // At first this had no mutex and RTLD_LAZY, but MacOS tests crashed
+      // when two threads loaded the same .dylib.
+      static std::mutex mutex;
+      std::lock_guard<std::mutex> lock(mutex);
+      auto handle = dlopen(lib_name_.c_str(), RTLD_GLOBAL|RTLD_NOW);
       if (!handle) {
         fprintf(stderr, "ERROR: dlopen failed: %s\n", dlerror());
+        fflush(stderr);
       }
       load_state_ = (handle ? kPass : kFail);
       if (handle) dlopen_handle_ = handle;
