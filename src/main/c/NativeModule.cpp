@@ -304,9 +304,10 @@ private:
     // top target is the .so
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
     fprintf(f, "\t[ -f hm.tmp ] || /usr/bin/touch hm.tmp\n");
-    fprintf(f, "\twhile [ /bin/ln hm.tmp $(MODULE).lock 2>/dev/null ]; do sleep 1; done\n");
-    fprintf(f, "\t/bin/mv -f $(MODULE).new $@\n\n"); // not atomic on MacOS
-    fprintf(f, "\t/bin/rm -f $(MODULE).lock\n");
+    fprintf(f, "\twhile [ /bin/ln hm.tmp $(MODULE).lock 2>/dev/null ]; do sleep 0.1; done\n");
+    fprintf(f, "\t/bin/ln -f $(MODULE).new $@\n");
+    fprintf(f, "\t/bin/rm -f $(MODULE).new\n");
+    fprintf(f, "\t/bin/rm -f $(MODULE).lock\n\n");
     // build .o from .cpp
     fprintf(f, "$(MODULE).o: $(MODULE).cpp\n");
     fprintf(f, "\t$(CXX) $(CXXFLAGS) -o $@ -c $< 2> $(MODULE).err \\\n");
