@@ -356,6 +356,8 @@ NativeModule::NativeModule(
   new_name_(config.get_new_name(key_)) {
   // Master constructor - try to get module built in local file
   config.ensure_module_dir_exists();
+  auto lock_name = config.get_lock_name(key_);
+  file_lock(lock_name);
   if (!force_build && file_exists(lib_name_)) {
     build_state_ = kPass;
   } else {
@@ -363,6 +365,7 @@ NativeModule::NativeModule(
     ModuleBuilder builder(options, source, include, key_);
     builder.try_to_start_build();
   }
+  file_unlock(lock_name);
 }
 
 NativeModule::NativeModule(
