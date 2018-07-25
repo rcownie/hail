@@ -61,7 +61,7 @@ bool file_exists_and_is_recent(const std::string& name) {
   int rc;
   do {
     errno = 0;
-    rc = stat(name.c_str(), &st);
+    rc = ::stat(name.c_str(), &st);
   } while ((rc < 0) && (errno == EINTR));
   return ((rc == 0) && (st.st_mtime+120 > now));
 }
@@ -71,9 +71,26 @@ bool file_exists(const std::string& name) {
   struct stat st;
   do {
     errno = 0;
-    rc = stat(name.c_str(), &st);
+    rc = ::stat(name.c_str(), &st);
   } while ((rc < 0) && (errno == EINTR));
   return(rc == 0);
+}
+
+void file_lock(const std::string& name) {
+  for (;;) {
+    int fd = ::open(name.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
+    if (fd >= 0) { ::close(fd); break; }
+    struct stat st;
+    int rc = ::stat(name.c_str(), &st);
+    if ((rc == 0) && (st.st_mtime+30 > time(nullptr))) { // force break old lock
+      ::unlink(name.c_str());
+    }
+    usleep(kFilePollMicrosecs);
+  }
+}
+
+void file_unlock(const std::string& name) {
+  ::unlink(name.c_str());
 }
 
 long file_size(const std::string& name) {
@@ -181,15 +198,21 @@ public:
     
   }
   
+  std::string get_lock_name(const std::string& key) {
+    std::stringstream ss;
+    ss << module_dir_ << "/hm_" << key << ".lock";
+    return ss.str();
+  }
+  
   std::string get_lib_name(const std::string& key) {
     std:: stringstream ss;
-    ss << module_dir_ << "/hm_" << key  << ext_lib_;
+    ss << module_dir_ << "/hm_" << key << ext_lib_;
     return ss.str();
   }
   
   std::string get_new_name(const std::string& key) {
     std:: stringstream ss;
-    ss << module_dir_ << "/hm_" << key  << ext_new_;
+    ss << module_dir_ << "/hm_" << key << ext_new_;
     return ss.str();
   }
   
@@ -218,6 +241,7 @@ private:
   std::string include_;
   std::string key_;
   std::string hm_base_;
+  std::string hm_lock_;
   std::string hm_mak_;
   std::string hm_cpp_;
   std::string hm_new_;
@@ -237,6 +261,7 @@ public:
     // To start with, put dynamic code in $HOME/hail_modules
     auto base = (config.module_dir_ + "/hm_") + key_;
     hm_base_ = base;
+    hm_lock_ = (base + ".lock");
     hm_mak_ = (base + config.ext_mak_);
     hm_cpp_ = (base + config.ext_cpp_);
     hm_new_ = (base + config.ext_new_);
@@ -292,7 +317,9 @@ private:
 public:
   bool try_to_start_build() {
     // Try to create the .new file
+    file_lock(hm_lock_);
     int fd = ::open(hm_new_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
+    file_unlock(hm_lock_);
     if (fd < 0) {
       // We lost the race to start the build
       return false;
@@ -304,7 +331,7 @@ public:
     write_cpp();
     std::stringstream ss;
     ss << "/usr/bin/make -C " << config.module_dir_ << " -f " << hm_mak_;
-    ss << " 1>/dev/null 2>/dev/null &";
+    ss << " 1>/dev/null &";
     int rc = system(ss.str().c_str());
     if (rc < 0) perror("system");
     return true;
@@ -357,9 +384,13 @@ NativeModule::NativeModule(
       build_state_ = kPass;
       break;
     }
+    auto lock_name = config.get_lock_name(key_);
+    file_lock(lock_name);
     // Race to write the new file
     int fd = open(new_name_.c_str(), O_WRONLY|O_CREAT|O_EXCL|O_TRUNC, 0666);
+    file_unlock(lock_name);
     if (fd >= 0) {
+      if (file_exists(lib_name_)) ::unlink(lib_name_.c_str());
       // Now we're about to write the new file
       rc = write(fd, binary, binary_size);
       assert(rc == binary_size);
@@ -395,6 +426,14 @@ bool NativeModule::try_wait_for_build() {
     // or rename creates the new name before destroying the old name.
     while (file_exists_and_is_recent(new_name_)) {
       usleep(kFilePollMicrosecs);
+    }
+    if (file_exists(new_name_)) {
+      auto lock_name = config.get_lock_name(key_);
+      file_lock(lock_name);
+      if (file_exists(new_name_) && !file_exists_and_is_recent(new_name_)) {
+        ::unlink(new_name_.c_str()); // timeout
+      }
+      file_unlock(lock_name);
     }
     build_state_ = (file_exists(lib_name_) ? kPass : kFail);
     if (build_state_ == kFail) {
