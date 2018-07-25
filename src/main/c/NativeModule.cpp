@@ -385,18 +385,19 @@ NativeModule::NativeModule(
   if (is_global_) return;
   int rc = 0;
   config.ensure_module_dir_exists();
+  auto lock_name = config.get_lock_name("key_");
   for (;;) {
+    file_lock(lock_name);
     if (file_exists(lib_name_) && (file_size(lib_name_) == binary_size)) {
+      file_unlock(lock_name);
       build_state_ = kPass;
       break;
     }
-    auto lock_name = config.get_lock_name(key_);
-    file_lock(lock_name);
     // Race to write the new file
     int fd = open(new_name_.c_str(), O_WRONLY|O_CREAT|O_EXCL|O_TRUNC, 0666);
-    file_unlock(lock_name);
     if (fd >= 0) {
       if (file_exists(lib_name_)) ::unlink(lib_name_.c_str());
+      file_unlock(lock_name);
       // Now we're about to write the new file
       rc = write(fd, binary, binary_size);
       assert(rc == binary_size);
@@ -411,6 +412,7 @@ NativeModule::NativeModule(
         break;
       }
     } else {
+      file_unlock(lock_name);
       // Someone else is writing to new
       while (file_exists_and_is_recent(new_name_) && !file_exists(lib_name_)) {
         usleep(kFilePollMicrosecs);
