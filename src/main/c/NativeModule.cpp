@@ -328,6 +328,9 @@ public:
       return false;
     }
     ::close(fd);
+    ::unlink(hm_lib_.c_str());
+    //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
+    //fflush(stderr);
     // The .new file may look the same age as the .cpp file, but
     // the makefile is written to ignore the .new timestamp
     write_mak();
@@ -397,6 +400,8 @@ NativeModule::NativeModule(
     int fd = open(new_name_.c_str(), O_WRONLY|O_CREAT|O_EXCL|O_TRUNC, 0666);
     if (fd >= 0) {
       if (file_exists(lib_name_)) ::unlink(lib_name_.c_str());
+      //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
+      //fflush(stderr);
       file_unlock(lock_name);
       // Now we're about to write the new file
       rc = write(fd, binary, binary_size);
