@@ -261,7 +261,6 @@ public:
     // To start with, put dynamic code in $HOME/hail_modules
     auto base = (config.module_dir_ + "/hm_") + key_;
     hm_base_ = base;
-    hm_lock_ = (base + ".lock");
     hm_mak_ = (base + config.ext_mak_);
     hm_cpp_ = (base + config.ext_cpp_);
     hm_new_ = (base + config.ext_new_);
@@ -320,17 +319,20 @@ private:
 public:
   bool try_to_start_build() {
     // Try to create the .new file
-    file_lock(hm_lock_);
+    auto lock_name = config.get_lock_name(key_);
+    file_lock(lock_name);
     int fd = ::open(hm_new_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
-    file_unlock(hm_lock_);
+    file_unlock(lock_name);
     if (fd < 0) {
       // We lost the race to start the build
+      file_unlock(lock_name);
       return false;
     }
     ::close(fd);
     ::unlink(hm_lib_.c_str());
-    //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
-    //fflush(stderr);
+    fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
+    fflush(stderr);
+    file_unlock(lock_name);
     // The .new file may look the same age as the .cpp file, but
     // the makefile is written to ignore the .new timestamp
     write_mak();
@@ -389,41 +391,55 @@ NativeModule::NativeModule(
   int rc = 0;
   config.ensure_module_dir_exists();
   auto lock_name = config.get_lock_name("key_");
+  file_lock(lock_name);
   for (;;) {
-    file_lock(lock_name);
     if (file_exists(lib_name_) && (file_size(lib_name_) == binary_size)) {
-      file_unlock(lock_name);
       build_state_ = kPass;
       break;
     }
     // Race to write the new file
     int fd = open(new_name_.c_str(), O_WRONLY|O_CREAT|O_EXCL|O_TRUNC, 0666);
     if (fd >= 0) {
-      if (file_exists(lib_name_)) ::unlink(lib_name_.c_str());
-      //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
-      //fflush(stderr);
+      if (file_exists(lib_name_)) {
+        fprintf(stderr, "DEBUG: old size %ld binary_size %ld\n", file_size(lib_name_), binary_size);
+      }
+      fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
+      fflush(stderr);
       file_unlock(lock_name);
       // Now we're about to write the new file
       rc = write(fd, binary, binary_size);
       assert(rc == binary_size);
-      close(fd);
+      ::close(fd);
       ::chmod(new_name_.c_str(), 0644);
-      if (!file_exists(lib_name_)) {
-        // Don't let anyone see the file until it is completely written
-        file_lock(lock_name);
-        rc = ::rename(new_name_.c_str(), lib_name_.c_str());
-        file_unlock(lock_name);
-        build_state_ = ((rc == 0) ? kPass : kFail);
-        break;
+      file_lock(lock_name);
+      if (file_exists(lib_name_)) {
+        auto old_size = file_size(lib_name_);
+        if (old_size == binary_size) {
+          ::unlink(new_name_.c_str());
+          break;
+        } else if (old_size == 0) {
+          ::unlink(lib_name_.c_str());
+        } else {
+          auto old = lib_name_ + ".old";
+          ::rename(lib_name_.c_str(), old.c_str());
+        }
       }
+      // Don't let anyone see the file until it is completely written
+      rc = ::rename(new_name_.c_str(), lib_name_.c_str());
+      file_unlock(lock_name);
+      build_state_ = ((rc == 0) ? kPass : kFail);
+      break;
     } else {
       file_unlock(lock_name);
       // Someone else is writing to new
       while (file_exists_and_is_recent(new_name_) && !file_exists(lib_name_)) {
+        file_unlock(lock_name);
         usleep(kFilePollMicrosecs);
+        file_lock(lock_name);
       }
     }
   }
+  file_unlock(lock_name);
   if (build_state_ == kPass) try_load();
 }
 
@@ -471,7 +487,10 @@ bool NativeModule::try_load() {
       // when two threads loaded the same .dylib.
       static std::mutex mutex;
       std::lock_guard<std::mutex> lock(mutex);
+      auto lock_name = config.get_lock_name(key_);
+      file_lock(lock_name);
       auto handle = dlopen(lib_name_.c_str(), RTLD_GLOBAL|RTLD_NOW);
+      file_unlock(lock_name);
       if (!handle) {
         fprintf(stderr, "ERROR: dlopen failed: %s\n", dlerror());
         fflush(stderr);
