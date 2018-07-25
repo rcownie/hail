@@ -398,7 +398,9 @@ NativeModule::NativeModule(
       ::chmod(new_name_.c_str(), 0644);
       if (!file_exists(lib_name_)) {
         // Don't let anyone see the file until it is completely written
+        file_lock(lock_name);
         rc = ::rename(new_name_.c_str(), lib_name_.c_str());
+        file_unlock(lock_name);
         build_state_ = ((rc == 0) ? kPass : kFail);
         break;
       }
