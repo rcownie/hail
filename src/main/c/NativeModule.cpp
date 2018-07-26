@@ -399,7 +399,7 @@ NativeModule::NativeModule(
       break;
     }
     // Race to write the new file
-    int fd = open(new_name_.c_str(), O_WRONLY|O_CREAT|O_EXCL|O_TRUNC, 0666);
+    int fd = open(new_name_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
     if (fd >= 0) {
       if (file_exists(lib_name_)) {
         fprintf(stderr, "DEBUG: old size %ld binary_size %ld\n", file_size(lib_name_), binary_size);
@@ -635,9 +635,13 @@ NATIVEMETHOD(jbyteArray, NativeModule, getBinary)(
   jobject thisJ
 ) {
   auto mod = to_NativeModule(env, thisJ);
+  mod->try_wait_for_build();
+  auto lock_name = config.get_lock_name(mod->key_);
+  file_lock(lock_name);
   int fd = open(config.get_lib_name(mod->key_).c_str(), O_RDONLY, 0666);
   if (fd < 0) {
     perror("open");
+    file_unlock(lock_name);
     return env->NewByteArray(0);
   }
   struct stat st;
@@ -649,6 +653,7 @@ NATIVEMETHOD(jbyteArray, NativeModule, getBinary)(
   rc = read(fd, rbuf, file_size);
   assert(rc == (int)file_size);
   close(fd);
+  file_unlock(lock_name);
   env->ReleaseByteArrayElements(result, rbuf, 0);
   return result;
 }
