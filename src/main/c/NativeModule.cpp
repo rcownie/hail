@@ -54,25 +54,28 @@ std::string hash_two_strings(const std::string& a, const std::string& b) {
   return std::string(buf);
 }
 
+bool file_stat(const std::string& name, struct stat* st) {
+  // Open file for reading to avoid inconsistent cached attributes
+  int fd = ::open(name.c_str(), O_RDONLY, 0666);
+  if (fd < 0) return false;
+  int rc;
+  do {
+    errno = 0;
+    rc = ::fstat(fd, st);
+  } while ((rc < 0) && (errno == EINTR));
+  ::close(fd);
+  return (rc == 0);
+}
+
 bool file_exists_and_is_recent(const std::string& name) {
   time_t now = ::time(nullptr);
   struct stat st;
-  int rc;
-  do {
-    errno = 0;
-    rc = ::stat(name.c_str(), &st);
-  } while ((rc < 0) && (errno == EINTR));
-  return ((rc == 0) && (st.st_mtime+120 > now));
+  return (file_stat(name, &st) && (st.st_mtime+120 > now));
 }
 
 bool file_exists(const std::string& name) {
-  int rc;
   struct stat st;
-  do {
-    errno = 0;
-    rc = ::stat(name.c_str(), &st);
-  } while ((rc < 0) && (errno == EINTR));
-  return(rc == 0);
+  return file_stat(name, &st);
 }
 
 void file_lock(const std::string& name) {
@@ -96,13 +99,13 @@ void file_unlock(const std::string& name) {
 }
 
 long file_size(const std::string& name) {
-  int rc;
+  // Open file for reading to avoid inconsistent cached attributes
+  int fd = open(name.c_str(), O_RDONLY, 0666);
+  if (fd < 0) return -1;
   struct stat st;
-  do {
-    errno = 0;
-    rc = ::stat(name.c_str(), &st);
-  } while ((rc < 0) && (errno = EINTR));
-  return((rc < 0) ? -1 : st.st_size);
+  int rc = fstat(fd, &st);
+  close(fd);
+  return ((rc == 0) ? st.st_size : -1);
 }
 
 std::string read_file_as_string(const std::string& name) {
@@ -303,25 +306,25 @@ private:
     // top target is the .so
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
     fprintf(f, "\t-[ -f hm.tmp ] || /usr/bin/touch hm.tmp; \\\n");
-    fprintf(f, "\t  while [ /bin/ln hm.tmp $(MODULE).lock 2>/dev/null ]; do sleep 0.1; done ;\\\n");
-    fprintf(f, "\t  /bin/rm -f $@ ;\\\n");
-    fprintf(f, "\t  /bin/ln -f $(MODULE).new $@ ;\\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).new ;\\\n");
+    fprintf(f, "\t  while [ /bin/ln hm.tmp $(MODULE).lock 2>/dev/null ]; do sleep 0.1; done ; \\\n");
+    fprintf(f, "\t  /bin/rm -f $@ ; \\\n");
+    fprintf(f, "\t  /bin/ln -f $(MODULE).new $@ ; \\\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).lock\n");
     fprintf(f, "\n");
     // build .o from .cpp
     fprintf(f, "$(MODULE).o: $(MODULE).cpp\n");
-    fprintf(f, "\tif \\\n");
-    fprintf(f, "\t  $(CXX) $(CXXFLAGS) -o $@ -c $< 2> $(MODULE).err || \\\n");
-    fprintf(f, "\t  $(CXX) $(CXXFLAGS) $(LIBFLAGS) -o $(MODULE).tmp $(MODULE).o 2>> $(MODULE).err || \\\n");
-    fprintf(f, "\t  [ -z $(MODULE).tmp ]; then \\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).new ;\\\n");
-    fprintf(f, "\t  echo FAIL ; exit 1 ;\\\n");
+    fprintf(f, "\t$(CXX) $(CXXFLAGS) -o $@ -c $< 2> $(MODULE).err && \\\n");
+    fprintf(f, "\t  $(CXX) $(CXXFLAGS) $(LIBFLAGS) -o $(MODULE).tmp $(MODULE).o 2>> $(MODULE).err ; \\\n");
+    fprintf(f, "\tstatus=$$? ; \\\n");
+    fprintf(f, "\tif [ $$status -ne 0 ] || [ -z $(MODULE).tmp ]; then \\\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
+    fprintf(f, "\t  echo FAIL ; exit 1 ; \\\n");
     fprintf(f, "\tfi\n");
-    fprintf(f, "\t-/bin/ln -f $(MODULE).tmp $(MODULE).new ;\\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).tmp ;\\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).err ;\\\n");
-    fprintf(f, "\t  echo PASS\n");
+    fprintf(f, "\t-/bin/ln -f $(MODULE).tmp $(MODULE).new ; \\\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).tmp ; \\\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).err ; \\\n");
+    fprintf(f, "\t  echo built $(MODULE).new 1>2\n");
     fprintf(f, "\n");
     fclose(f);
   }
@@ -339,7 +342,7 @@ public:
     }
     ::close(fd);
     ::unlink(hm_lib_.c_str());
-    //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
+    fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
     file_unlock(lock_name);
     // The .new file may look the same age as the .cpp file, but
     // the makefile is written to ignore the .new timestamp
@@ -347,7 +350,7 @@ public:
     write_cpp();
     std::stringstream ss;
     ss << "/usr/bin/make -C " << config.module_dir_ << " -f " << hm_mak_;
-    ss << " 1>/dev/null &";
+    ss << " 1>2 &";
     int rc = system(ss.str().c_str());
     if (rc < 0) perror("system");
     return true;
@@ -402,17 +405,15 @@ NativeModule::NativeModule(
   auto lock_name = config.get_lock_name(key_);
   file_lock(lock_name);
   for (;;) {
-    if (file_exists(lib_name_) && (file_size(lib_name_) == binary_size)) {
+    struct stat lib_stat;
+    if (file_stat(lib_name_, &lib_stat) && (lib_stat.st_size == binary_size)) {
       build_state_ = kPass;
       break;
     }
     // Race to write the new file
     int fd = open(new_name_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
     if (fd >= 0) {
-      if (file_exists(lib_name_)) {
-        fprintf(stderr, "DEBUG: old size %ld binary_size %ld\n", file_size(lib_name_), binary_size);
-      }
-      //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
+      fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
       file_unlock(lock_name);
       // Now we're about to write the new file
       rc = write(fd, binary, binary_size);
@@ -420,8 +421,10 @@ NativeModule::NativeModule(
       ::close(fd);
       ::chmod(new_name_.c_str(), 0644);
       file_lock(lock_name);
-      if (file_exists(lib_name_)) {
-        auto old_size = file_size(lib_name_);
+      struct stat st;
+      if (file_stat(lib_name_, &st)) {
+        long old_size = st.st_size;
+        fprintf(stderr, "DEBUG: old lib size %ld binary_size %ld\n", old_size, binary_size);
         if (old_size == binary_size) {
           ::unlink(new_name_.c_str());
           break;
@@ -434,6 +437,12 @@ NativeModule::NativeModule(
       }
       // Don't let anyone see the file until it is completely written
       rc = ::rename(new_name_.c_str(), lib_name_.c_str());
+      if (rc != 0) {
+        fprintf(stderr, "DEBUG: rename(%s, %s) -> %d\n", new_name_.c_str(), lib_name_.c_str(), rc);
+      }
+      if (file_size(lib_name_) == 0) {
+        fprintf(stderr, "DEBUG: file_size(%s) -> 0\n", lib_name_.c_str());
+      }
       build_state_ = ((rc == 0) ? kPass : kFail);
       break;
     } else {
@@ -468,7 +477,9 @@ bool NativeModule::try_wait_for_build() {
       usleep(kFilePollMicrosecs);
       file_lock(lock_name);
     }
-    if (file_exists(new_name_) && !file_exists_and_is_recent(new_name_)) {
+    struct stat st;
+    if (file_stat(new_name_, &st) && (st.st_mtime+120 < time(nullptr))) {
+      fprintf(stderr, "DEBUG: force break new %s\n", new_name_.c_str());
       ::unlink(new_name_.c_str()); // timeout
     }
     build_state_ = (file_exists(lib_name_) ? kPass : kFail);
@@ -477,9 +488,12 @@ bool NativeModule::try_wait_for_build() {
       fprintf(stderr, "makefile:\n%s", read_file_as_string(base+".mak").c_str());
       fprintf(stderr, "errors:\n%s",   read_file_as_string(base+".err").c_str());
     }
+    if (build_state_ == kPass) {
+      fprintf(stderr, "DEBUG: try_wait_for_build file_size(%s) -> %ld\n", lib_name_.c_str(), file_size(lib_name_));
+    }
     file_unlock(lock_name);
   }
-  return(build_state_ == kPass);
+  return (build_state_ == kPass);
 }
 
 bool NativeModule::try_load() {
@@ -643,11 +657,14 @@ NATIVEMETHOD(jbyteArray, NativeModule, getBinary)(
   jobject thisJ
 ) {
   auto mod = to_NativeModule(env, thisJ);
-  mod->try_wait_for_build();
+  auto ok = mod->try_wait_for_build();
+  auto size = file_size(config.get_lib_name(mod->key_));
+  fprintf(stderr, "DEBUG: getBinary wait_for_build() %s size %ld\n", ok ? "pass" : "fail", size);
   auto lock_name = config.get_lock_name(mod->key_);
   file_lock(lock_name);
   int fd = open(config.get_lib_name(mod->key_).c_str(), O_RDONLY, 0666);
   if (fd < 0) {
+    fprintf(stderr, "DEBUG: getBinary open(lib) -> %d\n", fd);
     perror("open");
     file_unlock(lock_name);
     return env->NewByteArray(0);
@@ -656,6 +673,7 @@ NATIVEMETHOD(jbyteArray, NativeModule, getBinary)(
   int rc = fstat(fd, &st);
   assert(rc == 0);
   size_t file_size = st.st_size;
+  fprintf(stderr, "DEBUG: getBinary file_size %ld\n", file_size);
   jbyteArray result = env->NewByteArray(file_size);
   jbyte* rbuf = env->GetByteArrayElements(result, 0);
   rc = read(fd, rbuf, file_size);
