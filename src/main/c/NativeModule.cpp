@@ -317,12 +317,12 @@ private:
     fprintf(f, "\t  [ -z $(MODULE).tmp ]; then \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).new ;\\\n");
     fprintf(f, "\t  exit 1 ;\n");
-    fprintf(f, "\telse \\\n")
+    fprintf(f, "\telse \\\n");
     fprintf(f, "\t  /bin/ln -f $(MODULE).tmp $(MODULE).new ;\\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).tmp ;\\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).err ;\\\n");
     fprintf(f, "\t   exit 0 ;\n");
-    fprintf(f, "\tfi\n);")
+    fprintf(f, "\tfi\n);");
     fprintf(f, "\n");
     fclose(f);
   }
