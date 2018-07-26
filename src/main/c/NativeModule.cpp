@@ -453,23 +453,23 @@ bool NativeModule::try_wait_for_build() {
     // followed by exists(new) then the rename could occur between
     // the two tests. This way is safe provided that either rename is atomic,
     // or rename creates the new name before destroying the old name.
-    while (file_exists_and_is_recent(new_name_)) {
-      usleep(kFilePollMicrosecs);
-    }
     auto lock_name = config.get_lock_name(key_);
     file_lock(lock_name);
-    if (file_exists(new_name_)) {
-      if (file_exists(new_name_) && !file_exists_and_is_recent(new_name_)) {
-        ::unlink(new_name_.c_str()); // timeout
-      }
+    while (file_exists_and_is_recent(new_name_)) {
+      file_unlock(lock_name);
+      usleep(kFilePollMicrosecs);
+      file_lock(lock_name);
+    }
+    if (file_exists(new_name_) && !file_exists_and_is_recent(new_name_)) {
+      ::unlink(new_name_.c_str()); // timeout
     }
     build_state_ = (file_exists(lib_name_) ? kPass : kFail);
-    file_unlock(lock_name);
     if (build_state_ == kFail) {
       std::string base(config.module_dir_ + "/hm_" + key_);
       fprintf(stderr, "makefile:\n%s", read_file_as_string(base+".mak").c_str());
       fprintf(stderr, "errors:\n%s",   read_file_as_string(base+".err").c_str());
     }
+    file_unlock(lock_name);
   }
   return(build_state_ == kPass);
 }
