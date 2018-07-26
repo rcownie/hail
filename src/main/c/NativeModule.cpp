@@ -75,7 +75,7 @@ bool file_exists(const std::string& name) {
   return(rc == 0);
 }
 
-void file_lock(int from_line, const std::string& name) {
+void file_lock(const std::string& name) {
   for (;;) {
     int fd = ::open(name.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
     if (fd >= 0) { ::close(fd); break; }
@@ -83,19 +83,15 @@ void file_lock(int from_line, const std::string& name) {
     int rc = ::stat(name.c_str(), &st);
     auto now = time(nullptr);
     if ((rc == 0) && (st.st_mtime+20 < now)) { // force break old lock
-      fprintf(stderr, "DEBUG: line %d: force break old lock %s\n", from_line, name.c_str());
+      fprintf(stderr, "DEBUG: force break old lock %s\n", name.c_str());
       ::unlink(name.c_str());
     } else {
       usleep(kFilePollMicrosecs);
     }
   }
-  //fprintf(stderr, "DEBUG: line %d: locked %s\n", from_line, name.c_str());
-  //fflush(stderr);
 }
 
-void file_unlock(int from_line, const std::string& name) {
-  //fprintf(stderr, "DEBUG: line %d: unlock %s\n", from_line, name.c_str());
-  //fflush(stderr);
+void file_unlock(const std::string& name) {
   ::unlink(name.c_str());
 }
 
@@ -306,10 +302,11 @@ private:
     fprintf(f, "\n");
     // top target is the .so
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
-    fprintf(f, "\t[ -f hm.tmp ] || /usr/bin/touch hm.tmp\n");
-    fprintf(f, "\twhile [ /bin/ln hm.tmp $(MODULE).lock 2>/dev/null ]; do sleep 0.1; done\n");
-    fprintf(f, "\t-/bin/ln -f $(MODULE).new $@\n");
-    fprintf(f, "\t-/bin/rm -f $(MODULE.new)\n");
+    fprintf(f, "\t[ -f hm.tmp ] || /usr/bin/touch hm.tmp;\\\n");
+    fprintf(f, "\twhile [ /bin/ln hm.tmp $(MODULE).lock 2>/dev/null ]; do sleep 0.1; done; \\\n");
+    fprintf(f, "\t/bin/rm -f $@; \\\n");
+    fprintf(f, "\t/bin/ln -f $(MODULE).new $@; \\\n");
+    fprintf(f, "\t/bin/rm -f $(MODULE).new; \\\n");
     fprintf(f, "\t/bin/rm -f $(MODULE).lock\n\n");
     // build .o from .cpp
     fprintf(f, "$(MODULE).o: $(MODULE).cpp\n");
@@ -325,18 +322,17 @@ public:
   bool try_to_start_build() {
     // Try to create the .new file
     auto lock_name = config.get_lock_name(key_);
-    file_lock(__LINE__, lock_name);
+    file_lock(lock_name);
     int fd = ::open(hm_new_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
     if (fd < 0) {
       // We lost the race to start the build
-      file_unlock(__LINE__, lock_name);
+      file_unlock(lock_name);
       return false;
     }
     ::close(fd);
     ::unlink(hm_lib_.c_str());
-    fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
-    fflush(stderr);
-    file_unlock(__LINE__, lock_name);
+    //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
+    file_unlock(lock_name);
     // The .new file may look the same age as the .cpp file, but
     // the makefile is written to ignore the .new timestamp
     write_mak();
@@ -366,9 +362,9 @@ NativeModule::NativeModule(
   // Master constructor - try to get module built in local file
   config.ensure_module_dir_exists();
   auto lock_name = config.get_lock_name(key_);
-  file_lock(__LINE__, lock_name);
+  file_lock(lock_name);
   bool have_lib = (!force_build && file_exists(lib_name_));
-  file_unlock(__LINE__, lock_name);
+  file_unlock(lock_name);
   if (have_lib) {
     build_state_ = kPass;
   } else {
@@ -396,7 +392,7 @@ NativeModule::NativeModule(
   int rc = 0;
   config.ensure_module_dir_exists();
   auto lock_name = config.get_lock_name(key_);
-  file_lock(__LINE__, lock_name);
+  file_lock(lock_name);
   for (;;) {
     if (file_exists(lib_name_) && (file_size(lib_name_) == binary_size)) {
       build_state_ = kPass;
@@ -408,15 +404,14 @@ NativeModule::NativeModule(
       if (file_exists(lib_name_)) {
         fprintf(stderr, "DEBUG: old size %ld binary_size %ld\n", file_size(lib_name_), binary_size);
       }
-      fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
-      fflush(stderr);
-      file_unlock(__LINE__, lock_name);
+      //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
+      file_unlock(lock_name);
       // Now we're about to write the new file
       rc = write(fd, binary, binary_size);
       assert(rc == binary_size);
       ::close(fd);
       ::chmod(new_name_.c_str(), 0644);
-      file_lock(__LINE__, lock_name);
+      file_lock(lock_name);
       if (file_exists(lib_name_)) {
         auto old_size = file_size(lib_name_);
         if (old_size == binary_size) {
@@ -436,13 +431,13 @@ NativeModule::NativeModule(
     } else {
       // Someone else is writing to new
       while (file_exists_and_is_recent(new_name_) && !file_exists(lib_name_)) {
-        file_unlock(__LINE__, lock_name);
+        file_unlock(lock_name);
         usleep(kFilePollMicrosecs);
-        file_lock(__LINE__, lock_name);
+        file_lock(lock_name);
       }
     }
   }
-  file_unlock(__LINE__, lock_name);
+  file_unlock(lock_name);
   if (build_state_ == kPass) try_load();
 }
 
@@ -462,14 +457,14 @@ bool NativeModule::try_wait_for_build() {
       usleep(kFilePollMicrosecs);
     }
     auto lock_name = config.get_lock_name(key_);
-    file_lock(__LINE__, lock_name);
+    file_lock(lock_name);
     if (file_exists(new_name_)) {
       if (file_exists(new_name_) && !file_exists_and_is_recent(new_name_)) {
         ::unlink(new_name_.c_str()); // timeout
       }
     }
     build_state_ = (file_exists(lib_name_) ? kPass : kFail);
-    file_unlock(__LINE__, lock_name);
+    file_unlock(lock_name);
     if (build_state_ == kFail) {
       std::string base(config.module_dir_ + "/hm_" + key_);
       fprintf(stderr, "makefile:\n%s", read_file_as_string(base+".mak").c_str());
@@ -491,9 +486,9 @@ bool NativeModule::try_load() {
       static std::mutex mutex;
       std::lock_guard<std::mutex> lock(mutex);
       auto lock_name = config.get_lock_name(key_);
-      file_lock(__LINE__, lock_name);
+      file_lock(lock_name);
       auto handle = dlopen(lib_name_.c_str(), RTLD_GLOBAL|RTLD_NOW);
-      file_unlock(__LINE__, lock_name);
+      file_unlock(lock_name);
       if (!handle) {
         fprintf(stderr, "ERROR: dlopen failed: %s\n", dlerror());
         fflush(stderr);
