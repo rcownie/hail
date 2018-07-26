@@ -19,6 +19,7 @@ public:
   std::string key_;
   bool is_global_;
   void* dlopen_handle_;
+  std::string lock_name_;
   std::string lib_name_;
   std::string new_name_;
   
@@ -32,6 +33,12 @@ public:
   virtual const char* get_class_name() {
     return "NativeModule";
   }
+  
+  void lock();
+  
+  void unlock();
+  
+  void usleep_without_lock(int64_t usecs);
   
   bool try_wait_for_build();
   
