@@ -70,7 +70,7 @@ bool file_stat(const std::string& name, struct stat* st) {
 bool file_exists_and_is_recent(const std::string& name) {
   time_t now = ::time(nullptr);
   struct stat st;
-  return (file_stat(name, &st) && (st.st_mtime+120 > now));
+  return (file_stat(name, &st) && (st.st_ctime+120 > now));
 }
 
 bool file_exists(const std::string& name) {
@@ -239,6 +239,7 @@ public:
     const std::string& include,
     const std::string& key
   ) :
+    parent_(parent),
     options_(options),
     source_(source),
     include_(include),
@@ -287,8 +288,8 @@ private:
     fprintf(f, "\n");
     // top target is the .so
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
-    fprintf(f, "\t-[ -f hm.tmp ] || /usr/bin/touch hm.tmp; \\\n");
-    fprintf(f, "\t  while /bin/ln hm.tmp $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
+    fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
+    fprintf(f, "\t  while /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
     fprintf(f, "\t  /bin/rm -f $@ ; \\\n");
     fprintf(f, "\t  /bin/ln -f $(MODULE).new $@ ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
@@ -303,8 +304,8 @@ private:
     fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
     fprintf(f, "\t  echo FAIL ; exit 1 ; \\\n");
     fprintf(f, "\tfi\n");
-    fprintf(f, "\t-[ -f hm.tmp ] || /usr/bin/touch hm.tmp; \\\n");
-    fprintf(f, "\t  while /bin/ln hm.tmp $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
+    fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
+    fprintf(f, "\t  while /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
     fprintf(f, "\t  /bin/ln -f $(MODULE).tmp $(MODULE).new ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).tmp ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).err ; \\\n");
@@ -444,10 +445,26 @@ NativeModule::~NativeModule() {
 }
 
 void NativeModule::lock() {
+  auto target = (lock_name_ + std::string("X"));
   for (;;) {
     // Creating a link is atomic
-    int rc = ::link(config.module_dir_.c_str(), lock_name_.c_str());
-    if (rc == 0) break;
+    errno = 0;
+    int rc = link(target.c_str(), lock_name_.c_str());
+    int e = errno;
+    if (rc == 0) {
+      break;
+    } else if (e == EEXIST) { // Link already existed
+      struct stat st;
+      rc = stat(lock_name_.c_str(), &st);
+      if ((rc == 0) && (st.st_ctime+20 < time(nullptr))) {
+        fprintf(stderr, "DEBUG: force break old lock %s\n", lock_name_.c_str());
+        unlink(lock_name_.c_str());
+      }
+    } else if (e == ENOENT) { // Need to create the target
+      int fd = open(target.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
+      if (fd >= 0) close(fd);
+      continue;
+    }
     // The link already exists
     usleep(kFilePollMicrosecs);
   }
@@ -469,12 +486,12 @@ bool NativeModule::try_wait_for_build() {
     // followed by exists(new) then the rename could occur between
     // the two tests. This way is safe provided that either rename is atomic,
     // or rename creates the new name before destroying the old name.
-    lock();
+    std::lock_guard<NativeModule> mylock(*this);
     while (file_exists_and_is_recent(new_name_)) {
       usleep_without_lock(kFilePollMicrosecs);
     }
     struct stat st;
-    if (file_stat(new_name_, &st) && (st.st_mtime+120 < time(nullptr))) {
+    if (file_stat(new_name_, &st) && (st.st_ctime+120 < time(nullptr))) {
       fprintf(stderr, "DEBUG: force break new %s\n", new_name_.c_str());
       ::unlink(new_name_.c_str()); // timeout
     }
@@ -487,7 +504,6 @@ bool NativeModule::try_wait_for_build() {
     if (build_state_ == kPass) {
       fprintf(stderr, "DEBUG: try_wait_for_build file_size(%s) -> %ld\n", lib_name_.c_str(), file_size(lib_name_));
     }
-    unlock();
   }
   return (build_state_ == kPass);
 }
