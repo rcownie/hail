@@ -57,7 +57,6 @@ std::string hash_two_strings(const std::string& a, const std::string& b) {
 bool file_exists_and_is_recent(const std::string& name) {
   time_t now = ::time(nullptr);
   struct stat st;
-  st.st_mtime = now;
   int rc;
   do {
     errno = 0;
@@ -76,20 +75,27 @@ bool file_exists(const std::string& name) {
   return(rc == 0);
 }
 
-void file_lock(const std::string& name) {
+void file_lock(int from_line, const std::string& name) {
   for (;;) {
     int fd = ::open(name.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
     if (fd >= 0) { ::close(fd); break; }
     struct stat st;
     int rc = ::stat(name.c_str(), &st);
-    if ((rc == 0) && (st.st_mtime+30 > time(nullptr))) { // force break old lock
+    auto now = time(nullptr);
+    if ((rc == 0) && (st.st_mtime+20 < now)) { // force break old lock
+      fprintf(stderr, "DEBUG: line %d: force break old lock %s\n", from_line, name.c_str());
       ::unlink(name.c_str());
+    } else {
+      usleep(kFilePollMicrosecs);
     }
-    usleep(kFilePollMicrosecs);
   }
+  //fprintf(stderr, "DEBUG: line %d: locked %s\n", from_line, name.c_str());
+  //fflush(stderr);
 }
 
-void file_unlock(const std::string& name) {
+void file_unlock(int from_line, const std::string& name) {
+  //fprintf(stderr, "DEBUG: line %d: unlock %s\n", from_line, name.c_str());
+  //fflush(stderr);
   ::unlink(name.c_str());
 }
 
@@ -195,7 +201,6 @@ public:
     cxx_name_(get_cxx_name()),
     java_home_(get_java_home()),
     java_md_(is_darwin_ ? "darwin" : "linux") {
-    
   }
   
   std::string get_lock_name(const std::string& key) {
@@ -241,7 +246,6 @@ private:
   std::string include_;
   std::string key_;
   std::string hm_base_;
-  std::string hm_lock_;
   std::string hm_mak_;
   std::string hm_cpp_;
   std::string hm_new_;
@@ -304,7 +308,8 @@ private:
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
     fprintf(f, "\t[ -f hm.tmp ] || /usr/bin/touch hm.tmp\n");
     fprintf(f, "\twhile [ /bin/ln hm.tmp $(MODULE).lock 2>/dev/null ]; do sleep 0.1; done\n");
-    fprintf(f, "\t-/bin/mv -f $(MODULE).new $@\n");
+    fprintf(f, "\t-/bin/ln -f $(MODULE).new $@\n");
+    fprintf(f, "\t-/bin/rm -f $(MODULE.new)\n");
     fprintf(f, "\t/bin/rm -f $(MODULE).lock\n\n");
     // build .o from .cpp
     fprintf(f, "$(MODULE).o: $(MODULE).cpp\n");
@@ -320,19 +325,18 @@ public:
   bool try_to_start_build() {
     // Try to create the .new file
     auto lock_name = config.get_lock_name(key_);
-    file_lock(lock_name);
+    file_lock(__LINE__, lock_name);
     int fd = ::open(hm_new_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
-    file_unlock(lock_name);
     if (fd < 0) {
       // We lost the race to start the build
-      file_unlock(lock_name);
+      file_unlock(__LINE__, lock_name);
       return false;
     }
     ::close(fd);
     ::unlink(hm_lib_.c_str());
     fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
     fflush(stderr);
-    file_unlock(lock_name);
+    file_unlock(__LINE__, lock_name);
     // The .new file may look the same age as the .cpp file, but
     // the makefile is written to ignore the .new timestamp
     write_mak();
@@ -362,15 +366,16 @@ NativeModule::NativeModule(
   // Master constructor - try to get module built in local file
   config.ensure_module_dir_exists();
   auto lock_name = config.get_lock_name(key_);
-  file_lock(lock_name);
-  if (!force_build && file_exists(lib_name_)) {
+  file_lock(__LINE__, lock_name);
+  bool have_lib = (!force_build && file_exists(lib_name_));
+  file_unlock(__LINE__, lock_name);
+  if (have_lib) {
     build_state_ = kPass;
   } else {
     // The file doesn't exist, let's start building it
     ModuleBuilder builder(options, source, include, key_);
     builder.try_to_start_build();
   }
-  file_unlock(lock_name);
 }
 
 NativeModule::NativeModule(
@@ -390,8 +395,8 @@ NativeModule::NativeModule(
   if (is_global_) return;
   int rc = 0;
   config.ensure_module_dir_exists();
-  auto lock_name = config.get_lock_name("key_");
-  file_lock(lock_name);
+  auto lock_name = config.get_lock_name(key_);
+  file_lock(__LINE__, lock_name);
   for (;;) {
     if (file_exists(lib_name_) && (file_size(lib_name_) == binary_size)) {
       build_state_ = kPass;
@@ -405,13 +410,13 @@ NativeModule::NativeModule(
       }
       fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
       fflush(stderr);
-      file_unlock(lock_name);
+      file_unlock(__LINE__, lock_name);
       // Now we're about to write the new file
       rc = write(fd, binary, binary_size);
       assert(rc == binary_size);
       ::close(fd);
       ::chmod(new_name_.c_str(), 0644);
-      file_lock(lock_name);
+      file_lock(__LINE__, lock_name);
       if (file_exists(lib_name_)) {
         auto old_size = file_size(lib_name_);
         if (old_size == binary_size) {
@@ -426,20 +431,18 @@ NativeModule::NativeModule(
       }
       // Don't let anyone see the file until it is completely written
       rc = ::rename(new_name_.c_str(), lib_name_.c_str());
-      file_unlock(lock_name);
       build_state_ = ((rc == 0) ? kPass : kFail);
       break;
     } else {
-      file_unlock(lock_name);
       // Someone else is writing to new
       while (file_exists_and_is_recent(new_name_) && !file_exists(lib_name_)) {
-        file_unlock(lock_name);
+        file_unlock(__LINE__, lock_name);
         usleep(kFilePollMicrosecs);
-        file_lock(lock_name);
+        file_lock(__LINE__, lock_name);
       }
     }
   }
-  file_unlock(lock_name);
+  file_unlock(__LINE__, lock_name);
   if (build_state_ == kPass) try_load();
 }
 
@@ -458,15 +461,15 @@ bool NativeModule::try_wait_for_build() {
     while (file_exists_and_is_recent(new_name_)) {
       usleep(kFilePollMicrosecs);
     }
+    auto lock_name = config.get_lock_name(key_);
+    file_lock(__LINE__, lock_name);
     if (file_exists(new_name_)) {
-      auto lock_name = config.get_lock_name(key_);
-      file_lock(lock_name);
       if (file_exists(new_name_) && !file_exists_and_is_recent(new_name_)) {
         ::unlink(new_name_.c_str()); // timeout
       }
-      file_unlock(lock_name);
     }
     build_state_ = (file_exists(lib_name_) ? kPass : kFail);
+    file_unlock(__LINE__, lock_name);
     if (build_state_ == kFail) {
       std::string base(config.module_dir_ + "/hm_" + key_);
       fprintf(stderr, "makefile:\n%s", read_file_as_string(base+".mak").c_str());
@@ -488,9 +491,9 @@ bool NativeModule::try_load() {
       static std::mutex mutex;
       std::lock_guard<std::mutex> lock(mutex);
       auto lock_name = config.get_lock_name(key_);
-      file_lock(lock_name);
+      file_lock(__LINE__, lock_name);
       auto handle = dlopen(lib_name_.c_str(), RTLD_GLOBAL|RTLD_NOW);
-      file_unlock(lock_name);
+      file_unlock(__LINE__, lock_name);
       if (!handle) {
         fprintf(stderr, "ERROR: dlopen failed: %s\n", dlerror());
         fflush(stderr);
