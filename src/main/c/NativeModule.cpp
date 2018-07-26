@@ -302,19 +302,19 @@ private:
     fprintf(f, "\n");
     // top target is the .so
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
-    fprintf(f, "\t[ -f hm.tmp ] || /usr/bin/touch hm.tmp;\\\n");
-    fprintf(f, "\twhile [ /bin/ln hm.tmp $(MODULE).lock 2>/dev/null ]; do sleep 0.1; done; \\\n");
-    fprintf(f, "\t/bin/rm -f $@; \\\n");
-    fprintf(f, "\t/bin/ln -f $(MODULE).new $@; \\\n");
-    fprintf(f, "\t/bin/rm -f $(MODULE).new; \\\n");
+    fprintf(f, "\t-[ -f hm.tmp ] || /usr/bin/touch hm.tmp; \\\n");
+    fprintf(f, "\twhile [ /bin/ln hm.tmp $(MODULE).lock 2>/dev/null ]; do sleep 0.1; done ;\\\n");
+    fprintf(f, "\t/bin/rm -f $@ ;\\\n");
+    fprintf(f, "\t/bin/ln -f $(MODULE).new $@ ;\\\n");
+    fprintf(f, "\t/bin/rm -f $(MODULE).new ;\\\n");
     fprintf(f, "\t/bin/rm -f $(MODULE).lock\n\n");
     // build .o from .cpp
     fprintf(f, "$(MODULE).o: $(MODULE).cpp\n");
     fprintf(f, "\t$(CXX) $(CXXFLAGS) -o $@ -c $< 2> $(MODULE).err \\\n");
     fprintf(f, "\t  || ( /bin/rm -f $(MODULE).new ; exit 1 )\n");
     fprintf(f, "\t$(CXX) $(CXXFLAGS) $(LIBFLAGS) -o $(MODULE).new $(MODULE).o\n");
-    fprintf(f, "\t/bin/chmod a+rx $(MODULE).new\n");
-    fprintf(f, "\t/bin/rm -f $(MODULE).err\n\n");
+    fprintf(f, "\t-/bin/chmod a+rx $(MODULE).new\n");
+    fprintf(f, "\t-/bin/rm -f $(MODULE).err\n\n");
     fclose(f);
   }
 
