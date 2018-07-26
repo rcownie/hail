@@ -307,14 +307,23 @@ private:
     fprintf(f, "\t/bin/rm -f $@ ;\\\n");
     fprintf(f, "\t/bin/ln -f $(MODULE).new $@ ;\\\n");
     fprintf(f, "\t/bin/rm -f $(MODULE).new ;\\\n");
-    fprintf(f, "\t/bin/rm -f $(MODULE).lock\n\n");
+    fprintf(f, "\t/bin/rm -f $(MODULE).lock\n");
+    fprintf(f, "\n");
     // build .o from .cpp
     fprintf(f, "$(MODULE).o: $(MODULE).cpp\n");
-    fprintf(f, "\t$(CXX) $(CXXFLAGS) -o $@ -c $< 2> $(MODULE).err \\\n");
-    fprintf(f, "\t  || ( /bin/rm -f $(MODULE).new ; exit 1 )\n");
-    fprintf(f, "\t$(CXX) $(CXXFLAGS) $(LIBFLAGS) -o $(MODULE).new $(MODULE).o\n");
-    fprintf(f, "\t-/bin/chmod a+rx $(MODULE).new\n");
-    fprintf(f, "\t-/bin/rm -f $(MODULE).err\n\n");
+    fprintf(f, "\tif \\\n");
+    fprintf(f, "\t  $(CXX) $(CXXFLAGS) -o $@ -c $< 2> $(MODULE).err || \\\n");
+    fprintf(f, "\t  $(CXX) $(CXXFLAGS) $(LIBFLAGS) -o $(MODULE).tmp $(MODULE).o 2>> $(MODULE).err || \\\n");
+    fprintf(f, "\t  [ -z $(MODULE).tmp ]; then \\\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).new ;\\\n");
+    fprintf(f, "\t  exit 1 ;\n");
+    fprintf(f, "\telse \\\n")
+    fprintf(f, "\t  /bin/ln -f $(MODULE).tmp $(MODULE).new ;\\\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).tmp ;\\\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).err ;\\\n");
+    fprintf(f, "\t   exit 0 ;\n");
+    fprintf(f, "\tfi\n);")
+    fprintf(f, "\n");
     fclose(f);
   }
 
