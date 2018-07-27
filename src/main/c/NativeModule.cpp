@@ -35,7 +35,7 @@ namespace hail {
 namespace {
 
 // File-polling interval in usecs
-const int kFilePollMicrosecs = 50000;
+const int kFilePollMicrosecs = 80000;
 
 // A quick-and-dirty way to get a hash of two strings, take 80bits,
 // and produce a 20byte string of hex digits.
@@ -289,7 +289,7 @@ private:
     // top target is the .so
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
     fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
-    fprintf(f, "\t  while /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
+    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
     fprintf(f, "\t  /bin/rm -f $@ ; \\\n");
     fprintf(f, "\t  /bin/ln -f $(MODULE).new $@ ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
@@ -305,7 +305,7 @@ private:
     fprintf(f, "\t  echo FAIL ; exit 1 ; \\\n");
     fprintf(f, "\tfi\n");
     fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
-    fprintf(f, "\t  while /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
+    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
     fprintf(f, "\t  /bin/ln -f $(MODULE).tmp $(MODULE).new ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).tmp ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).err ; \\\n");
