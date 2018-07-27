@@ -70,7 +70,7 @@ bool file_stat(const std::string& name, struct stat* st) {
 bool file_exists_and_is_recent(const std::string& name) {
   time_t now = ::time(nullptr);
   struct stat st;
-  return (file_stat(name, &st) && (st.st_ctime+120 > now));
+  return (file_stat(name, &st) && (st.st_ctime+180 > now));
 }
 
 bool file_exists(const std::string& name) {
@@ -485,7 +485,7 @@ bool NativeModule::try_wait_for_build() {
       usleep_without_lock(kFilePollMicrosecs);
     }
     struct stat st;
-    if (file_stat(new_name_, &st) && (st.st_ctime+120 < time(nullptr))) {
+    if (file_stat(new_name_, &st) && (st.st_ctime+180 < time(nullptr))) {
       fprintf(stderr, "DEBUG: force break new %s\n", new_name_.c_str());
       ::unlink(new_name_.c_str()); // timeout
     }
