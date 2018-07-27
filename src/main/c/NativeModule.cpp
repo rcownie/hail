@@ -35,7 +35,7 @@ namespace hail {
 namespace {
 
 // File-polling interval in usecs
-const int kFilePollMicrosecs = 80000;
+const int kFilePollMicrosecs = 200000;
 
 // A quick-and-dirty way to get a hash of two strings, take 80bits,
 // and produce a 20byte string of hex digits.
@@ -285,9 +285,11 @@ private:
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
     fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
     fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $@ ; \\\n");
+    fprintf(f, "\t  echo lockB 1>2 ; \\\n");
+    fprintf(f, "\t  /bin/rm -f $@ ; sleep 1 ; \\\n");
     fprintf(f, "\t  /bin/ln -f $(MODULE).new $@ ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
+    fprintf(f, "\t  echo unlockB 1>2 ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).lock\n");
     fprintf(f, "\n");
     // build .o from .cpp
@@ -301,9 +303,11 @@ private:
     fprintf(f, "\tfi\n");
     fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
     fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).new ; sleep 0.5 ; \\\n");
+    fprintf(f, "\t  echo lockA 1>2 ; \\\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).new ; sleep 1 ; \\\n");
     fprintf(f, "\t  /bin/mv -f $(MODULE).tmp $(MODULE).new ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).err ; \\\n");
+    fprintf(f, "\t  echo unlockA 1>2 ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).lock\n");
     fprintf(f, "\n");
     fclose(f);
@@ -314,12 +318,12 @@ public:
     // Try to create the .new file
     std::lock_guard<NativeModule> mylock(*parent_);
     int fd = ::open(hm_new_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
+    fprintf(stderr, "DEBUG: try_to_start_build open(O_EXCL) -> %d\n", fd);
     if (fd < 0) {
       // We lost the race to start the build
       return false;
     }
     ::close(fd);
-    ::unlink(hm_lib_.c_str());
     fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
     // The .new file may look the same age as the .cpp file, but
     // the makefile is written to ignore the .new timestamp
@@ -389,6 +393,7 @@ NativeModule::NativeModule(
     }
     // Race to write the new file
     int fd = open(new_name_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
+    fprintf(stderr, "DEBUG: binary open(O_EXCL) -> %d\n", fd);
     if (fd >= 0) {
       fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
       // Now we're about to write the new file
@@ -422,7 +427,7 @@ NativeModule::NativeModule(
       break;
     } else {
       // Someone else is writing to new
-      while (file_exists_and_is_recent(new_name_) && !file_exists(lib_name_)) {
+      while (file_exists_and_is_recent(new_name_)) {
         usleep_without_lock(kFilePollMicrosecs);
       }
     }
@@ -510,7 +515,7 @@ bool NativeModule::try_load() {
     } else if (!try_wait_for_build()) {
       load_state_ = kFail;
     } else {
-      //std::lock_guard<NativeModule> mylock(*this);
+      std::lock_guard<NativeModule> mylock(*this);
       // At first this had no mutex and RTLD_LAZY, but MacOS tests crashed
       // when two threads loaded the same .dylib.
       auto handle = dlopen(lib_name_.c_str(), RTLD_GLOBAL|RTLD_NOW);
