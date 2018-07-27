@@ -35,7 +35,7 @@ namespace hail {
 namespace {
 
 // File-polling interval in usecs
-const int kFilePollMicrosecs = 200000;
+const int kFilePollMicrosecs = 50000;
 
 // A quick-and-dirty way to get a hash of two strings, take 80bits,
 // and produce a 20byte string of hex digits.
@@ -284,9 +284,7 @@ private:
     // top target is the .so
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
     fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
-    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
-    fprintf(f, "\t  echo lockB 1>2 ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $@ ; sleep 1 ; \\\n");
+    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.05 ; done ; \\\n");
     fprintf(f, "\t  /bin/ln -f $(MODULE).new $@ ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
     fprintf(f, "\t  echo unlockB 1>2 ; \\\n");
@@ -302,9 +300,7 @@ private:
     fprintf(f, "\t  echo FAIL ; exit 1 ; \\\n");
     fprintf(f, "\tfi\n");
     fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
-    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
-    fprintf(f, "\t  echo lockA 1>2 ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).new ; sleep 1 ; \\\n");
+    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.05 ; done ; \\\n");
     fprintf(f, "\t  /bin/mv -f $(MODULE).tmp $(MODULE).new ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).err ; \\\n");
     fprintf(f, "\t  echo unlockA 1>2 ; \\\n");
@@ -318,7 +314,6 @@ public:
     // Try to create the .new file
     std::lock_guard<NativeModule> mylock(*parent_);
     int fd = ::open(hm_new_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
-    fprintf(stderr, "DEBUG: try_to_start_build open(O_EXCL) -> %d\n", fd);
     if (fd < 0) {
       // We lost the race to start the build
       return false;
@@ -500,9 +495,6 @@ bool NativeModule::try_wait_for_build() {
       std::string base(config.module_dir_ + "/hm_" + key_);
       fprintf(stderr, "makefile:\n%s", read_file_as_string(base+".mak").c_str());
       fprintf(stderr, "errors:\n%s",   read_file_as_string(base+".err").c_str());
-    }
-    if (build_state_ == kPass) {
-      fprintf(stderr, "DEBUG: try_wait_for_build file_size(%s) -> %ld\n", lib_name_.c_str(), file_size(lib_name_));
     }
   }
   return (build_state_ == kPass);
