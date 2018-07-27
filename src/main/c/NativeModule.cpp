@@ -37,6 +37,9 @@ namespace {
 // File-polling interval in usecs
 const int kFilePollMicrosecs = 50000;
 
+// Timeout for compile/link of a DLL
+const int kBuildTimeoutSecs = 120;
+
 // A quick-and-dirty way to get a hash of two strings, take 80bits,
 // and produce a 20byte string of hex digits.
 std::string hash_two_strings(const std::string& a, const std::string& b) {
@@ -70,7 +73,7 @@ bool file_stat(const std::string& name, struct stat* st) {
 bool file_exists_and_is_recent(const std::string& name) {
   time_t now = ::time(nullptr);
   struct stat st;
-  return (file_stat(name, &st) && (st.st_ctime+180 > now));
+  return (file_stat(name, &st) && (st.st_ctime+kBuildTimeoutSecs > now));
 }
 
 bool file_exists(const std::string& name) {
@@ -324,7 +327,7 @@ public:
     write_mak();
     write_cpp();
     std::stringstream ss;
-    ss << "/usr/bin/make -C " << config.module_dir_ << " -f " << hm_mak_;
+    ss << "/usr/bin/make -B -C " << config.module_dir_ << " -f " << hm_mak_;
     ss << " 1>/dev/null &";
     int rc = system(ss.str().c_str());
     if (rc < 0) perror("system");
@@ -484,7 +487,7 @@ bool NativeModule::try_wait_for_build() {
       usleep_without_lock(kFilePollMicrosecs);
     }
     struct stat st;
-    if (file_stat(new_name_, &st) && (st.st_ctime+180 < time(nullptr))) {
+    if (file_stat(new_name_, &st) && (st.st_ctime+kBuildTimeoutSecs < time(nullptr))) {
       fprintf(stderr, "DEBUG: force break new %s\n", new_name_.c_str());
       ::unlink(new_name_.c_str()); // timeout
     }
