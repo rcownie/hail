@@ -319,7 +319,7 @@ public:
       return false;
     }
     ::close(fd);
-    fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
+    //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
     // The .new file may look the same age as the .cpp file, but
     // the makefile is written to ignore the .new timestamp
     write_mak();
@@ -388,9 +388,8 @@ NativeModule::NativeModule(
     }
     // Race to write the new file
     int fd = open(new_name_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
-    fprintf(stderr, "DEBUG: binary open(O_EXCL) -> %d\n", fd);
     if (fd >= 0) {
-      fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
+      //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
       // Now we're about to write the new file
       rc = write(fd, binary, binary_size);
       assert(rc == binary_size);
@@ -657,9 +656,7 @@ NATIVEMETHOD(jbyteArray, NativeModule, getBinary)(
   jobject thisJ
 ) {
   auto mod = to_NativeModule(env, thisJ);
-  auto ok = mod->try_wait_for_build();
-  auto size = file_size(config.get_lib_name(mod->key_));
-  fprintf(stderr, "DEBUG: getBinary wait_for_build() %s size %ld\n", ok ? "pass" : "fail", size);
+  mod->try_wait_for_build();
   std::lock_guard<NativeModule> mylock(*mod);
   int fd = open(config.get_lib_name(mod->key_).c_str(), O_RDONLY, 0666);
   if (fd < 0) {
@@ -671,7 +668,6 @@ NATIVEMETHOD(jbyteArray, NativeModule, getBinary)(
   int rc = fstat(fd, &st);
   assert(rc == 0);
   size_t file_size = st.st_size;
-  fprintf(stderr, "DEBUG: getBinary file_size %ld\n", file_size);
   jbyteArray result = env->NewByteArray(file_size);
   jbyte* rbuf = env->GetByteArrayElements(result, 0);
   rc = read(fd, rbuf, file_size);
