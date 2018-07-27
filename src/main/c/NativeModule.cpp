@@ -284,10 +284,9 @@ private:
     // top target is the .so
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
     fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
-    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.05 ; done ; \\\n");
+    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
     fprintf(f, "\t  /bin/ln -f $(MODULE).new $@ ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
-    fprintf(f, "\t  echo unlockB 1>2 ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).lock\n");
     fprintf(f, "\n");
     // build .o from .cpp
@@ -300,10 +299,10 @@ private:
     fprintf(f, "\t  echo FAIL ; exit 1 ; \\\n");
     fprintf(f, "\tfi\n");
     fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
-    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.05 ; done ; \\\n");
-    fprintf(f, "\t  /bin/mv -f $(MODULE).tmp $(MODULE).new ; \\\n");
+    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
+    fprintf(f, "\t  /bin/ln -f $(MODULE).tmp $(MODULE).new ; \\\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).tmp ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).err ; \\\n");
-    fprintf(f, "\t  echo unlockA 1>2 ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).lock\n");
     fprintf(f, "\n");
     fclose(f);
