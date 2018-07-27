@@ -79,13 +79,8 @@ bool file_exists(const std::string& name) {
 }
 
 long file_size(const std::string& name) {
-  // Open file for reading to avoid inconsistent cached attributes
-  int fd = open(name.c_str(), O_RDONLY, 0666);
-  if (fd < 0) return -1;
   struct stat st;
-  int rc = fstat(fd, &st);
-  close(fd);
-  return ((rc == 0) ? st.st_size : -1);
+  return (file_stat(name, &st) ? st.st_size : -1);
 }
 
 std::string read_file_as_string(const std::string& name) {
@@ -306,8 +301,8 @@ private:
     fprintf(f, "\tfi\n");
     fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
     fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
-    fprintf(f, "\t  /bin/ln -f $(MODULE).tmp $(MODULE).new ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).tmp ; \\\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).new ; sleep 0.5 ; \\\n");
+    fprintf(f, "\t  /bin/mv -f $(MODULE).tmp $(MODULE).new ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).err ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).lock\n");
     fprintf(f, "\n");
@@ -449,20 +444,20 @@ void NativeModule::lock() {
   for (;;) {
     // Creating a link is atomic
     errno = 0;
-    int rc = link(target.c_str(), lock_name_.c_str());
+    int rc = ::link(target.c_str(), lock_name_.c_str());
     int e = errno;
     if (rc == 0) {
       break;
     } else if (e == EEXIST) { // Link already existed
       struct stat st;
-      rc = stat(lock_name_.c_str(), &st);
-      if ((rc == 0) && (st.st_ctime+20 < time(nullptr))) {
+      rc = ::stat(lock_name_.c_str(), &st);
+      if ((rc == 0) && (st.st_ctime+20 < ::time(nullptr))) {
         fprintf(stderr, "DEBUG: force break old lock %s\n", lock_name_.c_str());
-        unlink(lock_name_.c_str());
+        ::unlink(lock_name_.c_str());
       }
     } else if (e == ENOENT) { // Need to create the target
-      int fd = open(target.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
-      if (fd >= 0) close(fd);
+      int fd = ::open(target.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
+      if (fd >= 0) ::close(fd);
       continue;
     }
     // The link already exists
@@ -515,7 +510,7 @@ bool NativeModule::try_load() {
     } else if (!try_wait_for_build()) {
       load_state_ = kFail;
     } else {
-      std::lock_guard<NativeModule> mylock(*this);
+      //std::lock_guard<NativeModule> mylock(*this);
       // At first this had no mutex and RTLD_LAZY, but MacOS tests crashed
       // when two threads loaded the same .dylib.
       auto handle = dlopen(lib_name_.c_str(), RTLD_GLOBAL|RTLD_NOW);
