@@ -223,7 +223,7 @@ class ModuleCache {
   }
   
   void try_to_evict() {
-    for (int phase = 0; phase < 2;) {
+    for (int phase = 0; phase < 2; ++phase) {
       if (phase == 1) {
         for (auto& pair : modules_) {
           if (pair.second.use_count() <= 1) evictq_.push(pair.second);
