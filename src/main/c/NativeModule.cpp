@@ -81,11 +81,6 @@ bool file_exists(const std::string& name) {
   return file_stat(name, &st);
 }
 
-long file_size(const std::string& name) {
-  struct stat st;
-  return (file_stat(name, &st) ? st.st_size : -1);
-}
-
 std::string read_file_as_string(const std::string& name) {
   FILE* f = fopen(name.c_str(), "r");
   if (!f) return std::string("");
@@ -321,7 +316,6 @@ public:
       return false;
     }
     ::close(fd);
-    //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, source) created %s\n", key_.c_str(), hm_new_.c_str());
     // The .new file may look the same age as the .cpp file, but
     // the makefile is written to ignore the .new timestamp
     write_mak();
@@ -391,7 +385,6 @@ NativeModule::NativeModule(
     // Race to write the new file
     int fd = open(new_name_.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
     if (fd >= 0) {
-      //fprintf(stderr, "DEBUG: NativeModule::ctor(key %s, binary) created %s\n", key_.c_str(), new_name_.c_str());
       // Now we're about to write the new file
       rc = write(fd, binary, binary_size);
       assert(rc == binary_size);
@@ -400,7 +393,6 @@ NativeModule::NativeModule(
       struct stat st;
       if (file_stat(lib_name_, &st)) {
         long old_size = st.st_size;
-        fprintf(stderr, "DEBUG: old lib size %ld binary_size %ld\n", old_size, binary_size);
         if (old_size == binary_size) {
           ::unlink(new_name_.c_str());
           break;
@@ -413,12 +405,6 @@ NativeModule::NativeModule(
       }
       // Don't let anyone see the file until it is completely written
       rc = ::rename(new_name_.c_str(), lib_name_.c_str());
-      if (rc != 0) {
-        fprintf(stderr, "DEBUG: rename(%s, %s) -> %d\n", new_name_.c_str(), lib_name_.c_str(), rc);
-      }
-      if (file_size(lib_name_) == 0) {
-        fprintf(stderr, "DEBUG: file_size(%s) -> 0\n", lib_name_.c_str());
-      }
       build_state_ = ((rc == 0) ? kPass : kFail);
       break;
     } else {
@@ -440,6 +426,20 @@ NativeModule::~NativeModule() {
   }
 }
 
+// We may have many threads across many processes trying to access the shared
+// files in ~/hail_modules.  We protect the files for each module by
+// mutual exclusion based on the existence of a link hm_${key}.lock
+//
+// To achieve disaster recovery after a killed process or crash, a .lock
+// link will be ignored if it is more than 20 seconds old.  The critical
+// sections protected by the lock should be much shorter than this.
+//
+// Permission to build a new file is controlled by the existence of hm_${key}.new,
+// and has a longer timeout (120 sec) to allow for module compile time.
+//
+// The intent is that when hail is not running, it should be ok to do
+// "rm ~/hail_modules/*" to clear the cache and start again.
+
 void NativeModule::lock() {
   auto target = (lock_name_ + std::string("X"));
   for (;;) {
@@ -453,7 +453,7 @@ void NativeModule::lock() {
       struct stat st;
       rc = ::stat(lock_name_.c_str(), &st);
       if ((rc == 0) && (st.st_ctime+20 < ::time(nullptr))) {
-        fprintf(stderr, "DEBUG: force break old lock %s\n", lock_name_.c_str());
+        fprintf(stderr, "WARNING: force break old lock %s\n", lock_name_.c_str());
         ::unlink(lock_name_.c_str());
       }
     } else if (e == ENOENT) { // Need to create the target
@@ -488,7 +488,7 @@ bool NativeModule::try_wait_for_build() {
     }
     struct stat st;
     if (file_stat(new_name_, &st) && (st.st_ctime+kBuildTimeoutSecs < time(nullptr))) {
-      fprintf(stderr, "DEBUG: force break new %s\n", new_name_.c_str());
+      fprintf(stderr, "WARNING: force break new %s\n", new_name_.c_str());
       ::unlink(new_name_.c_str()); // timeout
     }
     build_state_ = (file_exists(lib_name_) ? kPass : kFail);
@@ -514,7 +514,6 @@ bool NativeModule::try_load() {
       auto handle = dlopen(lib_name_.c_str(), RTLD_GLOBAL|RTLD_NOW);
       if (!handle) {
         fprintf(stderr, "ERROR: dlopen failed: %s\n", dlerror());
-        fflush(stderr);
       }
       load_state_ = (handle ? kPass : kFail);
       if (handle) dlopen_handle_ = handle;
@@ -662,8 +661,6 @@ NATIVEMETHOD(jbyteArray, NativeModule, getBinary)(
   std::lock_guard<NativeModule> mylock(*mod);
   int fd = open(config.get_lib_name(mod->key_).c_str(), O_RDONLY, 0666);
   if (fd < 0) {
-    fprintf(stderr, "DEBUG: getBinary open(lib) -> %d\n", fd);
-    perror("open");
     return env->NewByteArray(0);
   }
   struct stat st;

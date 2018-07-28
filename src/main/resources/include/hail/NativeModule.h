@@ -48,11 +48,9 @@ public:
 
   void find_PtrFuncL(JNIEnv* env, NativeStatus* st, jobject funcObj, jstring nameJ, int numArgs);
 
-private:
-  // disallow copy-construct
-  NativeModule(const NativeModule& b);
-  // disallow copy-assign
-  NativeModule& operator=(const NativeModule& b);
+  NativeModule(const NativeModule& b) = delete;
+
+  NativeModule& operator=(const NativeModule& b) = delete;
 };
 
 // Each NativeFunc or NativeMaker holds a NativeModulePtr
