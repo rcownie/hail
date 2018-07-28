@@ -16,8 +16,10 @@
 #include <memory>
 #include <mutex>
 #include <iostream>
+#include <queue>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #if 0
@@ -147,7 +149,7 @@ std::string get_cxx_name() {
 }
 
 class ModuleConfig {
-public:
+ public:
   bool is_darwin_;
   std::string ext_cpp_;
   std::string ext_lib_;
@@ -158,7 +160,7 @@ public:
   std::string java_home_;
   std::string java_md_;
 
-public:
+ public:
   ModuleConfig() :
 #if defined(__APPLE__) && defined(__MACH__)
     is_darwin_(true),
@@ -204,6 +206,52 @@ public:
 };
 
 ModuleConfig config;
+
+class ModuleCache {
+ public:
+  std::mutex mutex_;
+  size_t capacity_;
+  std::unordered_map<std::string, NativeModulePtr> modules_;
+  std::queue<NativeModulePtr> evictq_;
+
+ public:
+  ModuleCache(ssize_t capacity) :
+    mutex_(),
+    capacity_(capacity),
+    modules_(),
+    evictq_() {
+  }
+  
+  void try_to_evict() {
+    for (int phase = 0; phase < 2;) {
+      if (phase == 1) {
+        for (auto& pair : modules_) {
+          if (pair.second.use_count() <= 1) evictq_.push(pair.second);
+        }
+      }
+      for (auto n = evictq_.size(); n > 0; --n) {
+        auto mod = evictq_.front();
+        evictq_.pop();
+        if (mod.use_count() <= 2) {
+          modules_.erase(mod->key_);
+          if ((phase == 0) || (evictq_.size() <= capacity_)) return;
+        }
+      }
+    }
+  }
+  
+  void insert(const NativeModulePtr& mod) {
+    modules_[mod->key_] = mod;
+    if (modules_.size() > capacity_) try_to_evict();
+  }
+  
+  NativeModulePtr find(const std::string& key) {
+    auto iter = modules_.find(key);
+    return ((iter == modules_.end()) ? NativeModulePtr() : iter->second);
+  }
+};
+
+ModuleCache module_cache(32);
 
 } // end anon
 
@@ -624,10 +672,16 @@ NATIVEMETHOD(void, NativeModule, nativeCtorWorker)(
 ) {
   bool is_global = (is_globalJ != JNI_FALSE);
   JString key(env, keyJ);
-  long binary_size = env->GetArrayLength(binaryJ);
-  auto binary = env->GetByteArrayElements(binaryJ, 0);
-  NativeObjPtr ptr = std::make_shared<NativeModule>(is_global, key, binary_size, binary);
-  env->ReleaseByteArrayElements(binaryJ, binary, JNI_ABORT);
+  std::lock_guard<std::mutex> mylock(module_cache.mutex_);
+  auto mod = module_cache.find(std::string(key));
+  if (!mod) {
+    long binary_size = env->GetArrayLength(binaryJ);
+    auto binary = env->GetByteArrayElements(binaryJ, 0);
+    mod = std::make_shared<NativeModule>(is_global, key, binary_size, binary);
+    module_cache.insert(mod);
+    env->ReleaseByteArrayElements(binaryJ, binary, JNI_ABORT);
+  }
+  NativeObjPtr ptr = mod;
   init_NativePtr(env, thisJ, &ptr);
 }
 
