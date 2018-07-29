@@ -155,9 +155,9 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
     if (true) {
       val sb = new StringBuilder()
       NativeDecode.appendCode(sb, t, requestedType)
-      val code = sb.toString()
-      val options = if (countLines(code) <= 500) "-O2" else "-O1"
-      val mod = new NativeModule(options, code, true)
+      val code = new PrettyCode(sb.toString())
+      val options = if (code.countLines() <= 500) "-O2" else "-O1"
+      val mod = new NativeModule(options, code.toString(), true)
       val st = new NativeStatus()
       mod.findOrBuild(st)
       if (st.fail) System.err.println(s"findOrBuild ${st}")
@@ -1100,50 +1100,49 @@ object NativeDecode {
       if (t.byteSize == 0) true else false
     }
 
-    def scan(depth: Int, numIndent: Int, name: String, typ: Type, wantType: Type, skip: Boolean) {
+    def scan(depth: Int, name: String, typ: Type, wantType: Type, skip: Boolean) {
       val r1 = if (isResumePoint(typ)) allocState(name) else -1
       val addr = if (skip || ((depth > 0) && isEmptyStruct(typ))) "addr_undefined" else stateVar("addr", depth)
-      val ind = "  " * numIndent
       typ.fundamentalType match {
         case t: TBoolean =>
           val call = if (skip) "this->skip_byte()" else s"this->decode_byte((int8_t*)${addr})"
-          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
+          mainCode.append(s"if (!${call}) { s = ${r1}; goto pull; }\n")
         case t: TInt32 =>
           val call = if (skip) "this->skip_int()" else s"this->decode_int((int32_t*)${addr})"
-          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
+          mainCode.append(s"if (!${call}) { s = ${r1}; goto pull; }\n")
         case t: TInt64 =>
           val call = if (skip) "this->skip_long()" else s"this->decode_long((int64_t*)${addr})"
-          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
+          mainCode.append(s"if (!${call}) { s = ${r1}; goto pull; }\n")
         case t: TFloat32 =>
           val call = if (skip) "this->skip_float()" else s"this->decode_float((float*)${addr})"
-          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
+          mainCode.append(s"if (!${call}) { s = ${r1}; goto pull; }\n")
         case t: TFloat64 =>
           val call = if (skip) "this->skip_double()" else s"this->decode_double((double*)${addr})"
-          mainCode.append(s"${ind}  if (!${call}) { s = ${r1}; goto pull; }\n")
+          mainCode.append(s"if (!${call}) { s = ${r1}; goto pull; }\n")
 
         case t: TBinary =>
           // TBinary - usually a string - has an int length, followed by that number of bytes
           val ptr = stateVar("ptr", depth)
           val len = stateVar("len", depth)
           val idx = stateVar("idx", depth)
-          mainCode.append(s"${ind}  if (!this->decode_length(&${len})) { s = ${r1}; goto pull; }\n")
+          mainCode.append(s"if (!this->decode_length(&${len})) { s = ${r1}; goto pull; }\n")
           if (skip) {
-            mainCode.append(s"${ind}  for (${idx} = 0; ${idx} < ${len};) {\n")
+            mainCode.append(s"for (${idx} = 0; ${idx} < ${len};) {\n")
             val r2 = allocState(s"${name}.bytes");
-            mainCode.append(s"${ind}    auto ngot = this->skip_bytes(${len}-${idx});\n")
-            mainCode.append(s"${ind}    if (ngot <= 0) { s = ${r2}; goto pull; }\n")
-            mainCode.append(s"${ind}    ${idx} += ngot;\n")
-            mainCode.append(s"${ind}  }\n")            
+            mainCode.append(s"  auto ngot = this->skip_bytes(${len}-${idx});\n")
+            mainCode.append(s"  if (ngot <= 0) { s = ${r2}; goto pull; }\n")
+            mainCode.append(s"  ${idx} += ngot;\n")
+            mainCode.append(s"\n")
           } else {
-            mainCode.append(s"${ind}  ${ptr} = region->allocate(4, 4+${len});\n")
-            mainCode.append(s"${ind}  *(char**)${addr} = ${ptr};\n")
-            mainCode.append(s"${ind}  *(int32_t*)${ptr} = ${len};\n")
-            mainCode.append(s"${ind}  for (${idx} = 0; ${idx} < ${len};) {\n")
+            mainCode.append(s"${ptr} = region->allocate(4, 4+${len});\n")
+            mainCode.append(s"*(char**)${addr} = ${ptr};\n")
+            mainCode.append(s"*(int32_t*)${ptr} = ${len};\n")
+            mainCode.append(s"for (${idx} = 0; ${idx} < ${len};) {\n")
             val r2 = allocState(s"${name}.bytes");
-            mainCode.append(s"${ind}    auto ngot = this->decode_bytes(${ptr}+4+${idx}, ${len}-${idx});\n")
-            mainCode.append(s"${ind}    if (ngot <= 0) { s = ${r2}; goto pull; }\n")
-            mainCode.append(s"${ind}    ${idx} += ngot;\n")
-            mainCode.append(s"${ind}  }\n")
+            mainCode.append(s"  auto ngot = this->decode_bytes(${ptr}+4+${idx}, ${len}-${idx});\n")
+            mainCode.append(s"  if (ngot <= 0) { s = ${r2}; goto pull; }\n")
+            mainCode.append(s"  ${idx} += ngot;\n")
+            mainCode.append(s"}\n")
           }
 
         case t: TArray =>
@@ -1152,7 +1151,7 @@ object NativeDecode {
           val ptr = stateVar("ptr", depth)
           val data = if (skip) "data_undefined" else stateVar("data", depth)
           var miss = if (t.elementType.required || !skip) "miss_undefined" else stateVar("miss", depth)
-          mainCode.append(s"${ind}  if (!this->decode_length(&${len})) { s = ${r1}; goto pull; }\n")
+          mainCode.append(s"if (!this->decode_length(&${len})) { s = ${r1}; goto pull; }\n")
           val wantArray = wantType.asInstanceOf[TArray]
           val ealign = wantArray.elementType.alignment
           val align = if (ealign > 4) ealign else 4
@@ -1160,36 +1159,36 @@ object NativeDecode {
           val req = if (t.elementType.required) "true" else "false"          
           if (skip) {
             if (!t.elementType.required) {
-              mainCode.append(s"${ind}  stretch_size(${miss}, missing_bytes(${len}));\n")
+              mainCode.append(s"stretch_size(${miss}, missing_bytes(${len}));\n")
             }
           } else {
-            mainCode.append(s"${ind}  { ssize_t data_offset = elements_offset(${len}, ${req}, ${ealign});\n")
-            mainCode.append(s"${ind}    ssize_t size = data_offset + ${esize}*${len};\n")
-            mainCode.append(s"${ind}    ${ptr} = region->allocate(${align}, size);\n");
-            mainCode.append(s"${ind}    memset(${ptr}, 0xff, size); // initialize all-missing\n")
-            mainCode.append(s"${ind}    *(char**)${addr} = ${ptr};\n")
-            mainCode.append(s"${ind}    ${data} = ${ptr} + data_offset;\n")
-            mainCode.append(s"${ind}  }\n")
-            mainCode.append(s"${ind}  *(int32_t*)${ptr} = ${len};\n")
+            mainCode.append(s"{ ssize_t data_offset = elements_offset(${len}, ${req}, ${ealign});\n")
+            mainCode.append(s"  ssize_t size = data_offset + ${esize}*${len};\n")
+            mainCode.append(s"  ${ptr} = region->allocate(${align}, size);\n");
+            mainCode.append(s"  memset(${ptr}, 0xff, size); // initialize all-missing\n")
+            mainCode.append(s"  *(char**)${addr} = ${ptr};\n")
+            mainCode.append(s"  ${data} = ${ptr} + data_offset;\n")
+            mainCode.append(s"}\n")
+            mainCode.append(s"*(int32_t*)${ptr} = ${len};\n")
             miss = s"(${ptr}+4)"
           }
           if (!t.elementType.required) {
-            mainCode.append(s"${ind}  for (${idx} = 0; ${idx} < missing_bytes(${len});) {\n")
+            mainCode.append(s"for (${idx} = 0; ${idx} < missing_bytes(${len});) {\n")
             val r2 = allocState(s"${name}.missing");
-            mainCode.append(s"${ind}    auto ngot = this->decode_bytes(&${miss}[${idx}], missing_bytes(${len})-${idx});\n")
-            mainCode.append(s"${ind}    if (ngot <= 0) { s = ${r2}; goto pull; }\n")
-            mainCode.append(s"${ind}    ${idx} += ngot;\n")
-            mainCode.append(s"${ind}  }\n")
+            mainCode.append(s"  auto ngot = this->decode_bytes(&${miss}[${idx}], missing_bytes(${len})-${idx});\n")
+            mainCode.append(s"  if (ngot <= 0) { s = ${r2}; goto pull; }\n")
+            mainCode.append(s"  ${idx} += ngot;\n")
+            mainCode.append(s"}\n")
           }
-          mainCode.append(  s"${ind}  for (${idx} = 0; ${idx} < ${len}; ++${idx}) {\n")
+          mainCode.append(  s"for (${idx} = 0; ${idx} < ${len}; ++${idx}) {\n")
           if (!t.elementType.required) {
-            mainCode.append(s"${ind}    if (is_missing(${miss}, ${idx})) continue;\n")
+            mainCode.append(s"  if (is_missing(${miss}, ${idx})) continue;\n")
           }
           if (!skip && !isEmptyStruct(t.elementType)) {
-            mainCode.append(  s"${ind}    ${stateVar("addr", depth+1)} = ${data} + ${idx}*${esize};\n")
+            mainCode.append(s"  ${stateVar("addr", depth+1)} = ${data} + ${idx}*${esize};\n")
           }
-          scan(depth+1, numIndent+1, s"${name}(${idx})", t.elementType, wantArray.elementType, skip)
-          mainCode.append(  s"${ind}  }\n")
+          scan(depth+1, s"${name}(${idx})", t.elementType, wantArray.elementType, skip)
+          mainCode.append(  s"}\n")
 
         case t: TBaseStruct =>
           val wantStruct = wantType.fundamentalType.asInstanceOf[TBaseStruct];
@@ -1199,15 +1198,15 @@ object NativeDecode {
           if ((t.nMissingBytes > 0) && 
             (skip || (wantStruct.fields.length < t.fields.length))) {
             miss = stateVar("miss", depth)
-            mainCode.append(s"${ind}  stretch_size(${miss}, ${t.nMissingBytes});\n")
+            mainCode.append(s"stretch_size(${miss}, ${t.nMissingBytes});\n")
           }
           if (!skip) {
             if (depth == 0) { // top-level TBaseStruct must be allocated
-              mainCode.append(s"${ind}  ${addr} = region->allocate(${wantStruct.alignment}, ${wantStruct.byteSize});\n")
+              mainCode.append(s"${addr} = region->allocate(${wantStruct.alignment}, ${wantStruct.byteSize});\n")
               if (wantStruct.byteSize > 0) {
-                mainCode.append(s"${ind}  memset(${addr}, 0xff, ${wantStruct.byteSize}); // initialize all-missing\n")
+                mainCode.append(s"memset(${addr}, 0xff, ${wantStruct.byteSize}); // initialize all-missing\n")
               }
-              mainCode.append(s"${ind}  this->rv_base_ = ${addr};\n")
+              mainCode.append(s"this->rv_base_ = ${addr};\n")
             }            
             var wantIdx = 0
             var fieldIdx = 0
@@ -1231,7 +1230,7 @@ object NativeDecode {
             }
             if (shuffleMissingBits) {
               if (maxMissingBit >= 0) {
-                mainCode.append(s"${ind}  set_all_missing(${addr}, ${maxMissingBit+1});\n")
+                mainCode.append(s"set_all_missing(${addr}, ${maxMissingBit+1});\n")
               }
             } else {
               miss = addr
@@ -1239,16 +1238,16 @@ object NativeDecode {
           }
           if (t.nMissingBytes == 1) {
             val r2 = allocState(s"${name}.missing");
-            mainCode.append(s"${ind}  if (this->decode_bytes(&${miss}[0], 1) <= 0) { s = ${r2}; goto pull; }\n")
+            mainCode.append(s"if (this->decode_bytes(&${miss}[0], 1) <= 0) { s = ${r2}; goto pull; }\n")
           } else if (t.nMissingBytes > 1) {
             // Ack! We have to read this missing bytes, but shuffle bits needed for wantStruct
             val idx = stateVar("idx", depth)
-            mainCode.append(s"${ind}  for (${idx} = 0; ${idx} < ${t.nMissingBytes};) {\n")
+            mainCode.append(s"for (${idx} = 0; ${idx} < ${t.nMissingBytes};) {\n")
             val r2 = allocState(s"${name}.missing")
-            mainCode.append(s"${ind}    auto ngot = this->decode_bytes(&${miss}[${idx}], ${t.nMissingBytes}-${idx});\n")
-            mainCode.append(s"${ind}    if (ngot <= 0) { s = ${r2}; goto pull; }\n")
-            mainCode.append(s"${ind}    ${idx} += ngot;\n")
-            mainCode.append(s"${ind}  }\n")
+            mainCode.append(s"  auto ngot = this->decode_bytes(&${miss}[${idx}], ${t.nMissingBytes}-${idx});\n")
+            mainCode.append(s"  if (ngot <= 0) { s = ${r2}; goto pull; }\n")
+            mainCode.append(s"  ${idx} += ngot;\n")
+            mainCode.append(s"}\n")
           }
           var fieldIdx = 0
           while (fieldIdx < t.fields.length) {
@@ -1260,37 +1259,37 @@ object NativeDecode {
             val wantOffset = if (fieldSkip) -1 else wantStruct.byteOffsets(wantIdx)
             if (!t.fieldRequired(fieldIdx)) {
               val m = t.missingIdx(fieldIdx)
-              mainCode.append(s"${ind}  if (!is_missing(${miss}, ${m})) {\n")
+              mainCode.append(s"if (!is_missing(${miss}, ${m})) {\n")
               if (!fieldSkip) {
                 if (shuffleMissingBits) {
                   val mbit = wantStruct.missingIdx(wantIdx)
-                  mainCode.append(s"${ind}    ${addr}[${mbit>>3}] &= ~(1<<${mbit&0x7});\n")
+                  mainCode.append(s"  ${addr}[${mbit>>3}] &= ~(1<<${mbit&0x7});\n")
                 }
                 if (!isEmptyStruct(fieldType)) {
-                  mainCode.append(s"${ind}    ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
+                  mainCode.append(s"  ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
                 }
               }
-              mainCode.append(s"${ind}    // ${name}.${field.name} fieldSkip ${fieldSkip} ${fieldType}\n")
-              scan(depth+1, numIndent+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
-              mainCode.append(s"${ind}  }\n")
+              mainCode.append(s"  // ${name}.${field.name} fieldSkip ${fieldSkip} ${fieldType}\n")
+              scan(depth+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
+              mainCode.append(s"}\n")
             } else {
               if (!fieldSkip && !isEmptyStruct(fieldType)) {
-                mainCode.append(s"${ind}  ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
+                mainCode.append(s"  ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
               }
-              scan(depth+1, numIndent, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
+              scan(depth+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
             }
             fieldIdx += 1
           }
         
         case _ =>
-          mainCode.append(s"${ind}  // unknown type ${typ}\n")
+          mainCode.append(s"// unknown type ${typ}\n")
           assert(false)
                    
       }
     }
 
     allocState("init")
-    scan(0, 1, "root", rowType, wantType, false)
+    scan(0, "root", rowType, wantType, false)
 
     sb.append("#include \"hail/hail.h\"\n")
     sb.append("#include \"hail/PackDecoder.h\"\n")
