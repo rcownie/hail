@@ -1132,7 +1132,7 @@ object NativeDecode {
             mainCode.append(s"  auto ngot = this->skip_bytes(${len}-${idx});\n")
             mainCode.append(s"  if (ngot <= 0) { s = ${r2}; goto pull; }\n")
             mainCode.append(s"  ${idx} += ngot;\n")
-            mainCode.append(s"\n")
+            mainCode.append(s"}\n")
           } else {
             mainCode.append(s"${ptr} = region->allocate(4, 4+${len});\n")
             mainCode.append(s"*(char**)${addr} = ${ptr};\n")
@@ -1274,7 +1274,7 @@ object NativeDecode {
               mainCode.append(s"}\n")
             } else {
               if (!fieldSkip && !isEmptyStruct(fieldType)) {
-                mainCode.append(s"  ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
+                mainCode.append(s"${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
               }
               scan(depth+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
             }
