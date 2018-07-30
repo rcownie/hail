@@ -25,7 +25,8 @@ go:
 	  -Dtest.single=ImportMatrixSuite test
 
 test:
-	./gradlew -Dspark.version=${SPARK_VERSION} -Dspark.home=${SPARK_HOME} test
+	./gradlew -Dspark.version=${SPARK_VERSION} -Dspark.home=${SPARK_HOME} \
+	  -Dtest.parallelism=7 test
 
 testPython:
 	./gradlew -Dspark.version=${SPARK_VERSION} -Dspark.home=${SPARK_HOME} \

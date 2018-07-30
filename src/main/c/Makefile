@@ -89,13 +89,12 @@ test: build/functional-tests
 	./build/functional-tests
 
 clean:
-	-rm -rf build lib
+	-rm -rf build headers lib
 	-rm -rf *.o
 	echo done
 
-.PHONY: headers
-
 headers: $(shell /usr/bin/find ../resources/include -name "*.h")
+	touch $@
 
 NativeCodeSuite.o: headers
 NativeLongFunc.o: headers
