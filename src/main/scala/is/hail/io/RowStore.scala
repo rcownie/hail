@@ -139,32 +139,20 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
     new PackEncoder(t, child.buildOutputBuffer(out))
   }
   
-  private def countLines(s: String): Int = {
-    var n = 0
-    var len = s.length
-    var idx = 0
-    while (idx < len) {
-      var pos = s.indexOf("\n", idx)
-      if (pos >= 0) n += 1 else pos = len
-      idx = pos + 1
-    }
-    n
-  }
-
   def buildDecoder(t: Type, requestedType: Type): (InputStream) => Decoder = {
     if (true) {
       val sb = new StringBuilder()
       NativeDecode.appendCode(sb, t, requestedType)
       val code = new PrettyCode(sb.toString())
       val options = if (code.countLines() <= 500) "-O2" else "-O1"
-      val mod = new NativeModule(options, code.toString(), true)
+      val mod = new NativeModule(options, code.toString(), false)
       val st = new NativeStatus()
       mod.findOrBuild(st)
       if (st.fail) System.err.println(s"findOrBuild ${st}")
       assert(st.ok)
-      st.clear()
       val modKey = mod.getKey()
       val modBinary = mod.getBinary()
+      st.close()
       mod.close()
       (in: InputStream) => new NativePackDecoder(child.buildInputBuffer(in), modKey, modBinary)
     } else {
