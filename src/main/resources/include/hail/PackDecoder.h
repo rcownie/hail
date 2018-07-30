@@ -62,6 +62,8 @@ class DecoderBase : public NativeObj {
 private:
   static constexpr ssize_t kDefaultCapacity = (64*1024);
 public:
+  int64_t total_usec_;
+  int64_t total_size_;
   ssize_t capacity_;
   char*   buf_;
   ssize_t pos_;
@@ -71,6 +73,8 @@ public:
   
 public:
   DecoderBase(ssize_t bufCapacity = 0) :
+    total_usec_(0),
+    total_size_(0),
     capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
     buf_((char*)malloc(capacity_)),
     pos_(0),
