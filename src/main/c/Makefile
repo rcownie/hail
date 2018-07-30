@@ -40,9 +40,9 @@ endif
 
 ifndef CXX
   # clang is preferred because a) it's standard on Mac, and b) it compiles faster
-  CXX :=$(shell which clang)
+  CXX :=$(shell which clang 2>/dev/null)
   ifeq ($(CXX),)
-    CXX :=$(shell which g++)
+    CXX :=$(shell which g++ 2>/dev/null)
     ifeq ($(CXX),)
       CXX := c++
     endif
