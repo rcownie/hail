@@ -43,10 +43,14 @@ const int kFilePollMicrosecs = 50000;
 const int kBuildTimeoutSecs = 120;
 
 // A quick-and-dirty way to get a hash of two strings, take 80bits,
-// and produce a 20byte string of hex digits.
+// and produce a 20byte string of hex digits.  We also sprinkle
+// in some "salt" from a checksum of a tar of all header files, so
+// that any change to header files will force recompilation.
+
 std::string hash_two_strings(const std::string& a, const std::string& b) {
   auto hashA = std::hash<std::string>()(a);
   auto hashB = std::hash<std::string>()(b);
+  hashA ^= ALL_HEADER_CKSUM;
   hashA ^= (0x3ac5*hashB);
   hashB &= 0xffff;
   char buf[128];
