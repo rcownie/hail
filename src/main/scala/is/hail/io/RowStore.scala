@@ -139,32 +139,20 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
     new PackEncoder(t, child.buildOutputBuffer(out))
   }
   
-  private def countLines(s: String): Int = {
-    var n = 0
-    var len = s.length
-    var idx = 0
-    while (idx < len) {
-      var pos = s.indexOf("\n", idx)
-      if (pos >= 0) n += 1 else pos = len
-      idx = pos + 1
-    }
-    n
-  }
-
   def buildDecoder(t: Type, requestedType: Type): (InputStream) => Decoder = {
     if (true) {
       val sb = new StringBuilder()
       NativeDecode.appendCode(sb, t, requestedType)
       val code = new PrettyCode(sb.toString())
       val options = if (code.countLines() <= 500) "-O2" else "-O1"
-      val mod = new NativeModule(options, code.toString(), true)
+      val mod = new NativeModule(options, code.toString(), false)
       val st = new NativeStatus()
       mod.findOrBuild(st)
       if (st.fail) System.err.println(s"findOrBuild ${st}")
       assert(st.ok)
-      st.clear()
       val modKey = mod.getKey()
       val modBinary = mod.getBinary()
+      st.close()
       mod.close()
       (in: InputStream) => new NativePackDecoder(child.buildInputBuffer(in), modKey, modBinary)
     } else {
@@ -1297,7 +1285,8 @@ object NativeDecode {
     sb.append("#include \"hail/Region.h\"\n")
     sb.append("#include <cstdint>\n")
     sb.append("#include <cstring>\n")
-    if (verbose) sb.append("#include <cstdio>\n")
+    sb.append("#include <cstdio>\n")
+    sb.append("#include <sys/time.h>\n")
     sb.append("\n")
     sb.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
     sb.append("\n")
@@ -1336,11 +1325,31 @@ object NativeDecode {
     sb.append("}\n")
     sb.append("\n")
     sb.append("ssize_t decode_until_done_or_need_push(NativeStatus*, long decoder, long region, long push_size) {\n")
-    sb.append("  return ((DecoderBase*)decoder)->decode_until_done_or_need_push((Region*)region, push_size);\n")
+    sb.append("  auto obj = (DecoderBase*)decoder;\n")
+    sb.append("  struct timeval tv0, tv1;\n")
+    sb.append("  gettimeofday(&tv0, nullptr);\n")
+    sb.append("  obj->total_size_ += push_size;\n")
+    sb.append("  auto result = obj->decode_until_done_or_need_push((Region*)region, push_size);\n")
+    sb.append("  gettimeofday(&tv1, nullptr);\n")
+    sb.append("  obj->total_usec_ += 1000000L*(tv1.tv_sec - tv0.tv_sec) + (tv1.tv_usec - tv0.tv_usec);\n")
+    sb.append("  return result;\n")
     sb.append("}\n")
     sb.append("\n")
     sb.append("ssize_t decode_one_byte(NativeStatus*, long decoder, long push_size) {\n")
-    sb.append("  return ((DecoderBase*)decoder)->decode_one_byte(push_size);\n")
+    sb.append("  auto obj = (DecoderBase*)decoder;\n")
+    sb.append("  obj->total_size_ += push_size;\n")
+    sb.append("  auto result = obj->decode_one_byte(push_size);\n")
+    sb.append("  if (result == 0) {\n")
+    sb.append("    double t = obj->total_usec_/1000000.0;\n")
+    sb.append("    double d = obj->total_size_/(1024.0*1024.0);\n")
+    sb.append("    if (t >= 0.001) {\n");
+    sb.append("      char logname[512]; sprintf(logname, \"/tmp/decode_%s.log\", obj->tag_);\n")
+    sb.append("      FILE* log = fopen(logname, \"a\");\n")
+    sb.append("      fprintf(log, \"DEBUG: cpu %.3fms for %.3fMB = %.3fMB/sec\\n\", 1000*t, d, d/t);\n")
+    sb.append("      fclose(log);\n")
+    sb.append("    }\n")
+    sb.append("  }\n")
+    sb.append("  return result;\n")
     sb.append("}\n")
     sb.append("\n")
     sb.append("NAMESPACE_HAIL_MODULE_END\n")

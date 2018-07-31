@@ -40,9 +40,9 @@ endif
 
 ifndef CXX
   # clang is preferred because a) it's standard on Mac, and b) it compiles faster
-  CXX :=$(shell which clang)
+  CXX :=$(shell which clang 2>/dev/null)
   ifeq ($(CXX),)
-    CXX :=$(shell which g++)
+    CXX :=$(shell which g++ 2>/dev/null)
     ifeq ($(CXX),)
       CXX := c++
     endif
@@ -89,13 +89,12 @@ test: build/functional-tests
 	./build/functional-tests
 
 clean:
-	-rm -rf build lib
+	-rm -rf build headers lib
 	-rm -rf *.o
-	-rm -f headers
 	echo done
 
 headers: $(shell /usr/bin/find ../resources/include -name "*.h")
-	touch headers
+	touch $@
 
 NativeCodeSuite.o: headers
 NativeLongFunc.o: headers
@@ -103,6 +102,12 @@ NativeModule.o: headers
 NativePtr.o: headers
 NativeStatus.o: headers
 Region.o: headers
+
+ALL_HEADER_FILES := $(shell /usr/bin/find ../resources/include -name "*.h")
+ALL_HEADER_CKSUM := $(shell /bin/cat $(ALL_HEADER_FILES) | /usr/bin/cksum | /usr/bin/cut -d " " -f 1)
+
+NativeModule.o: headers NativeModule.cpp
+	$(CXX) $(CXXFLAGS) -DALL_HEADER_CKSUM=$(ALL_HEADER_CKSUM)UL -c NativeModule.cpp -o $@
 
 # if your build machine cannot access this URL, download this tar.gz and place
 # it in the same directory as this Makefile. If you do so, the build will
