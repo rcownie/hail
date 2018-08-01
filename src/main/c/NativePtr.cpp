@@ -66,6 +66,16 @@ public:
 // extremely weird, but by putting all the initialization into the constructor
 // we make sure that both get correctly initialized.  But that behavior might
 // cause trouble in other code, so we need to watch out for it.
+//
+// I suspect this may be related to gcc's use of STB_GNU_UNIQUE for static
+// data, though from this description it shouldn't be used for data in a 
+// non-inline function:
+//
+// "On systems with recent GNU assembler and C library, the C++ compiler uses 
+// the STB_GNU_UNIQUE binding to make sure that definitions of template static 
+// data members and static local variables in inline functions are unique even 
+// in the presence of RTLD_LOCAL"
+
 
 // We could in theory do the initialization from a JNI_OnLoad() function, but
 // don't want to take time experimenting with that now.

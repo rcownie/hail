@@ -30,7 +30,7 @@ public class NativeCode {
       }
       includeDir = unpackHeadersToTmpIncludeDir();
     } catch (Throwable err) {
-      System.err.println("FATAL: NativeCode.init caught exception " + err.toString());
+      System.err.println("FATAL: caught exception " + err.toString());
       err.printStackTrace();
       System.exit(1);
     }
@@ -57,22 +57,19 @@ public class NativeCode {
     String path = file.getAbsoluteFile().toPath().toString();
     return path;
   }
-  
-  
-  
+    
   private static String unpackHeadersToTmpIncludeDir() {
     String result = "IncludeDirNotFound";
     String name = ClassLoader.getSystemResource("include").toString();
     if ((name.length() > 5) && name.substring(0, 5).equals("file:")) {
       // The resources are already unpacked
       result = name.substring(5, name.length());
-      System.err.println("Already unpacked in " + result);
     } else try {
+      // The header files must be unpacked from a jar into local files
       int jarPos = name.indexOf("file:", 0);
       int jarEnd = name.indexOf("!", jarPos+1);
       String jarName = name.substring(jarPos+5, jarEnd);
-      System.err.println("isDirectory false " + jarName);
-      Path dirPath = Files.createTempDirectory("include_");
+      Path dirPath = Files.createTempDirectory("hail_headers_");
       File includeDir = new File(dirPath.toString());
       result = includeDir.getAbsolutePath().toString();
       File f = new File(jarName);
@@ -85,25 +82,17 @@ public class NativeCode {
         if ((len > 8) &&
             fileName.substring(0, 8).equals("include/") &&
             fileName.substring(len-2, len).equals(".h")) {
-          System.err.println("Header " + fileName);
-          int posFirstSlash = fileName.indexOf("/", 0);
-          int posLastSlash = posFirstSlash;
-          while (true) {
-            int idx = fileName.indexOf("/", posLastSlash+1);
-            if (idx < 0) break;
-            posLastSlash = idx;
-          }
-          String dirName = result + fileName.substring(posFirstSlash, posLastSlash);
-          File dir = new File(dirName);
-          Files.createDirectories(Paths.get(dir.getAbsolutePath()));
-          String dstName = result + fileName.substring(posFirstSlash, len);          
+          String dstName = result + "/" + fileName;
           File dst = new File(dstName);
+          Files.createDirectories(dst.toPath().getParent());
           InputStream src = zf.getInputStream(ze);
-          Files.copy(src, dst.getAbsoluteFile().toPath(), StandardCopyOption.REPLACE_EXISTING);
+          Files.copy(src, dst.toPath(), StandardCopyOption.REPLACE_EXISTING);
         }
       }
     } catch (Throwable err) {
       System.err.println("FATAL: caught exception " + err.toString());
+      err.printStackTrace();
+      System.exit(1);
     }
     return result;
   }
