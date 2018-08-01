@@ -144,7 +144,9 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
       val sb = new StringBuilder()
       NativeDecode.appendCode(sb, t, requestedType)
       val code = new PrettyCode(sb.toString())
-      val options = if (code.countLines() <= 500) "-O2" else "-O1"
+      // Experiments on Mac (LLVM) show -O2 code about 1.08x faster than -O1,
+      // but -O3 is no better than -O2
+      val options = "-O2"
       val mod = new NativeModule(options, code.toString(), false)
       val st = new NativeStatus()
       mod.findOrBuild(st)
