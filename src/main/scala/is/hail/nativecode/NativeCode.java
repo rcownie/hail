@@ -71,7 +71,8 @@ public class NativeCode {
       String jarName = name.substring(jarPos+5, jarEnd);
       Path dirPath = Files.createTempDirectory("hail_headers_");
       File includeDir = new File(dirPath.toString());
-      result = includeDir.getAbsolutePath().toString();
+      String tmpDirName = includeDir.getAbsolutePath().toString();
+      result = tmpDirName + "/include";
       File f = new File(jarName);
       ZipFile zf = new ZipFile(f);
       Enumeration scan = zf.entries();
@@ -82,7 +83,7 @@ public class NativeCode {
         if ((len > 8) &&
             fileName.substring(0, 8).equals("include/") &&
             fileName.substring(len-2, len).equals(".h")) {
-          String dstName = result + "/" + fileName;
+          String dstName = tmpDirName + "/" + fileName;
           File dst = new File(dstName);
           Files.createDirectories(dst.toPath().getParent());
           InputStream src = zf.getInputStream(ze);
