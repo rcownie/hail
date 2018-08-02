@@ -71,7 +71,7 @@ public:
 class DecoderBase : public NativeObj {
 private:
   static constexpr ssize_t kDefaultCapacity = (64*1024);
-  static constexpr ssize_t kSentinelSize = 64;
+  static constexpr ssize_t kSentinelSize = 16;
 public:
   int64_t total_usec_;
   int64_t total_size_;
@@ -159,7 +159,8 @@ public:
     if (push_size <= 0) return;
     size_ += push_size;
     total_size_ += push_size;
-    *(int32_t*)&buf_[size_] = 0xffffffff; // sentinel value
+    memset(&buf_[size_], 0xff, kSentinelSize-1);
+    buf_[size_+kSentinelSize-1] = 0x00; // terminator for LEB128 loop
   }
   
   ssize_t decode_one_byte(ssize_t push_size) {
