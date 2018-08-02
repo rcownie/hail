@@ -21,6 +21,9 @@
 # define MAYBE_INLINE
 #endif
 
+#define LIKELY(condition) __builtin_expect(static_cast<bool>(condition), 1)
+#define UNLIKELY(condition) __builtin_expect(static_cast<bool>(condition), 0)
+
 namespace hail {
 
 inline ssize_t round_up_align(ssize_t n, ssize_t align) {
@@ -370,9 +373,9 @@ class PackDecoderBase<1> : public DecoderBase {
   
   bool decode_int(int32_t* addr) {
     ssize_t pos = pos_;
-    int32_t b = *(uint8_t*)&buf_[pos];
-    if ((b & 0x80) == 0) { // fast path: not sentinel, one-byte encoding
-      *addr = (b & 0x7f);
+    int32_t b = *(int8_t*)&buf_[pos];
+    if (LIKELY(b >= 0)) { // fast path: not sentinel, one-byte encoding
+      *addr = b;
       pos_ = pos+1;
       return true;
     }
@@ -382,7 +385,7 @@ class PackDecoderBase<1> : public DecoderBase {
   bool skip_int() {
     ssize_t pos = pos_;
 #ifndef MYSTATS
-    if (*(int8_t*)&buf_[pos] >= 0) { pos_ = pos+1; return true; } // fast path
+    if (LIKELY(*(int8_t*)&buf_[pos] >= 0)) { pos_ = pos+1; return true; } // fast path
     while (*(int8_t*)&buf_[pos++] < 0);
     if (pos > size_) return false;
     pos_ = pos;
