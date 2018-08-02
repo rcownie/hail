@@ -1298,7 +1298,7 @@ object NativeDecode {
       |${stateDefs}
       |
       |  virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) {
-      |    this->size_ += push_size;
+      |    this->accept_push(push_size);
       |${localDefs}
       |    int s = s_;
       |    switch (s) {
@@ -1328,7 +1328,6 @@ object NativeDecode {
       |  auto obj = (DecoderBase*)decoder;
       |  struct timeval tv0, tv1;
       |  gettimeofday(&tv0, nullptr);
-      |  obj->total_size_ += push_size;
       |  auto result = obj->decode_until_done_or_need_push((Region*)region, push_size);
       |  gettimeofday(&tv1, nullptr);
       |  obj->total_usec_ += 1000000L*(tv1.tv_sec - tv0.tv_sec) + (tv1.tv_usec - tv0.tv_usec);
