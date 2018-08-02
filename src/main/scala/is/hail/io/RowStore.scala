@@ -1078,7 +1078,7 @@ object NativeDecode {
       s
     }
 
-    def isResumePoint(t: Type): Boolean = {
+    def isEntryPoint(t: Type): Boolean = {
       t match {
         case _: TBaseStruct => false
         case _ => true
@@ -1090,9 +1090,10 @@ object NativeDecode {
       if (t.byteSize == 0) true else false
     }
 
-    def scan(depth: Int, name: String, typ: Type, wantType: Type, skip: Boolean) {
-      val r1 = if (isResumePoint(typ)) allocState(name) else -1
-      val addr = if (skip || ((depth > 0) && isEmptyStruct(typ))) "addr_undefined" else stateVar("addr", depth)
+    def scan(depth: Int, name: String, typ: Type, wantType: Type, skip: Boolean, inBaseAddr: String, off: Long) {
+      val r1 = if (isEntryPoint(typ)) allocState(name) else -1
+      var baseAddr = inBaseAddr
+      var addr = if (off == 0) baseAddr else s"(${baseAddr}+${off})"
       typ.fundamentalType match {
         case t: TBoolean =>
           val call = if (skip) "this->skip_byte()" else s"this->decode_byte((int8_t*)${addr})"
@@ -1174,10 +1175,12 @@ object NativeDecode {
           if (!t.elementType.required) {
             mainCode.append(s"  if (is_missing(${miss}, ${idx})) continue;\n")
           }
+          var elementAddr = "unknown_addr"
           if (!skip && !isEmptyStruct(t.elementType)) {
-            mainCode.append(s"  ${stateVar("addr", depth+1)} = ${data} + ${idx}*${esize};\n")
+            elementAddr = stateVar("addr", depth+1)
+            mainCode.append(s"  ${elementAddr} = ${data} + ${idx}*${esize};\n")
           }
-          scan(depth+1, s"${name}(${idx})", t.elementType, wantArray.elementType, skip)
+          scan(depth+1, s"${name}(${idx})", t.elementType, wantArray.elementType, skip, elementAddr, 0)
           mainCode.append(  s"}\n")
 
         case t: TBaseStruct =>
@@ -1192,6 +1195,8 @@ object NativeDecode {
           }
           if (!skip) {
             if (depth == 0) { // top-level TBaseStruct must be allocated
+              addr = stateVar("addr", depth)
+              baseAddr = addr
               mainCode.append(s"${addr} = region->allocate(${wantStruct.alignment}, ${wantStruct.byteSize});\n")
               if (wantStruct.byteSize > 0) {
                 mainCode.append(s"memset(${addr}, 0xff, ${wantStruct.byteSize}); // initialize all-missing\n")
@@ -1255,18 +1260,12 @@ object NativeDecode {
                   val mbit = wantStruct.missingIdx(wantIdx)
                   mainCode.append(s"  ${addr}[${mbit>>3}] &= ~(1<<${mbit&0x7});\n")
                 }
-                if (!isEmptyStruct(fieldType)) {
-                  mainCode.append(s"  ${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
-                }
               }
               mainCode.append(s"  // ${name}.${field.name} fieldSkip ${fieldSkip} ${fieldType}\n")
-              scan(depth+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
+              scan(depth+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip, baseAddr, off+wantOffset)
               mainCode.append(s"}\n")
             } else {
-              if (!fieldSkip && !isEmptyStruct(fieldType)) {
-                mainCode.append(s"${stateVar("addr", depth+1)} = ${addr} + ${wantOffset};\n")
-              }
-              scan(depth+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip)
+              scan(depth+1, s"${name}.${field.name}", fieldType, wantType, fieldSkip, baseAddr, off+wantOffset)
             }
             fieldIdx += 1
           }
@@ -1279,82 +1278,82 @@ object NativeDecode {
     }
 
     allocState("init")
-    scan(0, "root", rowType, wantType, false)
-
-    sb.append("#include \"hail/hail.h\"\n")
-    sb.append("#include \"hail/PackDecoder.h\"\n")
-    sb.append("#include \"hail/NativeStatus.h\"\n")
-    sb.append("#include \"hail/Region.h\"\n")
-    sb.append("#include <cstdint>\n")
-    sb.append("#include <cstring>\n")
-    sb.append("#include <cstdio>\n")
-    sb.append("#include <sys/time.h>\n")
-    sb.append("\n")
-    sb.append("NAMESPACE_HAIL_MODULE_BEGIN\n")
-    sb.append("\n")
-    sb.append("template<int DecoderId>\n")
-    sb.append("class Decoder : public PackDecoderBase<DecoderId> {\n")
-    sb.append(" public:\n")
-    sb.append("  int s_ = 0;\n")
-    sb.append(stateDefs)
-    sb.append("\n")
-    sb.append("  virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) {\n")
-    sb.append("    this->size_ += push_size;\n")
-    sb.append(localDefs)
-    sb.append("    int s = s_;\n")
-    sb.append("    switch (s) {\n")
-    sb.append(entryCode)
-    sb.append("    }\n")
-    sb.append(mainCode)
-    sb.append("    s_ = 0; // initialize for next RegionValue\n")
-    sb.append("    return 0;\n")
-    if (rowType.byteSize > 0) {
-      sb.append("  pull:\n")
-      sb.append("    s_ = s;\n")
-      sb.append(flushCode)
-      if (verbose) {
-        sb.append("fprintf(stderr, \"DEBUG: prepare_for_push(entry%d) pos_ %ld size_ %ld\\n\", s_, this->pos_, this->size_);\n")
+    scan(0, "root", rowType, wantType, false, "unknown_addr", 0)
+    
+    sb.append(s"""#include "hail/hail.h"
+      |#include "hail/PackDecoder.h"
+      |#include "hail/NativeStatus.h"
+      |#include "hail/Region.h"
+      |#include <cstdint>
+      |#include <cstring>
+      |#include <cstdio>
+      |#include <sys/time.h>
+      |
+      |NAMESPACE_HAIL_MODULE_BEGIN
+      |
+      |template<int DecoderId>
+      |class Decoder : public PackDecoderBase<DecoderId> {
+      | public:
+      |  int s_ = 0;
+      |${stateDefs}
+      |
+      |  virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) {
+      |    this->size_ += push_size;
+      |${localDefs}
+      |    int s = s_;
+      |    switch (s) {
+      |${entryCode}
+      |    }
+      |${mainCode}
+      |    s_ = 0; // initialize for next RegionValue
+      |    return 0;""".stripMargin)
+      if (rowType.byteSize > 0) {
+        sb.append(s"""
+      |  pull:
+      |    s_ = s;
+      |${flushCode}
+      |    return this->prepare_for_push();""".stripMargin)
       }
-      sb.append("    return this->prepare_for_push();\n")
-    }
-    sb.append("  }\n")
-    sb.append("};\n")
-    sb.append("\n")
-    sb.append("NativeObjPtr make_decoder(NativeStatus*, long decoderId) {\n")
-    sb.append("  if (decoderId == 0) return std::make_shared< Decoder<0> >();\n")
-    sb.append("  if (decoderId == 1) return std::make_shared< Decoder<1> >();\n")
-    sb.append("  return NativeObjPtr();\n")
-    sb.append("}\n")
-    sb.append("\n")
-    sb.append("ssize_t decode_until_done_or_need_push(NativeStatus*, long decoder, long region, long push_size) {\n")
-    sb.append("  auto obj = (DecoderBase*)decoder;\n")
-    sb.append("  struct timeval tv0, tv1;\n")
-    sb.append("  gettimeofday(&tv0, nullptr);\n")
-    sb.append("  obj->total_size_ += push_size;\n")
-    sb.append("  auto result = obj->decode_until_done_or_need_push((Region*)region, push_size);\n")
-    sb.append("  gettimeofday(&tv1, nullptr);\n")
-    sb.append("  obj->total_usec_ += 1000000L*(tv1.tv_sec - tv0.tv_sec) + (tv1.tv_usec - tv0.tv_usec);\n")
-    sb.append("  return result;\n")
-    sb.append("}\n")
-    sb.append("\n")
-    sb.append("ssize_t decode_one_byte(NativeStatus*, long decoder, long push_size) {\n")
-    sb.append("  auto obj = (DecoderBase*)decoder;\n")
-    sb.append("  obj->total_size_ += push_size;\n")
-    sb.append("  auto result = obj->decode_one_byte(push_size);\n")
-    sb.append("  if (result == 0) {\n")
-    sb.append("    double t = obj->total_usec_/1000000.0;\n")
-    sb.append("    double d = obj->total_size_/(1024.0*1024.0);\n")
-    sb.append("    if (t >= 0.001) {\n");
-    sb.append("      char logname[512]; sprintf(logname, \"/tmp/decode_%s.log\", obj->tag_);\n")
-    sb.append("      FILE* log = fopen(logname, \"a\");\n")
-    sb.append("      fprintf(log, \"DEBUG: cpu %.3fms for %.3fMB = %.3fMB/sec\\n\", 1000*t, d, d/t);\n")
-    sb.append("      fclose(log);\n")
-    sb.append("    }\n")
-    sb.append("  }\n")
-    sb.append("  return result;\n")
-    sb.append("}\n")
-    sb.append("\n")
-    sb.append("NAMESPACE_HAIL_MODULE_END\n")
+      sb.append(s"""
+      |  }
+      |};
+      |
+      |NativeObjPtr make_decoder(NativeStatus*, long decoderId) {
+      |  if (decoderId == 0) return std::make_shared< Decoder<0> >();
+      |  if (decoderId == 1) return std::make_shared< Decoder<1> >();
+      |  return NativeObjPtr();
+      |}
+      |
+      |ssize_t decode_until_done_or_need_push(NativeStatus*, long decoder, long region, long push_size) {
+      |  auto obj = (DecoderBase*)decoder;
+      |  struct timeval tv0, tv1;
+      |  gettimeofday(&tv0, nullptr);
+      |  obj->total_size_ += push_size;
+      |  auto result = obj->decode_until_done_or_need_push((Region*)region, push_size);
+      |  gettimeofday(&tv1, nullptr);
+      |  obj->total_usec_ += 1000000L*(tv1.tv_sec - tv0.tv_sec) + (tv1.tv_usec - tv0.tv_usec);
+      |  return result;
+      |}
+      |
+      |ssize_t decode_one_byte(NativeStatus*, long decoder, long push_size) {
+      |  auto obj = (DecoderBase*)decoder;
+      |  obj->total_size_ += push_size;
+      |  auto result = obj->decode_one_byte(push_size);
+      |  if (result == 0) {
+      |    double t = obj->total_usec_/1000000.0;
+      |    double d = obj->total_size_/(1024.0*1024.0);
+      |    if (t >= 0.001) {;
+      |      char logname[512]; sprintf(logname, \"/tmp/decode_%s.log\", obj->tag_);
+      |      FILE* log = fopen(logname, \"a\");
+      |      fprintf(log, \"DEBUG: cpu %.3fms for %.3fMB = %.3fMB/sec\\n\", 1000*t, d, d/t);
+      |      fclose(log);
+      |    }
+      |  }
+      |  return result;
+      |}
+      |
+      |NAMESPACE_HAIL_MODULE_END
+      |""".stripMargin)
   }
 }
 
