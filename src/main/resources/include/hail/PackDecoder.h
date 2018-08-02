@@ -103,6 +103,7 @@ public:
   }
   
   void analyze() {
+#ifdef MYSTATS
     std::map<double, std::vector<int32_t> > vals;
     ssize_t total = 0;
     for (auto& pair : freq_int32_) {
@@ -125,6 +126,7 @@ public:
       }
     }
     fclose(f);
+#endif
   }
   
   virtual ~DecoderBase() {

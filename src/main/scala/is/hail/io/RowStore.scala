@@ -1336,8 +1336,8 @@ object NativeDecode {
       |
       |ssize_t decode_one_byte(NativeStatus*, long decoder, long push_size) {
       |  auto obj = (DecoderBase*)decoder;
-      |  obj->total_size_ += push_size;
       |  auto result = obj->decode_one_byte(push_size);
+      |#if 0
       |  if (result == 0) {
       |    double t = obj->total_usec_/1000000.0;
       |    double d = obj->total_size_/(1024.0*1024.0);
@@ -1348,6 +1348,7 @@ object NativeDecode {
       |      fclose(log);
       |    }
       |  }
+      |#endif
       |  return result;
       |}
       |
