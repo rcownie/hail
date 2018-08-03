@@ -25,8 +25,7 @@
 #if 0
 #define D(fmt, ...) { \
   char buf[1024]; \
-  sprintf(buf, fmt, ##__VA_ARGS__); \
-  fprintf(stderr, "DEBUG: %s,%d: %s", __FILE__, __LINE__, buf); \
+  fprintf(stderr, "DEBUG: %s,%d: %s" fmt, __FILE__, __LINE__, ##_VA_ARGS__); \
 }
 #else
 #define D(fmt, ...) { }
@@ -46,6 +45,8 @@ const int kBuildTimeoutSecs = 120;
 // and produce a 20byte string of hex digits.  We also sprinkle
 // in some "salt" from a checksum of a tar of all header files, so
 // that any change to header files will force recompilation.
+
+// FIXME: on a 32bit system the size_t width of std::hash is too small
 
 std::string hash_two_strings(const std::string& a, const std::string& b) {
   auto hashA = std::hash<std::string>()(a);
@@ -143,13 +144,26 @@ std::string strip_suffix(const std::string& s, const char* suffix) {
 std::string get_cxx_name() {
   char* p = ::getenv("CXX");
   if (p) return std::string(p);
-  // We prefer clang because it has faster compile
-  auto s = run_shell_get_first_line("which clang");
-  if (strstr(s.c_str(), "clang")) return s;
-  s = run_shell_get_first_line("which g++");
-  if (strstr(s.c_str(), "g++")) return s;
+  auto s = run_shell_get_first_line("which c++");
+  if (strstr(s.c_str(), "c++")) return s;
   // The last guess is to just say "c++"
   return std::string("c++");
+}
+
+std::string get_cxx_std(const std::string& cxx) {
+  const char* standards[] = { "-std=c++17", "-std=c++14" };
+  int fd = ::open("/tmp/.hail_empty.cc", O_WRONLY|O_CREAT|O_TRUNC, 0666);
+  if (fd >= 0) ::close(fd);
+  for (int j = 0; j < 3; ++j) {
+    std::stringstream ss;
+    ss << cxx << " " << standards[j] << " /tmp/.hail_empty.cc 2>1";
+    auto s = run_shell_get_first_line(ss.str().c_str();
+    if (!strstr(s, "unrecognized") && !strstr(s, "invalid")) {
+      return standards[j];
+    }
+  }
+  // Default to pass "-std=c++11", a minimum requirement
+  return "-std=c++11";
 }
 
 class ModuleConfig {
@@ -161,6 +175,7 @@ class ModuleConfig {
   std::string ext_new_;
   std::string module_dir_;
   std::string cxx_name_;
+  std::string cxx_std_;
   std::string java_home_;
   std::string java_md_;
 
@@ -177,6 +192,7 @@ class ModuleConfig {
     ext_new_(".new"),
     module_dir_(getenv_with_default("HOME", "/tmp")+"/hail_modules"),
     cxx_name_(get_cxx_name()),
+    cxx_std_(get_cxx_std(cxx_name_),
     java_home_(get_java_home()),
     java_md_(is_darwin_ ? "darwin" : "linux") {
   }

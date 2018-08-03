@@ -1,9 +1,28 @@
+# This makefile builds libraries with various different compiler options,
+# in particular to build libraries compatible with the C++ ABI used
+# in g++-4.x, as well as the newer ABI used in g++-5.1 and later.
+#
+# The corresponding compiler flags are "-fabi-version=2" and
+# "-fabi-version=9".  There are other abi-versions which represent
+# only minor bugfixes from these. NativeCode.java's initialization
+# is responsible for choosing the most-recent-abi supported by the 
+# system's libstdc++.so.
+#
+# Binaries included in the release should also be compiled with 
+# appropriate -march flags to give a binary which can run on all
+# expected target machines.  "-march=x86-64" would be safe, but
+# I'm going with "sandybridge" since that's the first cpu with AVX,
+# and it was in the MacBook Pro released in Feb 2011 (followed
+# by IvyBridge in Jun 2012, Haswell in Oct 2013, Skylake Oct 2016,
+# and Kaby Lake Jun 2017).
+
 .PHONY: all test clean libsimdpp
 
 # If you want to add a new cpp file, like foo.cpp, to the library, add foo.o to
 # this list
 OBJECTS := \
-  ibs.o davies.o \
+  davies.o \
+  ibs.o \
   NativeCodeSuite.o \
   NativeLongFunc.o \
   NativeModule.o \
@@ -38,19 +57,8 @@ endif
 # Eventually we would like -std=c++17, but the CI machines have
 # compilers which only go to -std=c++11
 
-ifndef CXX
-  # clang is preferred because a) it's standard on Mac, and b) it compiles faster
-  CXX :=$(shell which clang 2>/dev/null)
-  ifeq ($(CXX),)
-    CXX :=$(shell which g++ 2>/dev/null)
-    ifeq ($(CXX),)
-      CXX := c++
-    endif
-  endif
-endif
-
-# append existing flags so they override our flags
-CXXFLAGS += -O3 -march=native $(CXXSTD) -Ilibsimdpp-2.0-rc2 -Wall -Werror
+# Append existing flags so they override our flags
+CXXFLAGS += -O3 -march=sandybridge $(CXXSTD) -Ilibsimdpp-2.0-rc2 -Wall -Werror
 CXXFLAGS += -fPIC -ggdb -fno-strict-aliasing
 CXXFLAGS += -I../resources/include -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/$(JAVA_MD)
 LIBFLAGS += -fvisibility=default
