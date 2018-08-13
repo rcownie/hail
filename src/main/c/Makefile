@@ -107,7 +107,7 @@ ifneq ($(SUBMAKE_NAME),abi_v2)
   LIBBOOT :=
 endif
 
-all: $(BUILD) debug $(LIBBOOT) $(LIBHAIL)
+all: $(BUILD) $(LIBBOOT) $(LIBHAIL)
 
 $(BUILD):
 	-mkdir -p $@
