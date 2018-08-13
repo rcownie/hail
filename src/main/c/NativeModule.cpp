@@ -51,7 +51,7 @@ std::string hash_two_strings(const std::string& a, const std::string& b) {
   uint64_t hashB = std::hash<std::string>()(b);
   if (sizeof(size_t) < 8) {
     // On a 32bit machine we need to work harder to get 80 bits
-    uint64_t hashC = std::hash<std::string>()(a+b);
+    uint64_t hashC = std::hash<std::string>()(a+"SmallChangeForThirdHash");
     hashA += (hashC << 32);
   }
   hashA ^= ALL_HEADER_CKSUM; // checksum from all header files
