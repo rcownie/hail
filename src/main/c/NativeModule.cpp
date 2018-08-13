@@ -2,13 +2,13 @@
 #include "hail/NativeModule.h"
 #include "hail/NativeObj.h"
 #include "hail/NativePtr.h"
-#include <assert.h>
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <jni.h>
 #include <dlfcn.h>
 #include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -46,13 +46,16 @@ const int kBuildTimeoutSecs = 120;
 // in some "salt" from a checksum of a tar of all header files, so
 // that any change to header files will force recompilation.
 
-// FIXME: on a 32bit system the size_t width of std::hash is too small
-
 std::string hash_two_strings(const std::string& a, const std::string& b) {
-  auto hashA = std::hash<std::string>()(a);
-  auto hashB = std::hash<std::string>()(b);
-  hashA ^= ALL_HEADER_CKSUM;
-  hashA ^= (0x3ac5*hashB);
+  uint64_t hashA = std::hash<std::string>()(a);
+  uint64_t hashB = std::hash<std::string>()(b);
+  if (sizeof(size_t) < 8) {
+    // On a 32bit machine we need to work harder to get 80 bits
+    uint64_t hashC = std::hash<std::string>()(a+b);
+    hashA += (hashC << 32);
+  }
+  hashA ^= ALL_HEADER_CKSUM; // checksum from all header files
+  hashA ^= (0x3ac5*hashB); // mix low bits of hashB into hashA
   hashB &= 0xffff;
   char buf[128];
   char* out = buf;
@@ -154,11 +157,11 @@ std::string get_cxx_std(const std::string& cxx) {
   const char* standards[] = { "-std=c++17", "-std=c++14" };
   int fd = ::open("/tmp/.hail_empty.cc", O_WRONLY|O_CREAT|O_TRUNC, 0666);
   if (fd >= 0) ::close(fd);
-  for (int j = 0; j < 3; ++j) {
+  for (int j = 0; j < 2; ++j) {
     std::stringstream ss;
     ss << cxx << " " << standards[j] << " /tmp/.hail_empty.cc 2>1";
-    auto s = run_shell_get_first_line(ss.str().c_str();
-    if (!strstr(s, "unrecognized") && !strstr(s, "invalid")) {
+    auto s = run_shell_get_first_line(ss.str().c_str());
+    if (!strstr(s.c_str(), "unrecognized") && !strstr(s.c_str(), "invalid")) {
       return standards[j];
     }
   }
@@ -192,7 +195,7 @@ class ModuleConfig {
     ext_new_(".new"),
     module_dir_(getenv_with_default("HOME", "/tmp")+"/hail_modules"),
     cxx_name_(get_cxx_name()),
-    cxx_std_(get_cxx_std(cxx_name_),
+    cxx_std_(get_cxx_std(cxx_name_)),
     java_home_(get_java_home()),
     java_md_(is_darwin_ ? "darwin" : "linux") {
   }
@@ -332,10 +335,8 @@ private:
     fprintf(f, "MODULE    := hm_%s\n", key_.c_str());
     fprintf(f, "MODULE_SO := $(MODULE)%s\n", config.ext_lib_.c_str());
     fprintf(f, "CXX       := %s\n", config.cxx_name_.c_str());
-    // Downgrading from -std=c++14 to -std=c++11 for CI w/ old compilers
-    const char* cxxstd = (strstr(config.cxx_name_.c_str(), "clang") ? "-std=c++17" : "-std=c++11");
     fprintf(f, "CXXFLAGS  := \\\n");
-    fprintf(f, "  %s -fPIC -march=native -fno-strict-aliasing -Wall \\\n", cxxstd);
+    fprintf(f, "  %s -fPIC -march=native -fno-strict-aliasing -Wall \\\n", config.cxx_std_.c_str());
     auto java_include = strip_suffix(config.java_home_, "/jre") + "/include";
     fprintf(f, "  -I%s \\\n", java_include.c_str());
     fprintf(f, "  -I%s/%s \\\n", java_include.c_str(), config.java_md_.c_str());
