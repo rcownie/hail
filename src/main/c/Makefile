@@ -49,13 +49,16 @@ endif
 
 ifeq ($(UNAME_S),Linux)
   JAVA_MD :=linux
-  # Eventually we would like -std=c++17, but the CI machines have
-  # compilers which only go to -std=c++11.  
-  CXXSTD := -std=c++11
 else
   JAVA_MD :=darwin
-  CXXSTD := -std=c++17
 endif
+
+# Currently source code for libhail only uses features up to C++11. The
+# intention is to support C++17 for dynamic-compiled code eventually, but 
+# to maximize compatibility with different compilers/platforms we don't
+# require that here.
+
+CXXSTD := -std=c++11
 
 # Check for any inherited CXXFLAGS which could interfere with
 # ABI compatibility.  Such flags will cause a warning, then will be
