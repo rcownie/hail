@@ -21,7 +21,20 @@ public class NativeCode {
       if (isLinux()) {
         // libhail_abi_v9 works with libstdc++ 6.0.21 (g++-5.x) and later.
         // libhail_abi_v2 works with systems based on g++-3.4.x to g++-4.9.x
+        Process child = Runtime.getRuntime().exec("/usr/bin/c++ -dumpversion");
+        BufferedReader s = new BufferedReader(new InputStreamReader(child.getInputStream()));
+        String version = s.readLine();
+        child.waitFor();
         hailName = "hail_abi_v9";
+        if (version != null) {
+          int idx = version.indexOf(".", 0);
+          if (idx > 0) {
+            int major = Integer.parseInt(version.substring(0, idx));
+            if (major <= 4) { // Use abi_v2 for g++-3.4.0 to g++-4.9.x
+              hailName = "hail_abi_v2";
+            }
+          }
+        }
       } else {
         // Since MacOS 10.9 Mavericks (Oct 2013) the default library is libc++
         // rather than libstdc++.  I believe all versions of libc++ support
