@@ -5,7 +5,7 @@
 
 ifndef SUBMAKE_NAME
 
-.PHONY top all clean debug test
+.PHONY: top all clean debug test
 
 top: all
 
@@ -23,7 +23,8 @@ BUILD_FORCE := $(shell mkdir -p $(BUILD))
 # If you want to add a new cpp file, like foo.cpp, to the library, add foo.o to
 # this list
 OBJECTS := \
-  ibs.o davies.o \
+  davies.o \
+  ibs.o \
   NativeCodeSuite.o \
   NativeLongFunc.o \
   NativeModule.o \
@@ -34,13 +35,10 @@ OBJECTS := \
 UNAME_S := $(shell uname -s)
 UNAME_P := $(shell uname -p)
 
-ifeq ($(UNAME_S),Darwin)
-  # Linux needs a separate libboot.so so that libhail.so can be loaded
-  # with RTLD_GLOBAL.  On MacOS we only need libhail.dylib
-  OBJECTS += NativeBoot.o
-endif
-
 BUILD_OBJECTS := $(OBJECTS:%=$(BUILD)/%)
+
+$(BUILD)/%.o: %.cpp
+	$(CXX) -o $@ $(CXXFLAGS) -c $<
 
 ifndef JAVA_HOME
   TMP :=$(shell java -XshowSettings:properties -version 2>&1 | fgrep -i java.home)
@@ -109,7 +107,10 @@ ifneq ($(SUBMAKE_NAME),abi_v2)
   LIBBOOT :=
 endif
 
-all: debug $(LIBBOOT) $(LIBHAIL)
+all: $(BUILD) debug $(LIBBOOT) $(LIBHAIL)
+
+$(BUILD):
+	-mkdir -p $@
 
 debug:
 	echo "make debug SUBMAKE_NAME=$(SUBMAKE_NAME)"
@@ -134,7 +135,7 @@ clean:
 $(BUILD)/headers: $(shell /usr/bin/find ../resources/include -name "*.h")
 	touch $@
 
-$(BUILD_OBJECTS): headers
+$(BUILD_OBJECTS) $(BUILD)/NativeBoot.o: $(BUILD)/headers
 
 ALL_HEADER_FILES := $(shell /usr/bin/find ../resources/include -name "*.h")
 ALL_HEADER_CKSUM := $(shell /bin/cat $(ALL_HEADER_FILES) | /usr/bin/cksum | /usr/bin/cut -d " " -f 1)
@@ -160,7 +161,7 @@ $(LIBBOOT): $(BUILD)/NativeBoot.o
 	cp -p $@ $(PREBUILT)/$@
 endif
 
-$(LIBHAIL): libsimdpp-2.0-rc2 $(OBJECTS)
+$(LIBHAIL): libsimdpp-2.0-rc2 $(BUILD_OBJECTS)
 	-mkdir -p $(basename $(LIBHAIL))
 	$(CXX) $(LIBFLAGS) $(LIBDIRS) $(CXXFLAGS) $(BUILD_OBJECTS) -o $@ 
 	cp -p $@ $(PREBUILT)/$@
