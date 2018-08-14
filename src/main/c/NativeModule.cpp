@@ -1,4 +1,3 @@
-// src/main/c/NativeModule.cpp - native funcs for Scala NativeModule
 #include "hail/NativeModule.h"
 #include "hail/NativeObj.h"
 #include "hail/NativePtr.h"
@@ -22,15 +21,6 @@
 #include <unordered_map>
 #include <vector>
 
-#if 0
-#define D(fmt, ...) { \
-  char buf[1024]; \
-  fprintf(stderr, "DEBUG: %s,%d: %s" fmt, __FILE__, __LINE__, ##_VA_ARGS__); \
-}
-#else
-#define D(fmt, ...) { }
-#endif
-
 namespace hail {
 
 namespace {
@@ -39,21 +29,38 @@ namespace {
 const int kFilePollMicrosecs = 50000;
 
 // Timeout for compile/link of a DLL
-const int kBuildTimeoutSecs = 120;
+const int kBuildTimeoutSecs = 300;
 
 // A quick-and-dirty way to get a hash of two strings, take 80bits,
 // and produce a 20byte string of hex digits.  We also sprinkle
 // in some "salt" from a checksum of a tar of all header files, so
 // that any change to header files will force recompilation.
+//
+// The shorter string (corresponding to options), may have only a
+// few distinct values, so we need to mix it up with the longer
+// string in various ways.
+
+std::string even_bytes(const std::string& a) {
+  std::stringstream ss;
+  size_t len = a.length();
+  for (size_t j = 0; j < len; j += 2) {
+    ss << a[j];
+  }
+  return ss.str();
+}
 
 std::string hash_two_strings(const std::string& a, const std::string& b) {
-  uint64_t hashA = std::hash<std::string>()(a);
-  uint64_t hashB = std::hash<std::string>()(b);
+  bool a_shorter = (a.length() < b.length());
+  const std::string* shorter = (a_shorter ? &a : &b);
+  const std::string* longer  = (a_shorter ? &b : &a);
+  uint64_t hashA = std::hash<std::string>()(*longer);
+  uint64_t hashB = std::hash<std::string>()(*shorter + even_bytes(*longer));
   if (sizeof(size_t) < 8) {
     // On a 32bit machine we need to work harder to get 80 bits
-    uint64_t hashC = std::hash<std::string>()(a+"SmallChangeForThirdHash");
+    uint64_t hashC = std::hash<std::string>()(*longer + "SmallChangeForThirdHash");
     hashA += (hashC << 32);
   }
+  if (a_shorter) hashA ^= 0xff; // order of strings should change result
   hashA ^= ALL_HEADER_CKSUM; // checksum from all header files
   hashA ^= (0x3ac5*hashB); // mix low bits of hashB into hashA
   hashB &= 0xffff;
@@ -628,9 +635,7 @@ void NativeModule::find_LongFuncL(
     NATIVE_ERROR(st, 1001, "ErrModuleNotFound");
   } else {
     auto qualName = to_qualified_name(env, key_, nameJ, numArgs, is_global_, true);
-    D("is_global %s qualName \"%s\"\n", is_global_ ? "true" : "false", qualName.c_str());    
     funcAddr = ::dlsym(is_global_ ? RTLD_DEFAULT : dlopen_handle_, qualName.c_str());
-    D("dlsym -> funcAddr %p\n", funcAddr);
     if (!funcAddr) {
       fprintf(stderr, "ErrLongFuncNotFound \"%s\"\n", qualName.c_str());
       NATIVE_ERROR(st, 1003, "ErrLongFuncNotFound dlsym(\"%s\")", qualName.c_str());
