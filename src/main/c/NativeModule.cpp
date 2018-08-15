@@ -8,6 +8,7 @@
 #include <jni.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -283,6 +284,47 @@ class ModuleCache {
 
 ModuleCache module_cache(32);
 
+// If there are multiple file descriptors referring to the same file, then
+// flock behavior depends on whether the filesystem is local or NFS.
+// To keep to the safe core functions of flock(), we map each filename to
+// a single LockFileState protected by a mutex, and guarantee that we'll
+// have at most one file descriptor on each lock file.
+
+class LockFileState {
+ public:
+  std::mutex mutex_;
+  int fd_;
+ public:
+  LockFileState() :
+    mutex_(),
+    fd_(-1) {
+  }
+  
+  ~LockFileState() {
+    if (fd_ >= 0) ::close(fd_);
+  }
+};
+
+class AllLockFiles {
+ private:
+  std::mutex mutex_;
+  std::unordered_map<std::string, std::shared_ptr<LockFileState>> map_;
+  
+ public:
+  std::shared_ptr<LockFileState> find(const std::string& file) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto& ptr = map_[file];
+    if (!ptr) {
+      ptr = std::make_shared<LockFileState>();
+    }
+    return ptr;
+  }
+public:
+  
+};
+
+AllLockFiles all_lock_files;
+
 } // end anon
 
 // ModuleBuilder deals with compiling/linking source code to a DLL,
@@ -357,11 +399,9 @@ private:
     fprintf(f, "\n");
     // top target is the .so
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
-    fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
-    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
-    fprintf(f, "\t  /bin/ln -f $(MODULE).new $@ ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).lock\n");
+    fprintf(f, "\t-[ -f $(MODULE).lock ] || /usr/bin/touch $(MODULE).lock ; \\\n");
+    fprintf(f, "\t  /usr/bin/flock -x $(MODULE).lock /bin/ln -f $(MODULE).new $@ ; \\\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).new\n");
     fprintf(f, "\n");
     // build .o from .cpp
     fprintf(f, "$(MODULE).o: $(MODULE).cpp\n");
@@ -372,12 +412,10 @@ private:
     fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
     fprintf(f, "\t  echo FAIL ; exit 1 ; \\\n");
     fprintf(f, "\tfi\n");
-    fprintf(f, "\t-[ -f $(MODULE).lockX ] || /usr/bin/touch $(MODULE).lockX ; \\\n");
-    fprintf(f, "\t  while ! /bin/ln $(MODULE).lockX $(MODULE).lock 2>/dev/null ; do sleep 0.1 ; done ; \\\n");
-    fprintf(f, "\t  /bin/ln -f $(MODULE).tmp $(MODULE).new ; \\\n");
+    fprintf(f, "\t-[ -f $(MODULE).lock ] || /usr/bin/touch $(MODULE).lock ; \\\n");
+    fprintf(f, "\t  /usr/bin/flock -x $(MODULE).lock /bin/ln -f $(MODULE).tmp $(MODULE).new ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).tmp ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).err ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).lock\n");
+    fprintf(f, "\t  /bin/rm -f $(MODULE).err\n");
     fprintf(f, "\n");
     fclose(f);
   }
@@ -400,7 +438,10 @@ public:
     ss << "/usr/bin/make -B -C " << config.module_dir_ << " -f " << hm_mak_;
     ss << " 1>/dev/null &";
     int rc = system(ss.str().c_str());
-    if (rc < 0) perror("system");
+    if (rc < 0) {
+      perror("system");
+      ::unlink(hm_new_.c_str());
+    }
     return true;
   }
 };
@@ -517,33 +558,22 @@ NativeModule::~NativeModule() {
 // "rm ~/hail_modules/*" to clear the cache and start again.
 
 void NativeModule::lock() {
-  auto target = (lock_name_ + std::string("X"));
-  for (;;) {
-    // Creating a link is atomic
-    errno = 0;
-    int rc = ::link(target.c_str(), lock_name_.c_str());
-    int e = errno;
-    if (rc == 0) {
-      break;
-    } else if (e == EEXIST) { // Link already existed
-      struct stat st;
-      rc = ::stat(lock_name_.c_str(), &st);
-      if ((rc == 0) && (st.st_ctime+20 < ::time(nullptr))) {
-        fprintf(stderr, "WARNING: force break old lock %s\n", lock_name_.c_str());
-        ::unlink(lock_name_.c_str());
-      }
-    } else if (e == ENOENT) { // Need to create the target
-      int fd = ::open(target.c_str(), O_WRONLY|O_CREAT|O_EXCL, 0666);
-      if (fd >= 0) ::close(fd);
-      continue;
-    }
-    // The link already exists
-    usleep(kFilePollMicrosecs);
+  auto state = all_lock_files.find(lock_name_);
+  state->mutex_.lock(); // mutex from threads in this process
+  if (state->fd_ < 0) {
+    state->fd_ = ::open(lock_name_.c_str(), O_WRONLY|O_CREAT, 0666);
   }
+  ::flock(state->fd_, LOCK_EX); // mutex from other processes
 }
 
 void NativeModule::unlock() {
-  ::unlink(lock_name_.c_str());
+  auto state = all_lock_files.find(lock_name_);
+  // It seems this ought to work just by closing the fd, but
+  // tests (on Linux) show this explicit unlock is needed. 
+  ::flock(state->fd_, LOCK_UN);
+  ::close(state->fd_);
+  state->fd_ = -1;
+  state->mutex_.unlock();
 }
 
 void NativeModule::usleep_without_lock(int64_t usecs) {

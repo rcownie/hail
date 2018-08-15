@@ -14,6 +14,7 @@ public class NativeCode {
   private static String hailName;
   
   static {
+    hailName = "hail_abi_v9";
     try {
       // libboot.so has native methods to call dlopen/dlclose
       String libBoot = libToLocalFile("libboot");
@@ -21,25 +22,32 @@ public class NativeCode {
       if (isLinux()) {
         // libhail_abi_v9 works with libstdc++ 6.0.21 (g++-5.x) and later.
         // libhail_abi_v2 works with systems based on g++-3.4.x to g++-4.9.x
-        Process child = Runtime.getRuntime().exec(
-          "if [ -n \"$CXX\" ]; then $CXX --version; else; c++ --version; fi"
-        );
-        BufferedReader s = new BufferedReader(new InputStreamReader(child.getInputStream()));
-        String version = s.readLine();
-        child.waitFor();
+        String cxx = System.getenv("CXX");
+        if (cxx == null) cxx = "c++";
+        String version = null;
+        try {
+          Process child = Runtime.getRuntime().exec(cxx + " --version");
+          BufferedReader s = new BufferedReader(new InputStreamReader(child.getInputStream()));
+          version = s.readLine();
+          child.waitFor();
+        } catch (Throwable err) {
+          // Couldn't run c++
+        }
         if (version != null) {
           boolean isClang = (version.indexOf("clang version", 0) >= 0);
           int idx = version.indexOf(".", 0);
           if (idx > 0) {
-            int major = Integer.parseInt(version.substring(0, idx));
-            if (isClang && (major <= 3)) {
+            int j = idx-1;
+            while ((j >= 0) && ('0' <= version.charAt(j)) && (version.charAt(j) <= '9')) j -= 1;
+            int major = Integer.parseInt(version.substring(j+1, idx));
+            if (isClang) {
               // We'll try to be conservative for clang-3.x versions, from the really
               // early days of C++11.  But it's much more likely it will be clang-4.x
               // or later which will use the newer abi_v9.
-              hailName = "hail_abi_v2";
-            }
-            if (!isClang && (major <= 4)) { // Use abi_v2 for g++-3.4.0 to g++-4.9.x
-              hailName = "hail_abi_v2";
+              if (major <= 3) hailName = "hail_abi_v2";
+            } else {
+              // Use abi_v2 for g++-3.4.0 to g++-4.9.x
+              if (major <= 4) hailName = "hail_abi_v2";
             }
           }
         }
