@@ -22,45 +22,48 @@ endif
 
 else
 
+UNAME_S :=$(shell uname -s)
+UNAME_P :=$(shell uname -p)
+
 # For system commands, we prefer to get them from the "standard" absolute
 # paths to avoid possible interactions with non-standard executables or
 # scripts somewhere on the $PATH.  But if we can't find them where we expect,
 # we'll issue a warning and use whatever is on $PATH.
 
-CP :=$(shell ls /bin/cp)
+CP :=$(shell ls /bin/cp 2>/dev/null)
 ifeq ($(CP),)
   CP :=$(shell which cp)
-  $(warning "WARNING: /bin/cp not found, using $(CP)")
+  $(warning WARNING: /bin/cp not found, using $(CP))
 endif
 
-CURL :=$(shell ls /usr/bin/curl)
+CURL :=$(shell ls /usr/bin/curl 2>/dev/null)
 ifeq ($(CURL),)
   CURL :=$(shell which curl)
-  $(warning "WARNING: /usr/bin/curl not found, using $(CURL)")
+  $(warning WARNING: /usr/bin/curl not found, using $(CURL))
 endif
 
-MKDIR :=$(shell ls /bin/mkdir)
+MKDIR :=$(shell ls /bin/mkdir 2>/dev/null)
 ifeq ($(MKDIR),)
   MKDIR :=$(shell which mkdir)
-  $(warning "WARNING: /bin/mkdir not found, using $(MKDIR)")
+  $(warning WARNING: /bin/mkdir not found, using $(MKDIR))
 endif
 
-RM :=$(shell ls /bin/rm)
+RM :=$(shell ls /bin/rm 2>/dev/null)
 ifeq ($(RM),)
   RM :=$(shell which rm)
-  $(warning "WARNING: /bin/rm not found, using $(RM)")
+  $(warning WARNING: /bin/rm not found, using $(RM))
 endif
 
-TAR :=$(shell ls /usr/bin/tar)
+TAR :=$(shell ls /bin/tar /usr/bin/tar 2>/dev/null | head -1)
 ifeq ($(TAR),)
   TAR :=$(shell which tar)
-  $(warning "WARNING: /usr/bin/tar not found, using $(TAR)")
+  $(warning WARNING: /bin/tar and /usr/bin/tar not found, using $(TAR))
 endif
 
 TOUCH :=$(shell ls /usr/bin/touch)
 ifeq ($(TOUCH),)
   TOUCH :=$(shell which touch)
-  $(warning "WARNING: /usr/bin/touch not found, using $(TOUCH)")
+  $(warning WARNING: /usr/bin/touch not found, using $(TOUCH))
 endif
 
 .PHONY: all clean debug test libsimdpp
@@ -79,9 +82,6 @@ OBJECTS := \
   NativePtr.o \
   NativeStatus.o \
   Region.o
-
-UNAME_S := $(shell uname -s)
-UNAME_P := $(shell uname -p)
 
 BUILD_OBJECTS := $(OBJECTS:%=$(BUILD)/%)
 

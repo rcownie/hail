@@ -54,9 +54,9 @@ class hstring {
   char* buf_;
 
  private:
-  init(const char* s, size_t len) {
+  void init(const char* s, size_t len) {
     length_ = len;
-    buf_size_ = ((length_+1+0xf) & ~0xf);
+    buf_size_ = ((len+1+0xf) & ~0xf);
     buf_ = (char*)malloc(buf_size_);
     memcpy(buf_, s, len);
     buf_[len] = 0;
@@ -67,26 +67,24 @@ class hstring {
     if (len+1 > buf_size_) {
       if (buf_) free(buf_);
       buf_size_ = ((length_+1+0xf) & ~0xf);
-      buf_ = (chasr*)malloc(buf_size_);
+      buf_ = (char*)malloc(buf_size_);
     }
     memcpy(buf_, s, len);
     buf_[len] = 0;
     return *this;
   }
-  
-  ~hstring() {
-    if (buf_) free(buf);
-  }
- 
+
  public:
   hstring() { init(nullptr, 0); }
   
-  hstring(const hstring& b) { init(b.buf_, b.length_); 
+  hstring(const hstring& b) { init(b.buf_, b.length_); }
   
-  hstring(const char* s) { init(s, strlen(s); }
+  hstring(const char* s) { init(s, strlen(s)); }
   
   hstring(const std::string& s) { init(s.data(), s.length()); }
   
+  ~hstring() { if (buf_) free(buf_); }
+
   hstring& operator=(const hstring& b) { return reinit(b.buf_, b.length_); }
     
   hstring& operator=(const char* s) { return reinit(s, strlen(s)); }
