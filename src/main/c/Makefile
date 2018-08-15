@@ -9,15 +9,29 @@ ifndef SUBMAKE_NAME
 
 top: all
 
-CXX_V9_ERRS :=$(shell echo "" >tmp.cpp; $(CXX) -fabi-version=9 -c tmp.cpp 2>tmp.err; rm -f tmp.cpp tmp.o 2>/dev/null; cat tmp.err)
+CXX_VERSION :=$(shell $(CXX) --version | head -1)
+ifneq ($(filter clang llvm LLVM,$(CXX_VERSION)),)
+  CXX_TYPE :=clang
+else
+  CXX_TYPE :=not_clang
+endif
+
+CXX_ABI_V2_ERRS :=$(shell echo "" >a.cpp; $(CXX) -fabi-version=2 -c a.cpp 2>a.err; rm -f a.cpp a.o 2>/dev/null; cat a.err)
+CXX_ABI_V9_ERRS :=$(shell echo "" >a.cpp; $(CXX) -fabi-version=9 -c a.cpp 2>a.err; rm -f a.cpp a.o 2>/dev/null; cat a.err)
 
 all clean debug test:
+ifeq ($(CXX_ABI_V2_ERRS),)
+	@echo "Using $(CXX_TYPE) compiler (probably g++) for libhail_abi_v2"
 	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v2 SUBMAKE_CXXFLAGS=-fabi-version=2 $@
-ifneq ($(CXX_V9_ERRS),)
-	@echo "CXX_V9_ERRS $(CXX_V9_ERRS)"
-	@echo "WARNING: $(CXX) only supports older C++ ABI, libraries for abi_v9 will not be built"
 else
+	@echo "WARNING: $(CXX) fails with -fabi-version=2 so cannot build libhail_abi_v2"
+endif
+ifeq ($(CXX_ABI_V9_ERRS),)
+	@echo "Using $(CXX_TYPE) compiler (probably g++) for libhail_abi_v9"
 	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v9 SUBMAKE_CXXFLAGS=-fabi-version=9 $@
+else
+	@echo "WARNING: $(CXX) fails with -fabi-version=9 so libhail_abi_v9 has default abi"
+	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v9 SUBMAKE_CXXFLAGS= $@
 endif
 
 else
@@ -154,12 +168,6 @@ ifeq ($(UNAME_S),Darwin)
   LIBFLAGS += -dynamiclib -Wl,-undefined,dynamic_lookup
   LIBBOOT := lib/darwin/libboot.dylib
   LIBHAIL := lib/darwin/libhail_$(SUBMAKE_NAME).dylib
-endif
-
-# The libboot will load first and is always an abi_v2 so that it works with
-# either old or new libstdc++
-ifneq ($(SUBMAKE_NAME),abi_v2)
-  LIBBOOT :=
 endif
 
 all: $(BUILD) $(LIBBOOT) $(LIBHAIL)
