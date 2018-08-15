@@ -562,6 +562,7 @@ void NativeModule::lock() {
   state->mutex_.lock(); // mutex from threads in this process
   if (state->fd_ < 0) {
     state->fd_ = ::open(lock_name_.c_str(), O_WRONLY|O_CREAT, 0666);
+    ::fcntl(state->fd_, F_SETFD, FD_CLOEXEC); // not inherited by children
   }
   ::flock(state->fd_, LOCK_EX); // mutex from other processes
 }
