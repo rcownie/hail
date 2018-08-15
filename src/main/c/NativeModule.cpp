@@ -177,6 +177,13 @@ std::string get_cxx_std(const std::string& cxx) {
   return "-std=c++11";
 }
 
+std::string get_perl_name() {
+  auto s = run_shell_get_first_line("if [ -x /usr/bin/perl ]; then; echo /usr/bin/perl; else; which perl; fi");
+  if (strstr(s.c_str(), "perl")) return s;
+  // The last guess is to just say "perl"
+  return std::string("perl");
+}
+
 class ModuleConfig {
  public:
   bool is_darwin_;
@@ -189,6 +196,7 @@ class ModuleConfig {
   std::string cxx_std_;
   std::string java_home_;
   std::string java_md_;
+  std::string perl_name_;
 
  public:
   ModuleConfig() :
@@ -205,7 +213,8 @@ class ModuleConfig {
     cxx_name_(get_cxx_name()),
     cxx_std_(get_cxx_std(cxx_name_)),
     java_home_(get_java_home()),
-    java_md_(is_darwin_ ? "darwin" : "linux") {
+    java_md_(is_darwin_ ? "darwin" : "linux"),
+    perl_name_(get_perl_name()) {
   }
   
   std::string get_lock_name(const std::string& key) {
@@ -383,6 +392,7 @@ private:
     std::string javaMD = config.java_md_;
     fprintf(f, "MODULE    := hm_%s\n", key_.c_str());
     fprintf(f, "MODULE_SO := $(MODULE)%s\n", config.ext_lib_.c_str());
+    fprintf(f, "PERL      := %s\n", config.perl_name_.c_str());
     fprintf(f, "CXX       := %s\n", config.cxx_name_.c_str());
     fprintf(f, "CXXFLAGS  := \\\n");
     fprintf(f, "  %s -fPIC -march=native -fno-strict-aliasing -Wall \\\n", config.cxx_std_.c_str());
@@ -399,9 +409,7 @@ private:
     fprintf(f, "\n");
     // top target is the .so
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
-    fprintf(f, "\t-[ -f $(MODULE).lock ] || /usr/bin/touch $(MODULE).lock ; \\\n");
-    fprintf(f, "\t  /usr/bin/flock -x $(MODULE).lock /bin/ln -f $(MODULE).new $@ ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).new\n");
+    fprintf(f, "\t$(PERL) -e \"rename $(MODULE).new, $@\"\n");
     fprintf(f, "\n");
     // build .o from .cpp
     fprintf(f, "$(MODULE).o: $(MODULE).cpp\n");
@@ -412,9 +420,7 @@ private:
     fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
     fprintf(f, "\t  echo FAIL ; exit 1 ; \\\n");
     fprintf(f, "\tfi\n");
-    fprintf(f, "\t-[ -f $(MODULE).lock ] || /usr/bin/touch $(MODULE).lock ; \\\n");
-    fprintf(f, "\t  /usr/bin/flock -x $(MODULE).lock /bin/ln -f $(MODULE).tmp $(MODULE).new ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).tmp ; \\\n");
+    fprintf(f, "\t$(PERL) -e \"rename $(MODULE).tmp, $(MODULE).new\" ; \\\n");
     fprintf(f, "\t  /bin/rm -f $(MODULE).err\n");
     fprintf(f, "\n");
     fclose(f);
@@ -438,9 +444,9 @@ public:
     ss << "/usr/bin/make -B -C " << config.module_dir_ << " -f " << hm_mak_;
     ss << " 1>/dev/null &";
     int rc = system(ss.str().c_str());
-    if (rc < 0) {
+    if (rc == -1) {
       perror("system");
-      ::unlink(hm_new_.c_str());
+      ::unlink(hm_new_.c_str()); // the build is not running, so recover ASAP
     }
     return true;
   }
