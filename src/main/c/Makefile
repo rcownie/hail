@@ -12,11 +12,12 @@ top: all
 CXX_V9_ERRS :=$(shell echo "" >tmp.cpp; $(CXX) -fabi-version=9 -c tmp.cpp 2>tmp.err; rm -f tmp.cpp tmp.o 2>/dev/null; cat tmp.err)
 
 all clean debug test:
-	$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v2 SUBMAKE_CXXFLAGS=-fabi-version=2 $@
+	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v2 SUBMAKE_CXXFLAGS=-fabi-version=2 $@
 ifneq ($(CXX_V9_ERRS),)
+	@echo "CXX_V9_ERRS $(CXX_V9_ERRS)"
 	@echo "WARNING: $(CXX) only supports older C++ ABI, libraries for abi_v9 will not be built"
 else
-	$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v9 SUBMAKE_CXXFLAGS=-fabi-version=9 $@
+	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v9 SUBMAKE_CXXFLAGS=-fabi-version=9 $@
 endif
 
 else
@@ -85,7 +86,7 @@ UNAME_P := $(shell uname -p)
 BUILD_OBJECTS := $(OBJECTS:%=$(BUILD)/%)
 
 $(BUILD)/%.o: %.cpp
-	$(CXX) -o $@ $(CXXFLAGS) -c $<
+	$(CXX) -o $@ $(CXXFLAGS) $(SUBMAKE_CXXFLAGS) -c $<
 
 ifndef JAVA_HOME
   TMP :=$(shell java -XshowSettings:properties -version 2>&1 | fgrep -i java.home)
