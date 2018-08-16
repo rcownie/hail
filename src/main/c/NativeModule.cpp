@@ -388,6 +388,22 @@ private:
   }
   
   void write_mak() {
+    // When we replace foo.new, or foo.{so,dylib}, that must be done
+    // with an atomic-rename operation which guarantees not to leave any
+    // window when there is no foo.new.  On Linux, "mv -f" is atomic, but
+    // on MacOS it isn't.  After some experimentation, we now use perl's
+    // rename command, with the belief that on POSIX-compatible systems
+    // this will be implemented as a "rename" system-call, which in POSIX
+    // semantics is guaranteed to have the required property that the
+    // destination file always exists.
+    //
+    // Since perl has a nasty habit of doing funny things to some characters
+    // in non-quoted strings, we take care to quote the filenames.
+    //
+    // It's enormously confusing to be writing C++ to write a makefile
+    // which contains embedded bash scripts which call perl.  That was not
+    // the original design, but issues of MacOS-vs-Linux portability left
+    // only a narrow path to a working solution.
     FILE* f = fopen(hm_mak_.c_str(), "w");
     if (!f) { perror("fopen"); return; }
     std::string javaHome = config.java_home_;

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string>
 
 // Declare a function to be exported from a DLL with "C" linkage
 

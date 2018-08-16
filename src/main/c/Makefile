@@ -200,7 +200,7 @@ $(BUILD)/headers: $(shell /usr/bin/find ../resources/include -name "*.h")
 $(BUILD_OBJECTS) $(BUILD)/NativeBoot.o: $(BUILD)/headers
 
 ALL_HEADER_FILES := $(shell /usr/bin/find ../resources/include -name "*.h")
-ALL_HEADER_CKSUM := $(shell /bin/cat $(ALL_HEADER_FILES) | /usr/bin/cksum | /usr/bin/cut -d " " -f 1)
+ALL_HEADER_CKSUM := $(shell $(CXX) --version >.cxx.vsn ; /bin/cat .cxx.vsn $(ALL_HEADER_FILES) | /usr/bin/cksum | /usr/bin/cut -d " " -f 1)
 
 $(BUILD)/NativeModule.o: NativeModule.cpp
 	$(CXX) $(CXXFLAGS) -DALL_HEADER_CKSUM=$(ALL_HEADER_CKSUM)UL -c NativeModule.cpp -o $@
