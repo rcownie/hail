@@ -178,8 +178,10 @@ std::string get_cxx_std(const std::string& cxx) {
 }
 
 std::string get_perl_name() {
-  auto s = run_shell_get_first_line("if [ -x /usr/bin/perl ]; then; echo /usr/bin/perl; else; which perl; fi");
-  if (strstr(s.c_str(), "perl")) return s;
+  std::string name("/usr/bin/perl");
+  if (file_exists(name)) return name;
+  name = run_shell_get_first_line("which perl 2>/dev/null");
+  if (strstr(name.c_str(), "perl")) return name;
   // The last guess is to just say "perl"
   return std::string("perl");
 }
@@ -409,7 +411,7 @@ private:
     fprintf(f, "\n");
     // top target is the .so
     fprintf(f, "$(MODULE_SO): $(MODULE).o\n");
-    fprintf(f, "\t$(PERL) -e \"rename $(MODULE).new, $@\"\n");
+    fprintf(f, "\t$(PERL) -e 'rename \"$(MODULE).new\", \"$@\"'\n");
     fprintf(f, "\n");
     // build .o from .cpp
     fprintf(f, "$(MODULE).o: $(MODULE).cpp\n");
@@ -420,8 +422,8 @@ private:
     fprintf(f, "\t  /bin/rm -f $(MODULE).new ; \\\n");
     fprintf(f, "\t  echo FAIL ; exit 1 ; \\\n");
     fprintf(f, "\tfi\n");
-    fprintf(f, "\t$(PERL) -e \"rename $(MODULE).tmp, $(MODULE).new\" ; \\\n");
-    fprintf(f, "\t  /bin/rm -f $(MODULE).err\n");
+    fprintf(f, "\t-/bin/rm -f $(MODULE).err\n");
+    fprintf(f, "\t$(PERL) -e 'rename \"$(MODULE).tmp\", \"$(MODULE).new\"'\n");
     fprintf(f, "\n");
     fclose(f);
   }
@@ -445,6 +447,7 @@ public:
     ss << " 1>/dev/null &";
     int rc = system(ss.str().c_str());
     if (rc == -1) {
+      fprintf(stderr, "DEBUG: system() -> -1\n");
       perror("system");
       ::unlink(hm_new_.c_str()); // the build is not running, so recover ASAP
     }

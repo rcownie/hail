@@ -20,18 +20,18 @@ CXX_ABI_V2_ERRS :=$(shell echo "" >a.cpp; $(CXX) -fabi-version=2 -c a.cpp 2>a.er
 CXX_ABI_V9_ERRS :=$(shell echo "" >a.cpp; $(CXX) -fabi-version=9 -c a.cpp 2>a.err; rm -f a.cpp a.o 2>/dev/null; cat a.err)
 
 all clean debug test:
-ifeq ($(CXX_ABI_V2_ERRS),)
-	@echo "Using $(CXX_TYPE) compiler (probably g++) for libhail_abi_v2"
-	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v2 SUBMAKE_CXXFLAGS=-fabi-version=2 $@
-else
-	@echo "WARNING: $(CXX) fails with -fabi-version=2 so cannot build libhail_abi_v2"
-endif
 ifeq ($(CXX_ABI_V9_ERRS),)
 	@echo "Using $(CXX_TYPE) compiler (probably g++) for libhail_abi_v9"
 	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v9 SUBMAKE_CXXFLAGS=-fabi-version=9 $@
 else
 	@echo "WARNING: $(CXX) fails with -fabi-version=9 so libhail_abi_v9 has default abi"
 	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v9 SUBMAKE_CXXFLAGS= $@
+endif
+ifeq ($(CXX_ABI_V2_ERRS),)
+	@echo "Using $(CXX_TYPE) compiler (probably g++) for libhail_abi_v2"
+	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v2 SUBMAKE_CXXFLAGS=-fabi-version=2 $@
+else
+	@echo "WARNING: $(CXX) fails with -fabi-version=2 so cannot build libhail_abi_v2"
 endif
 
 else
