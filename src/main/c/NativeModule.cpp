@@ -393,9 +393,12 @@ private:
     // window when there is no foo.new.  On Linux, "mv -f" is atomic, but
     // on MacOS it isn't.  After some experimentation, we now use perl's
     // rename command, with the belief that on POSIX-compatible systems
-    // this will be implemented as a "rename" system-call, which in POSIX
-    // semantics is guaranteed to have the required property that the
-    // destination file always exists.
+    // this will be implemented as a rename() system-call, specified thus:
+    //
+    // "If the link named by the new argument exists, it shall be removed and 
+    //  old renamed to new. In this case, a link named new shall remain visible
+    //  to other processes throughout the renaming operation and refer either
+    //  to the file referred to by new or old before the operation began."
     //
     // Since perl has a nasty habit of doing funny things to some characters
     // in non-quoted strings, we take care to quote the filenames.

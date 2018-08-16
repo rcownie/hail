@@ -39,45 +39,47 @@ else
 UNAME_S :=$(shell uname -s)
 UNAME_P :=$(shell uname -p)
 
-# For system commands, we prefer to get them from the "standard" absolute
+# For system commands, we prefer to get them from trusted absolute
 # paths to avoid possible interactions with non-standard executables or
 # scripts somewhere on the $PATH.  But if we can't find them where we expect,
 # we'll issue a warning and use whatever is on $PATH.
 
-CP :=$(shell ls /bin/cp 2>/dev/null)
+SAFE_PATH :=/bin:/usr/bin:/sbin:/usr/sbin
+
+CP :=$(shell PATH=$(SAFE_PATH) which cp 2>/dev/null)
 ifeq ($(CP),)
   CP :=$(shell which cp)
-  $(warning WARNING: /bin/cp not found, using $(CP))
+  $(warning WARNING: cp not found in $(SAFE_PATH), using $(CP))
 endif
 
-CURL :=$(shell ls /usr/bin/curl 2>/dev/null)
+CURL :=$(shell PATH=$(SAFE_PATH) which curl 2>/dev/null)
 ifeq ($(CURL),)
   CURL :=$(shell which curl)
-  $(warning WARNING: /usr/bin/curl not found, using $(CURL))
+  $(warning WARNING: curl not found in $(SAFE_PATH), using $(CURL))
 endif
 
-MKDIR :=$(shell ls /bin/mkdir 2>/dev/null)
+MKDIR :=$(shell PATH=$(SAFE_PATH) which mkdir 2>/dev/null)
 ifeq ($(MKDIR),)
   MKDIR :=$(shell which mkdir)
-  $(warning WARNING: /bin/mkdir not found, using $(MKDIR))
+  $(warning WARNING: mkdir not found in $(SAFE_PATH), using $(MKDIR))
 endif
 
-RM :=$(shell ls /bin/rm 2>/dev/null)
+RM :=$(shell PATH=$(SAFE_PATH) which rm 2>/dev/null)
 ifeq ($(RM),)
   RM :=$(shell which rm)
-  $(warning WARNING: /bin/rm not found, using $(RM))
+  $(warning WARNING: rm not found in $(SAFE_PATH), using $(RM))
 endif
 
-TAR :=$(shell ls /bin/tar /usr/bin/tar 2>/dev/null | head -1)
+TAR :=$(shell PATH=$(SAFE_PATH) which tar 2>/dev/null)
 ifeq ($(TAR),)
   TAR :=$(shell which tar)
-  $(warning WARNING: /bin/tar and /usr/bin/tar not found, using $(TAR))
+  $(warning WARNING: tar not found in $(SAFE_PATH), using $(TAR))
 endif
 
-TOUCH :=$(shell ls /usr/bin/touch)
+TOUCH :=$(shell PATH=$(SAFE_PATH) which touch 2>/dev/null)
 ifeq ($(TOUCH),)
   TOUCH :=$(shell which touch)
-  $(warning WARNING: /usr/bin/touch not found, using $(TOUCH))
+  $(warning WARNING: touch not found in $(SAFE_PATH), using $(TOUCH))
 endif
 
 .PHONY: all clean debug test libsimdpp
@@ -170,7 +172,7 @@ ifeq ($(UNAME_S),Darwin)
   LIBHAIL := lib/darwin/libhail_$(SUBMAKE_NAME).dylib
 endif
 
-all: $(BUILD) $(LIBBOOT) $(LIBHAIL)
+all: libsimdpp-2.0-rc2 $(BUILD) $(LIBBOOT) $(LIBHAIL)
 
 $(BUILD):
 	-$(MKDIR) -p $@
@@ -223,7 +225,7 @@ $(LIBBOOT): $(BUILD)/NativeBoot.o
 	$(CP) -p $@ $(PREBUILT)/$@
 endif
 
-$(LIBHAIL): libsimdpp-2.0-rc2 $(BUILD_OBJECTS)
+$(LIBHAIL): $(BUILD_OBJECTS)
 	-$(MKDIR) -p $(basename $(LIBHAIL))
 	$(CXX) $(LIBFLAGS) $(LIBDIRS) $(CXXFLAGS) $(BUILD_OBJECTS) -o $@ 
 	$(CP) -p $@ $(PREBUILT)/$@
