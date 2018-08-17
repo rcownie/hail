@@ -3,9 +3,13 @@
 #   -fabi-version=2 was the default from g++-3.4 to g++-4.9
 #   -fabi-version=9 was the default in g++-5.x
 
+# On MacOS, libc++ is the default library, and the default clang-based
+# compiler doesn't accept the -fabi-version=N option.  We still use the 
+# name "libhail_abi_v9.dylib" to mean "libhail compatible with recent abi
+
 ifndef SUBMAKE_NAME
 
-.PHONY: top all clean debug test
+.PHONY: top all clean debug prebuilt test
 
 top: all
 
@@ -16,22 +20,15 @@ else
   CXX_TYPE :=not_clang
 endif
 
-CXX_ABI_V2_ERRS :=$(shell echo "" >a.cpp; $(CXX) -fabi-version=2 -c a.cpp 2>a.err; rm -f a.cpp a.o 2>/dev/null; cat a.err)
 CXX_ABI_V9_ERRS :=$(shell echo "" >a.cpp; $(CXX) -fabi-version=9 -c a.cpp 2>a.err; rm -f a.cpp a.o 2>/dev/null; cat a.err)
 
-all clean debug test:
+
+
+all clean debug prebuilt test:
 ifeq ($(CXX_ABI_V9_ERRS),)
-	@echo "Using $(CXX_TYPE) compiler (probably g++) for libhail_abi_v9"
-	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v9 SUBMAKE_CXXFLAGS=-fabi-version=9 $@
+	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_new SUBMAKE_CXXFLAGS=-fabi-version=9 $@
 else
-	@echo "WARNING: $(CXX) fails with -fabi-version=9 so libhail_abi_v9 has default abi"
-	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v9 SUBMAKE_CXXFLAGS= $@
-endif
-ifeq ($(CXX_ABI_V2_ERRS),)
-	@echo "Using $(CXX_TYPE) compiler (probably g++) for libhail_abi_v2"
-	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_v2 SUBMAKE_CXXFLAGS=-fabi-version=2 $@
-else
-	@echo "WARNING: $(CXX) fails with -fabi-version=2 so cannot build libhail_abi_v2"
+	@$(MAKE) --no-print-directory SUBMAKE_NAME=abi_new SUBMAKE_CXXFLAGS= $@
 endif
 
 else
@@ -39,48 +36,38 @@ else
 UNAME_S :=$(shell uname -s)
 UNAME_P :=$(shell uname -p)
 
-# For system commands, we prefer to get them from trusted absolute
-# paths to avoid possible interactions with non-standard executables or
-# scripts somewhere on the $PATH.  But if we can't find them where we expect,
-# we'll issue a warning and use whatever is on $PATH.
+# Resolve the full pathnames of executables so that any unintentional
+# use of non-system executables will be visible in the build log.
 
-SAFE_PATH :=/bin:/usr/bin:/sbin:/usr/sbin
+CAT :=$(shell which cat 2>/dev/null)
+CAT ?=cat
 
-CP :=$(shell PATH=$(SAFE_PATH) which cp 2>/dev/null)
-ifeq ($(CP),)
-  CP :=$(shell which cp)
-  $(warning WARNING: cp not found in $(SAFE_PATH), using $(CP))
-endif
+CKSUM :=$(shell which cksum 2>/dev/null)
+CKSUM ?=cksum
 
-CURL :=$(shell PATH=$(SAFE_PATH) which curl 2>/dev/null)
-ifeq ($(CURL),)
-  CURL :=$(shell which curl)
-  $(warning WARNING: curl not found in $(SAFE_PATH), using $(CURL))
-endif
+CP :=$(shell which cp 2>/dev/null)
+CP ?=cp
 
-MKDIR :=$(shell PATH=$(SAFE_PATH) which mkdir 2>/dev/null)
-ifeq ($(MKDIR),)
-  MKDIR :=$(shell which mkdir)
-  $(warning WARNING: mkdir not found in $(SAFE_PATH), using $(MKDIR))
-endif
+CURL :=$(shell which curl 2>/dev/null)
+CURL ?=curl
 
-RM :=$(shell PATH=$(SAFE_PATH) which rm 2>/dev/null)
-ifeq ($(RM),)
-  RM :=$(shell which rm)
-  $(warning WARNING: rm not found in $(SAFE_PATH), using $(RM))
-endif
+CUT :=$(shell which cut 2>/dev/null)
+CUT ?=cut
 
-TAR :=$(shell PATH=$(SAFE_PATH) which tar 2>/dev/null)
-ifeq ($(TAR),)
-  TAR :=$(shell which tar)
-  $(warning WARNING: tar not found in $(SAFE_PATH), using $(TAR))
-endif
+FIND :=$(shell which find 2>/dev/null)
+FIND ?=curl
 
-TOUCH :=$(shell PATH=$(SAFE_PATH) which touch 2>/dev/null)
-ifeq ($(TOUCH),)
-  TOUCH :=$(shell which touch)
-  $(warning WARNING: touch not found in $(SAFE_PATH), using $(TOUCH))
-endif
+MKDIR :=$(shell which mkdir 2>/dev/null)
+MKDIR ?=mkdir
+
+RM :=$(shell which rm 2>/dev/null)
+RM ?=rm
+
+TAR :=$(shell which tar 2>/dev/null)
+TAR ?=tar
+
+TOUCH :=$(shell which touch 2>/dev/null)
+TOUCH ?=touch
 
 .PHONY: all clean debug test libsimdpp
 
@@ -190,19 +177,26 @@ $(BUILD)/functional-tests: ibs.cpp test.cpp
 	-$(MKDIR) -p build
 	$(CXX) $(CXXFLAGS) -DNUMBER_OF_GENOTYPES_PER_ROW=256 ibs.cpp test.cpp -o $(BUILD)/functional-tests
 
+prebuilt: all
+	@echo updating $(PREBUILT) ...
+ifneq ($(LIBBOOT),)
+	$(CP) -p -f $(LIBBOOT) $(PREBUILT)/$(LIBBOOT)
+endif
+	$(CP) -p -f $(LIBHAIL) $(PREBUILT)/$(LIBHAIL)
+
 test: $(BUILD)/functional-tests
 	./$(BUILD)/functional-tests
 
 clean:
 	-rm -rf $(BUILD) headers lib libsimdpp-2.0-rc2 $(LIBBOOT) $(LIBHAIL)
 
-$(BUILD)/headers: $(shell /usr/bin/find ../resources/include -name "*.h")
+$(BUILD)/headers: $(shell $(FIND) ../resources/include -name "*.h")
 	$(TOUCH) $@
 
 $(BUILD_OBJECTS) $(BUILD)/NativeBoot.o: $(BUILD)/headers
 
-ALL_HEADER_FILES := $(shell /usr/bin/find ../resources/include -name "*.h")
-ALL_HEADER_CKSUM := $(shell $(CXX) --version >.cxx.vsn ; /bin/cat .cxx.vsn $(ALL_HEADER_FILES) | /usr/bin/cksum | /usr/bin/cut -d " " -f 1)
+ALL_HEADER_FILES := $(shell $(FIND) ../resources/include -name "*.h")
+ALL_HEADER_CKSUM := $(shell $(CXX) --version >.cxx.vsn ; $(CAT) .cxx.vsn $(ALL_HEADER_FILES) | $(CKSUM) | $(CUT) -d " " -f 1)
 
 $(BUILD)/NativeModule.o: NativeModule.cpp
 	$(CXX) $(CXXFLAGS) -DALL_HEADER_CKSUM=$(ALL_HEADER_CKSUM)UL -c NativeModule.cpp -o $@
@@ -222,12 +216,10 @@ ifneq ($(LIBBOOT),)
 $(LIBBOOT): $(BUILD)/NativeBoot.o
 	-$(MKDIR) -p $(basename $(LIBBOOT))
 	$(CXX) $(LIBFLAGS) $(LIBDIRS) $(CXXFLAGS) $(BUILD)/NativeBoot.o -o $@
-	$(CP) -p $@ $(PREBUILT)/$@
 endif
 
 $(LIBHAIL): $(BUILD_OBJECTS)
 	-$(MKDIR) -p $(basename $(LIBHAIL))
 	$(CXX) $(LIBFLAGS) $(LIBDIRS) $(CXXFLAGS) $(BUILD_OBJECTS) -o $@ 
-	$(CP) -p $@ $(PREBUILT)/$@
 
 endif
