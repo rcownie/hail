@@ -200,6 +200,8 @@ class GroupedTable(ExprContainer):
 
         group_exprs = dict(self._groups)
 
+        for name, expr in named_exprs.items():
+            analyze(f'GroupedTable.aggregate: ({repr(name)})', expr, self._parent._global_indices, {self._parent._row_axis})
         if not named_exprs.keys().isdisjoint(group_exprs.keys()):
             intersection = set(named_exprs.keys()) & set(group_exprs.keys())
             raise ValueError(
@@ -465,7 +467,7 @@ class Table(ExprContainer):
 
     @classmethod
     @typecheck_method(rows=anytype,
-                      schema=nullable(tstruct),
+                      schema=nullable(hail_type),
                       key=table_key_type,
                       n_partitions=nullable(int))
     def parallelize(cls, rows, schema=None, key=None, n_partitions=None):
@@ -1646,7 +1648,7 @@ class Table(ExprContainer):
             Table with a new index field.
         """
 
-        return Table(self._jt.index(name))
+        return self.annotate(**{name: hl.scan.count()})
 
     @typecheck_method(tables=table_type)
     def union(self, *tables):
