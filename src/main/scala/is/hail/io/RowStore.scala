@@ -140,7 +140,7 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
   }
   
   def buildDecoder(t: Type, requestedType: Type): (InputStream) => Decoder = {
-    if (true) {
+    if (System.getenv("HAIL_ENABLE_CPP_CODEGEN") != null) {
       val sb = new StringBuilder()
       NativeDecode.appendCode(sb, t, requestedType)
       val code = new PrettyCode(sb.toString())
