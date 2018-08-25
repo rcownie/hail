@@ -97,6 +97,7 @@ class ValueIRTests(unittest.TestCase):
 
 
 class TableIRTests(unittest.TestCase):
+
     def table_irs(self):
         b = ir.TrueIR()
         table_read = ir.TableRead(
@@ -109,7 +110,7 @@ class TableIRTests(unittest.TestCase):
         range = ir.TableRange(10, 4)
         table_irs = [
             ir.TableUnkey(table_read),
-            ir.TableKeyBy(table_read, ['m', 'd'], 1, True),
+            ir.TableKeyBy(table_read, ['m', 'd'], False),
             ir.TableFilter(table_read, b),
             table_read,
             ir.MatrixColsTable(matrix_read),
@@ -139,8 +140,7 @@ class TableIRTests(unittest.TestCase):
             ir.TableMapGlobals(
                 table_read,
                 ir.MakeStruct([
-                    ('foo', ir.NA(hl.tarray(hl.tint32)))]),
-                ir.Value(hl.tstruct(), {})),
+                    ('foo', ir.NA(hl.tarray(hl.tint32)))])),
             ir.TableRange(100, 10),
             ir.TableRepartition(table_read, 10, False),
             ir.TableUnion(
@@ -160,14 +160,71 @@ class TableIRTests(unittest.TestCase):
 
     def test_matrix_ir_parses(self):
         matrix_read = ir.MatrixRead(
-            'src/test/resources/backward_compatability/1.0.0/matrix_table/0.hmt', False, False)
+            resource('backward_compatability/1.0.0/matrix_table/0.hmt'), False, False)
+        table_read = ir.TableRead(resource('backward_compatability/1.0.0/table/0.ht'), False, None)
         matrix_irs = [
             ir.MatrixUnionRows(ir.MatrixRange(5, 5, 1), ir.MatrixRange(5, 5, 1)),
             ir.UnlocalizeEntries(
                 ir.LocalizeEntries(matrix_read, '__entries'),
                 ir.MatrixColsTable(matrix_read),
-                '__entries')
+                '__entries'),
+            ir.MatrixAggregateRowsByKey(matrix_read, ir.MakeStruct([('x', ir.I32(2))])),
+            ir.MatrixAggregateColsByKey(matrix_read, ir.MakeStruct([('x', ir.I32(2))])),
+            ir.MatrixRange(1, 1, 10),
+            ir.MatrixImportVCF([resource('sample.vcf')], False, False, None, None, False, ['GT'],
+                               hail.get_reference('GRCh37'), {}, True, False),
+            ir.MatrixImportBGEN([resource('example.8bits.bgen')], ['GP'], resource('example.sample'), 10, 1,
+                                hail.get_reference('GRCh37'), {}, False, ['varid'], {}),
+            ir.MatrixFilterRows(matrix_read, ir.FalseIR()),
+            ir.MatrixFilterCols(matrix_read, ir.FalseIR()),
+            ir.MatrixFilterEntries(matrix_read, ir.FalseIR()),
+            ir.MatrixChooseCols(matrix_read, [1, 0]),
+            ir.MatrixMapCols(matrix_read, ir.MakeStruct([('x', ir.I64(20))]), ['x']),
+            ir.MatrixMapRows(matrix_read, ir.MakeStruct([('x', ir.I64(20))]), (['x'], [])),
+            ir.MatrixMapEntries(matrix_read, ir.MakeStruct([('x', ir.I64(20))])),
+            ir.MatrixMapGlobals(matrix_read, ir.MakeStruct([('x', ir.I64(20))])),
+            ir.TableToMatrixTable(table_read, ['f32', 'i64'], ['m', 'astruct'], ['aset'], ['mset'], ['f32'], 100),
+            ir.MatrixCollectColsByKey(matrix_read),
+            ir.MatrixExplodeRows(matrix_read, ['row_aset']),
+            ir.MatrixExplodeCols(matrix_read, ['col_aset']),
+            ir.MatrixAnnotateRowsTable(matrix_read, table_read, '__foo', None),
+            ir.MatrixAnnotateColsTable(matrix_read, table_read, '__foo'),
         ]
 
         for x in matrix_irs:
-            Env.hail().expr.Parser.parse_matrix_ir(str(x))
+            try:
+                Env.hail().expr.Parser.parse_matrix_ir(str(x))
+            except Exception as e:
+                raise ValueError(str(x)) from e
+
+
+class ValueTests(unittest.TestCase):
+
+    def values(self):
+        values = [
+            (hl.tbool, True),
+            (hl.tint32, 0),
+            (hl.tint64, 0),
+            (hl.tfloat32, 0.5),
+            (hl.tfloat64, 0.5),
+            (hl.tstr, "foo"),
+            (hl.tstruct(x=hl.tint32), hl.Struct(x=0)),
+            (hl.tarray(hl.tint32), [0, 1, 4]),
+            (hl.tset(hl.tint32), {0, 1, 4}),
+            (hl.tdict(hl.tstr, hl.tint32), {"a": 0, "b": 1, "c": 4}),
+            (hl.tinterval(hl.tint32), hl.Interval(0, 1, True, False)),
+            (hl.tlocus(hl.default_reference()), hl.Locus("1", 1)),
+            (hl.tcall, hl.Call([0, 1]))
+        ]
+        return values
+
+    def test_value_same_after_parsing(self):
+        for t, v in self.values():
+            row_v = ir.Literal(t, v)
+            map_globals_ir = ir.TableMapGlobals(
+                ir.TableRange(1, 1),
+                ir.InsertFields(
+                    ir.Ref("global", hl.tstruct()),
+                    [("foo", row_v)]))
+            new_globals = hl.Table._from_ir(map_globals_ir).globals.value
+            self.assertEquals(new_globals, hl.Struct(foo=v))

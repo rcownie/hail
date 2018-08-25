@@ -285,7 +285,7 @@ object Parser extends JavaTokenParsers {
   def ordered_rvd_type_expr: Parser[OrderedRVDType] =
     (("OrderedRVDType" ~ "{" ~ "key" ~ ":" ~ "[") ~> key) ~ (trailing_keys <~ "]") ~
       (("," ~ "row" ~ ":") ~> struct_expr <~ "}") ^^ { case partitionKey ~ restKey ~ rowType =>
-      new OrderedRVDType(partitionKey, partitionKey ++ restKey, rowType)
+      new OrderedRVDType(partitionKey ++ restKey, rowType)
     }
 
   def table_type_expr: Parser[TableType] =
@@ -305,12 +305,12 @@ object Parser extends JavaTokenParsers {
       MatrixType.fromParts(globalType, colKey, colType, rowPartitionKey, rowPartitionKey ++ rowRestKey, rowType, entryType)
     }
 
-  def parsePhysicalType(code: String): PhysicalType = parse(physical_type, code)
+  def parsePhysicalType(code: String): PType = parse(physical_type, code)
 
-  def physical_type: Parser[PhysicalType] =
+  def physical_type: Parser[PType] =
     ("Default" ~ "[") ~> type_expr <~ "]" ^^ { t => PDefault(t) }
 
-  def parseEncodedType(code: String): PhysicalType = parse(physical_type, code)
+  def parseEncodedType(code: String): PType = parse(physical_type, code)
 
   def encoded_type: Parser[EncodedType] =
     ("Default" ~ "[") ~> type_expr <~ "]" ^^ { t => EDefault(t) }
@@ -587,8 +587,8 @@ object Parser extends JavaTokenParsers {
   def table_ir_1: Parser[ir.TableIR] =
   // FIXME TableImport
     "TableUnkey" ~> table_ir ^^ { t => ir.TableUnkey(t) } |
-      "TableKeyBy" ~> ir_identifiers ~ int32_literal_opt ~ boolean_literal ~ table_ir ^^ { case key ~ nPartKeys ~ sort ~ child =>
-        ir.TableKeyBy(child, key, nPartKeys, sort)
+      "TableKeyBy" ~> ir_identifiers ~ boolean_literal ~ table_ir ^^ { case key ~ isSorted ~ child =>
+        ir.TableKeyBy(child, key, isSorted)
       } |
       "TableDistinct" ~> table_ir ^^ { t => ir.TableDistinct(t) } |
       "TableFilter" ~> table_ir ~ ir_value_expr() ^^ { case child ~ pred => ir.TableFilter(child, pred) } |
@@ -611,9 +611,8 @@ object Parser extends JavaTokenParsers {
       "TableMapRows" ~> string_literals_opt ~ int32_literal_opt ~ table_ir ~ ir_value_expr() ^^ { case newKey ~ preservedKeyFields ~ child ~ newRow =>
         ir.TableMapRows(child, newRow, newKey, preservedKeyFields)
       } |
-      "TableMapGlobals" ~> ir_value ~ table_ir ~ ir_value_expr() ^^ { case ((t, v)) ~ child ~ newRow =>
-        ir.TableMapGlobals(child, newRow,
-          BroadcastRow(v.asInstanceOf[Row], t.asInstanceOf[TBaseStruct], HailContext.get.sc))
+      "TableMapGlobals" ~> table_ir ~ ir_value_expr() ^^ { case child ~ newRow =>
+        ir.TableMapGlobals(child, newRow)
       } |
       "TableRange" ~> int32_literal ~ int32_literal ^^ { case n ~ nPartitions => ir.TableRange(n, nPartitions) } |
       "TableUnion" ~> table_ir_children ^^ { children => ir.TableUnion(children) } |
@@ -636,17 +635,16 @@ object Parser extends JavaTokenParsers {
       "MatrixFilterRows" ~> matrix_ir ~ ir_value_expr() ^^ { case child ~ pred => ir.MatrixFilterRows(child, pred) } |
       "MatrixFilterEntries" ~> matrix_ir ~ ir_value_expr() ^^ { case child ~ pred => ir.MatrixFilterEntries(child, pred) } |
       "MatrixMapCols" ~> string_literals_opt ~ matrix_ir ~ ir_value_expr() ^^ { case newKey ~ child ~ newCol => ir.MatrixMapCols(child, newCol, newKey) } |
-      "MatrixMapRows" ~> string_literals_opt ~ string_literals_opt ~ matrix_ir ~ ir_value_expr() ^^ { case newKey ~ newPartitionKey ~ child ~ newCol =>
+      "MatrixMapRows" ~> string_literals_opt ~ string_literals_opt ~ matrix_ir ~ ir_value_expr() ^^ { case newKey ~ newPartitionKey ~ child ~ newRow =>
         val newKPK = ((newKey, newPartitionKey): @unchecked) match {
           case (Some(k), Some(pk)) => Some((k, pk))
           case (None, None) => None
         }
-        ir.MatrixMapRows(child, newCol, newKPK)
+        ir.MatrixMapRows(child, newRow, newKPK)
       } |
       "MatrixMapEntries" ~> matrix_ir ~ ir_value_expr() ^^ { case child ~ newEntries => ir.MatrixMapEntries(child, newEntries) } |
-      "MatrixMapGlobals" ~> matrix_ir ~ ir_value_expr() ~ ir_value ^^ { case child ~ newGlobals ~ ((t, v)) =>
-        ir.MatrixMapGlobals(child, newGlobals,
-          BroadcastRow(v.asInstanceOf[Row], t.asInstanceOf[TBaseStruct], HailContext.get.sc))
+      "MatrixMapGlobals" ~> matrix_ir ~ ir_value_expr() ^^ { case child ~ newGlobals =>
+        ir.MatrixMapGlobals(child, newGlobals)
       } |
       "MatrixAggregateColsByKey" ~> matrix_ir ~ ir_value_expr() ^^ { case child ~ agg => ir.MatrixAggregateColsByKey(child, agg) } |
       "MatrixAggregateRowsByKey" ~> matrix_ir ~ ir_value_expr() ^^ { case child ~ agg => ir.MatrixAggregateRowsByKey(child, agg) } |

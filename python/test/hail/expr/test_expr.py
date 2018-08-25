@@ -29,6 +29,11 @@ class Tests(unittest.TestCase):
         test_random_function(lambda: hl.rand_bool(0.5))
         test_random_function(lambda: hl.rand_norm(0, 1))
         test_random_function(lambda: hl.rand_pois(1))
+        test_random_function(lambda: hl.rand_beta(1, 1))
+        test_random_function(lambda: hl.rand_beta(1, 1, 0, 1))
+        test_random_function(lambda: hl.rand_gamma(1, 1))
+        test_random_function(lambda: hl.rand_cat(hl.array([1, 1, 1, 1])))
+        test_random_function(lambda: hl.rand_dirichlet(hl.array([1, 1, 1, 1])))
 
     def test_seeded_sampling(self):
         sampled1 = hl.utils.range_table(50, 6).filter(hl.rand_bool(0.5))
@@ -242,12 +247,15 @@ class Tests(unittest.TestCase):
                                       arr_sum=agg.array_sum([1, 2, hl.null(tint32)]),
                                       bind_agg=agg.count_where(hl.bind(lambda x: x % 2 == 0, table.idx)),
                                       mean=agg.mean(table.idx),
+                                      mean2=agg.mean(hl.cond(table.idx == 9, table.idx, hl.null(tint32))),
                                       foo=hl.min(3, agg.sum(table.idx))))
 
         self.assertEqual(r.x, 10)
         self.assertEqual(r.y, 5)
         self.assertEqual(r.z, 5)
         self.assertEqual(r.arr_sum, [10, 20, 0])
+        self.assertEqual(r.mean, 4.5)
+        self.assertEqual(r.mean2, 9)
         self.assertEqual(r.bind_agg, 5)
         self.assertEqual(r.foo, 3)
 
@@ -378,6 +386,25 @@ class Tests(unittest.TestCase):
         self.assertAlmostEqual(r.multiple_p_value, 0.6331017)
         self.assertAlmostEqual(r.n, 5)
 
+        # weighted OLS
+        t = t.add_index()
+        r = t.aggregate(hl.struct(
+            linreg=hl.agg.linreg(t.y, [1, t.x], weight=t.idx))).linreg
+        self.assertAlmostEqual(r.beta[0], 0.2339059)
+        self.assertAlmostEqual(r.beta[1], 0.4275577)
+        self.assertAlmostEqual(r.standard_error[0], 0.6638324)
+        self.assertAlmostEqual(r.standard_error[1], 0.6662581)
+        self.assertAlmostEqual(r.t_stat[0], 0.3523569)
+        self.assertAlmostEqual(r.t_stat[1], 0.6417299)
+        self.assertAlmostEqual(r.p_value[0], 0.7478709)
+        self.assertAlmostEqual(r.p_value[1], 0.5667139)
+        self.assertAlmostEqual(r.multiple_standard_error, 3.26238997)
+        self.assertAlmostEqual(r.multiple_r_squared, 0.12070321)
+        self.assertAlmostEqual(r.adjusted_r_squared, -0.17239572)
+        self.assertAlmostEqual(r.f_stat, 0.41181729)
+        self.assertAlmostEqual(r.multiple_p_value, 0.56671386)
+        self.assertAlmostEqual(r.n, 5)
+
     def test_aggregators_downsample(self):
         xs = [2, 6, 4, 9, 1, 8, 5, 10, 3, 7]
         ys = [2, 6, 4, 9, 1, 8, 5, 10, 3, 7]
@@ -457,7 +484,20 @@ class Tests(unittest.TestCase):
         self.assertEqual(r.inbreeding['IBD'].n_called, 2)
         self.assertAlmostEqual(r.inbreeding['IBD'].expected_homs, 1.64)
         self.assertEqual(r.inbreeding['IBD'].observed_homs, 1)
-        
+
+    def test_aggregator_group_by_sorts_result(self):
+        t = hl.Table.parallelize([ # the `s` key is stored before the `m` in java.util.HashMap
+            {"group": "m", "x": 1},
+            {"group": "s", "x": 2},
+            {"group": "s", "x": 3},
+            {"group": "m", "x": 4},
+            {"group": "m", "x": 5}
+        ], hl.tstruct(group=hl.tstr, x=hl.tint32), n_partitions=1)
+
+        grouped_expr = t.aggregate(hl.array(hl.agg.group_by(t.group, hl.agg.sum(t.x))))
+        self.assertEqual(grouped_expr, hl.sorted(grouped_expr).value)
+
+
     def test_joins_inside_aggregators(self):
         table = hl.utils.range_table(10)
         table2 = hl.utils.range_table(10)
@@ -1397,7 +1437,7 @@ class Tests(unittest.TestCase):
         self.check_expr(c2_hetvar[1], 1, tint32)
         self.check_expr(c2_hetvar.phased, True, tbool)
         self.check_expr(c2_hetvar.is_hom_var(), False, tbool)
-        self.check_expr(c2_hetvar.is_het_nonref(), True, tbool)
+        self.check_expr(c2_hetvar.is_het_non_ref(), True, tbool)
 
         self.check_expr(c1.ploidy, 1, tint32)
         self.check_expr(c1[0], 1, tint32)
@@ -1857,6 +1897,10 @@ class Tests(unittest.TestCase):
         res = hl.chi_squared_test(51, 43, 22, 92).value
         self.assertAlmostEqual(res['p_value'] / 1.462626e-7, 1.0, places=4)
         self.assertAlmostEqual(res['odds_ratio'], 4.95983087)
+        
+        res = hl.chi_squared_test(61, 17493, 95, 84145).value
+        self.assertAlmostEqual(res['p_value'] / 4.74710374e-13, 1.0, places=4)
+        self.assertAlmostEqual(res['odds_ratio'], 3.08866103)
 
     def test_fisher_exact_test(self):
         res = hl.fisher_exact_test(0, 0, 0, 0).value
@@ -1918,3 +1962,25 @@ class Tests(unittest.TestCase):
     def test_literal_with_nested_expr(self):
         self.assertEqual(hl.literal(hl.set(['A','B'])).value, {'A', 'B'})
         self.assertEqual(hl.literal({hl.str('A'), hl.str('B')}).value, {'A', 'B'})
+
+    def test_format(self):
+        self.assertEqual(hl.format("%.4f %s %.3e", 0.25, 'hello', 0.114).value, '0.2500 hello 1.140e-01')
+        self.assertEqual(hl.format("%.4f %d", hl.null(hl.tint32), hl.null(hl.tint32)).value, 'null null')
+        self.assertEqual(hl.format("%s", hl.struct(foo=5, bar=True, baz=hl.array([4, 5]))).value, '[5,true,[4,5]]')
+        self.assertEqual(hl.format("%s %s", hl.locus("1", 356), hl.tuple([9, True, hl.null(hl.tstr)])).value, '1:356 [9,true,null]')
+        self.assertEqual(hl.format("%b %B %b %b", hl.null(hl.tint), hl.null(hl.tstr), True, "hello").value, "false FALSE true true")
+
+    def test_dict_and_set_type_promotion(self):
+        d = hl.literal({5: 5}, dtype='dict<int64, int64>')
+        s = hl.literal({5}, dtype='set<int64>')
+
+        self.assertEqual(d[5].value, 5)
+        self.assertEqual(d.get(5).value, 5)
+        self.assertEqual(d.get(2, 3).value, 3)
+        self.assertTrue(d.contains(5).value)
+        self.assertTrue(~d.contains(2).value)
+
+        self.assertTrue(s.contains(5).value)
+        self.assertTrue(~s.contains(2).value)
+
+

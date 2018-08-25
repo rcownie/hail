@@ -972,7 +972,9 @@ case class MatrixVCFReader(
     }
   }
 
-  private lazy val coercer = OrderedRVD.makeCoercer(fullType.orvdType,
+  private lazy val coercer = OrderedRVD.makeCoercer(
+    fullType.orvdType,
+    fullType.rowPartitionKey.length,
     parseLines(
       () => ()
     )((c, l, rvb) => ()
@@ -981,7 +983,7 @@ case class MatrixVCFReader(
       referenceGenome,
       contigRecoding,
       arrayElementsRequired,
-      skipInvalidLoci), None)
+      skipInvalidLoci))
 
   def apply(mr: MatrixRead): MatrixValue = {
     val infoFlagFieldNamesBc = sc.broadcast(infoFlagFieldNames)

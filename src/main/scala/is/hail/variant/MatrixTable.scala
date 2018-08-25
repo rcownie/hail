@@ -139,7 +139,7 @@ object MatrixTable {
 
     val localNCols = colValues.length
 
-    var ds = new MatrixTable(hc, matrixType,
+    val ds = new MatrixTable(hc, matrixType,
       BroadcastRow(globals.asInstanceOf[Row], matrixType.globalType, hc.sc),
       BroadcastIndexedSeq(colValues, TArray(matrixType.colType), hc.sc),
       OrderedRVD.coerce(matrixType.orvdType,
@@ -513,14 +513,12 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
   }
 
   def annotateGlobal(a: Annotation, t: Type, name: String): MatrixTable = {
-    val at = TStruct(name -> t)
-    val value = BroadcastRow(Row(a), at, hc.sc)
     new MatrixTable(hc, MatrixMapGlobals(ast,
-      ir.InsertFields(ir.Ref("global", ast.typ.globalType), FastSeq(name -> ir.GetField(ir.Ref(s"value", at), name))), value))
+      ir.InsertFields(ir.Ref("global", ast.typ.globalType), FastSeq(name -> ir.Literal(t, a, ir.genUID())))))
   }
 
   def annotateCols(signature: Type, path: List[String], annotations: Array[Annotation]): MatrixTable = {
-    val (t, ins) = insertSA(signature, path)
+    val (t, ins) = colType.structInsert(signature, path)
 
     val newAnnotations = new Array[Annotation](numCols)
 
@@ -614,7 +612,7 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
 
   def selectGlobals(expr: String): MatrixTable = {
     val globalIR = Parser.parse_value_ir(expr, matrixType.refMap)
-    new MatrixTable(hc, MatrixMapGlobals(ast, globalIR, BroadcastRow(Row(), TStruct(), hc.sc)))
+    new MatrixTable(hc, MatrixMapGlobals(ast, globalIR))
   }
 
   def selectCols(expr: String, newKey: java.util.ArrayList[String]): MatrixTable =
@@ -674,10 +672,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
     chooseCols(ab.result())
   }
 
-  def deleteVA(args: String*): (Type, Deleter) = deleteVA(args.toList)
-
-  def deleteVA(path: List[String]): (Type, Deleter) = rowType.delete(path)
-
   def dropCols(): MatrixTable =
     copyAST(ast = MatrixFilterCols(ast, ir.False()))
 
@@ -722,10 +716,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
       fatal(s"n must be non-negative! Found `$n'.")
     copy2(rvd = rvd.head(n, None))
   }
-
-  def insertSA(sig: Type, args: String*): (TStruct, Inserter) = insertSA(sig, args.toList)
-
-  def insertSA(sig: Type, path: List[String]): (TStruct, Inserter) = colType.structInsert(sig, path)
 
   def insertEntries[PC](makePartitionContext: () => PC, newColType: TStruct = colType,
     newColKey: IndexedSeq[String] = colKey,
@@ -944,16 +934,7 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
 
   def aggregateEntries(expr: String): (Annotation, Type) = {
     val qir = Parser.parse_value_ir(expr, matrixType.refMap)
-    val et = entriesTable()
-
-    val entriesRowType = et.typ.rowType
-    val aggEnv = new ir.Env[ir.IR].bind(
-      "g" -> ir.SelectFields(ir.Ref("row", entriesRowType), entryType.fieldNames),
-      "va" -> ir.SelectFields(ir.Ref("row", entriesRowType), rowType.fieldNames),
-      "sa" -> ir.SelectFields(ir.Ref("row", entriesRowType), colType.fieldNames))
-
-    val sqir = ir.Subst(qir.unwrap, ir.Env.empty, aggEnv)
-    et.aggregate(sqir)
+    (Interpret(MatrixAggregate(ast, qir)), qir.typ)
   }
 
   def aggregateCols(expr: String): (Annotation, Type) = {
@@ -1040,7 +1021,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
       rvd
     else {
       val newType = newMatrixType.orvdType
-      val newPartitioner = rvd.partitioner.withKType(pk.toArray, newType.kType)
       rvd.updateType(newType)
     }
 
@@ -1055,7 +1035,7 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
         s"Mangled IDs as follows:\n  @1", duplicates.map { case (pre, post) => s""""$pre" => "$post"""" }.truncatable("\n  "))
     else
       info(s"No duplicate sample IDs found.")
-    val (newSchema, ins) = insertSA(TString(), id)
+    val (newSchema, ins) = colType.structInsert(TString(), List(id))
     val newAnnotations = colValues.value.zipWithIndex.map { case (sa, i) => ins(sa, newIds(i)) }.toArray
     copy2(colType = newSchema, colValues = colValues.copy(value = newAnnotations, t = TArray(newSchema)))
   }
@@ -1126,11 +1106,9 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
 
     metadataSame &&
       rvd.crdd.czip(
-        OrderedRVD.adjustBoundsAndShuffle(
-          that.rvd.typ,
-          rvd.partitioner.withKType(that.rvd.typ.partitionKey, that.rvd.typ.kType),
-          that.rvd)
-          .crdd) { (ctx, rv1, rv2) =>
+        that.rvd.constrainToOrderedPartitioner(
+          rvd.partitioner.enlargeToRange(that.rvd.partitioner.range)
+        ).crdd) { (ctx, rv1, rv2) =>
         var partSame = true
 
         val fullRow1 = new UnsafeRow(leftRVType)
@@ -1520,22 +1498,6 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
     hadoop.writeTextFile(dirname + "/_SUCCESS")(out => ())
   }
 
-  def indexRows(name: String): MatrixTable = {
-    val indexedRVD = rvd.zipWithIndex(name)
-    copyMT(
-      matrixType = matrixType.copy(rvRowType = indexedRVD.typ.rowType),
-      rvd = indexedRVD)
-  }
-
-  def indexCols(name: String): MatrixTable = {
-    val (newColType, inserter) = colType.structInsert(TInt32(), List(name))
-    val newColValues = Array.tabulate(numCols) { i =>
-      inserter(colValues.value(i), i)
-    }
-    copy2(colType = newColType,
-      colValues = colValues.copy(value = newColValues, t = TArray(newColType)))
-  }
-
   def filterPartitions(parts: java.util.ArrayList[Int], keep: Boolean): MatrixTable =
     filterPartitions(parts.asScala.toArray, keep)
 
@@ -1563,7 +1525,7 @@ class MatrixTable(val hc: HailContext, val ast: MatrixIR) {
       .zipWithIndex
       .map { case (bound, i) =>
         val startLocus = bound.start.asInstanceOf[Row].getAs[Locus](0)
-        val minPartitionNeeded = partitioner.getPartitionPK(
+        val minPartitionNeeded = partitioner.getSafePartitionLowerBound(
           Row(startLocus.copy(position = startLocus.position - basePairs)))
         (minPartitionNeeded to i)
           .map(Adjustment[RegionValue](_, identity))

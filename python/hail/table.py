@@ -200,6 +200,8 @@ class GroupedTable(ExprContainer):
 
         group_exprs = dict(self._groups)
 
+        for name, expr in named_exprs.items():
+            analyze(f'GroupedTable.aggregate: ({repr(name)})', expr, self._parent._global_indices, {self._parent._row_axis})
         if not named_exprs.keys().isdisjoint(group_exprs.keys()):
             intersection = set(named_exprs.keys()) & set(group_exprs.keys())
             raise ValueError(
@@ -300,6 +302,11 @@ class Table(ExprContainer):
     >>> table1 = table1.annotate(B = table2[table1.ID].B)
     >>> table1.show()
     """
+
+    @staticmethod
+    def _from_ir(table_ir):
+        jir = Env.hail().expr.Parser.parse_table_ir(str(table_ir))
+        return Table(Env.hail().table.Table(Env.hc()._jhc, jir))
 
     def __init__(self, jt):
         super(Table, self).__init__()
@@ -1646,7 +1653,7 @@ class Table(ExprContainer):
             Table with a new index field.
         """
 
-        return Table(self._jt.index(name))
+        return self.annotate(**{name: hl.scan.count()})
 
     @typecheck_method(tables=table_type)
     def union(self, *tables):
