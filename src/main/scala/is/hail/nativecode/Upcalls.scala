@@ -3,6 +3,7 @@ package is.hail.nativecode
 import is.hail.utils
 
 // Support for calls from C++ to a limited set of Scala and Java classes/methods
+// src/main/c/Upcalls.cpp will create one instance of this class
 
 class Upcalls() {
 

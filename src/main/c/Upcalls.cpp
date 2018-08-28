@@ -10,9 +10,21 @@ namespace hail {
 class UpcallConfig {
  public:
   JavaVM* java_vm_;
+  jobject upcalls_;
+  jmethodID info_method_;
+  jmethodID warn_method_;
+  jmethodID errotr_method_;
 
-  UpcallConfig() :
-    java_vm_(get_saved_java_vm()) {
+  UpcallConfig() {
+    java_vm_ = get_saved_java_vm();
+    JNIEnv* env = nullptr;
+    auto rc = java_vm_->GetEnv((void**)env, JNI_VERSION_1_8);
+    assert(rc == JNI_OK);
+    auto cl = env->FindClass("is/hail/nativecode/Upcalls");
+    auto init_method = env->GetMethodID(cl, "<init>", "()V");
+    upcalls_ = env->NewObject(cl, init_method);
+    
+    
   }
 };
 
