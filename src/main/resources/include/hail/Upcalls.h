@@ -11,6 +11,7 @@ class UpcallEnv {
  private:
   UpcallConfig* config_; // once-per-session jobject/classID/methodID's
   JNIEnv* env_;
+  bool did_attach_;
   
  public:
   // Constructor ensures thread is attached to JavaVM, and gets a JNIEnv 
