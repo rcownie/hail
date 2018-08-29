@@ -5,63 +5,10 @@ top: all
 UNAME_S :=$(shell uname -s)
 UNAME_P :=$(shell uname -p)
 
-# Resolve the full pathnames of executables so that any unintentional
-# use of non-system executables will be visible in the build log.
+BUILD :=build
 
-CAT :=$(shell which cat 2>/dev/null)
-ifeq ($(CAT),)
-  CAT :=cat
-endif
-
-CKSUM :=$(shell which cksum 2>/dev/null)
-ifeq ($(CKSUM),)
-  CKSUM :=cksum
-endif
-
-CP :=$(shell which cp 2>/dev/null)
-ifeq ($(CP),)
-  CP :=cp
-endif
-
-CURL :=$(shell which curl 2>/dev/null)
-ifeq ($(CURL),)
-  CURL :=curl
-endif
-
-CUT :=$(shell which cut 2>/dev/null)
-ifeq ($(CUT),)
-  CUT :=cut
-endif
-
-FIND :=$(shell which find 2>/dev/null)
-ifeq ($(FIND),)
-  FIND :=find
-endif
-
-MKDIR :=$(shell which mkdir 2>/dev/null)
-ifeq ($(MKDIR),)
-  MKDIR :=mkdir
-endif
-
-RM :=$(shell which rm 2>/dev/null)
-ifeq ($(RM),)
-  RM :=rm
-endif
-
-TAR :=$(shell which tar 2>/dev/null)
-ifeq ($(TAR),)
-  TAR :=tar
-endif
-
-TOUCH :=$(shell which touch 2>/dev/null)
-ifeq ($(TOUCH),)
-  TOUCH :=touch
-endif
-
-.PHONY: all clean debug test libsimdpp
-
-BUILD := build
-BUILD_FORCE := $(shell mkdir -p $(BUILD))
+# Change this setting to update the version of libsimdpp
+LIBSIMDPP :=libsimdpp-2.1
 
 # If you want to add a new cpp file, like foo.cpp, to the library, add foo.o to
 # this list
@@ -126,8 +73,8 @@ ifeq ($(filter -march=%,$(CXXFLAGS)),)
   CXXFLAGS += -march=sandybridge
 endif
 
-# append existing flags so they override our flags
-CXXFLAGS += -O3 -march=native $(CXXSTD) -Ilibsimdpp-2.1 -Wall -Werror
+# Append to any inherited flags which survived filtering
+CXXFLAGS += -O3 $(CXXSTD) -I$(LIBSIMDPP) -Wall -Werror
 CXXFLAGS += -fPIC -ggdb -fno-strict-aliasing
 CXXFLAGS += -I../resources/include -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/$(JAVA_MD)
 LIBFLAGS += -fvisibility=default
@@ -148,10 +95,10 @@ ifeq ($(UNAME_S),Darwin)
   LIBHAIL := lib/darwin/libhail.dylib
 endif
 
-all: libsimdpp-2.0-rc2 $(BUILD) $(LIBBOOT) $(LIBHAIL)
+all: $(BUILD) $(LIBBOOT) $(LIBHAIL)
 
 $(BUILD):
-	-$(MKDIR) -p $@
+	-mkdir -p $@
 
 debug:
 	echo "make debug"
@@ -163,19 +110,19 @@ endif
 	-$(CXX) --version
 
 $(BUILD)/functional-tests: ibs.cpp test.cpp
-	-$(MKDIR) -p build
+	-mkdir -p build
 	$(CXX) $(CXXFLAGS) -DNUMBER_OF_GENOTYPES_PER_ROW=256 ibs.cpp test.cpp -o $(BUILD)/functional-tests
 
 prebuilt: all
 	@echo updating $(PREBUILT) ...
-	$(CP) -p -f $(LIBBOOT) $(PREBUILT)/$(LIBBOOT)
-	$(CP) -p -f $(LIBHAIL) $(PREBUILT)/$(LIBHAIL)
+	cp -p -f $(LIBBOOT) $(PREBUILT)/$(LIBBOOT)
+	cp -p -f $(LIBHAIL) $(PREBUILT)/$(LIBHAIL)
 
 test: $(BUILD)/functional-tests
 	./$(BUILD)/functional-tests
 
 clean:
-	-rm -rf $(BUILD) lib libsimdpp-2.0-rc2 $(LIBBOOT) $(LIBHAIL)
+	-rm -rf $(BUILD) $(LIBSIMDPP) $(LIBBOOT) $(LIBHAIL)
 
 # The $(BUILD)/headers target is updated whenever any .h file has changed
 # under either the source directory, *or* the ../resources/include tree.
@@ -188,8 +135,8 @@ clean:
 # clean-rebuild time is short (compared to other parts of the build process),
 # this seems good enough, and simpler than managing precise dependencies.
 
-$(BUILD)/headers: $(shell $(FIND) . -name "*.h"; $(FIND) ../resources/include -name "*.h")
-	$(TOUCH) $@
+$(BUILD)/headers: $(LIBSIMDPP) $(shell find . -name "*.h"; find ../resources/include -name "*.h")
+	touch $@
 
 $(BUILD_OBJECTS) $(BUILD)/NativeBoot.o: $(BUILD)/headers
 
@@ -200,8 +147,8 @@ $(BUILD_OBJECTS) $(BUILD)/NativeBoot.o: $(BUILD)/headers
 # files, will cause recompilation of dynamic-generated C++ rather than getting
 # an erroneous cache hit on outdated DLL files.
 
-ALL_HEADER_FILES := $(shell $(FIND) ../resources/include -name "*.h")
-ALL_HEADER_CKSUM := $(shell $(CXX) --version >.cxx.vsn ; $(CAT) .cxx.vsn $(ALL_HEADER_FILES) | $(CKSUM) | $(CUT) -d " " -f 1)
+ALL_HEADER_FILES := $(shell find ../resources/include -name "*.h")
+ALL_HEADER_CKSUM := $(shell $(CXX) --version >.cxx.vsn ; cat .cxx.vsn $(ALL_HEADER_FILES) | cksum | cut -d " " -f 1)
 
 $(BUILD)/NativeModule.o: NativeModule.cpp
 	$(CXX) $(CXXFLAGS) -DALL_HEADER_CKSUM=$(ALL_HEADER_CKSUM)UL -c NativeModule.cpp -o $@
@@ -211,16 +158,16 @@ $(BUILD)/NativeModule.o: NativeModule.cpp
 # succeed without attempting to access the Internet.
 # WGET ?= wget
 WGET ?= curl -L -O
-libsimdpp-2.1.tar.gz:
-	${WGET} https://storage.googleapis.com/hail-common/$@
+$(LIBSIMDPP).tar.gz:
+	$(WGET) https://storage.googleapis.com/hail-common/$@
 
-libsimdpp-2.1: libsimdpp-2.1.tar.gz
+$(LIBSIMDPP): $(LIBSIMDPP).tar.gz
 	tar -xzf $<
 
-$(shared_library): libsimdpp-2.1 ${OBJECTS}
-	mkdir -p $(dir $(shared_library))
-	${CXX} ${LIBFLAGS} ${LIBDIRS} ${CXXFLAGS} ${OBJECTS} -o $@ 
+$(LIBBOOT): $(BUILD)/NativeBoot.o
+	-mkdir -p $(basename $(LIBBOOT))
+	$(CXX) $(LIBFLAGS) $(LIBDIRS) $(CXXFLAGS) $(BUILD)/NativeBoot.o -o $@
 
 $(LIBHAIL): $(BUILD_OBJECTS)
-	-$(MKDIR) -p $(basename $(LIBHAIL))
+	-mkdir -p $(basename $(LIBHAIL))
 	$(CXX) $(LIBFLAGS) $(LIBDIRS) $(CXXFLAGS) $(BUILD_OBJECTS) -o $@ 
