@@ -126,8 +126,8 @@ ifeq ($(filter -march=%,$(CXXFLAGS)),)
   CXXFLAGS += -march=sandybridge
 endif
 
-# Append to any inherited flags which survived filtering
-CXXFLAGS += -O3 $(CXXSTD) -Ilibsimdpp-2.0-rc2 -Wall -Werror
+# append existing flags so they override our flags
+CXXFLAGS += -O3 -march=native $(CXXSTD) -Ilibsimdpp-2.1 -Wall -Werror
 CXXFLAGS += -fPIC -ggdb -fno-strict-aliasing
 CXXFLAGS += -I../resources/include -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/$(JAVA_MD)
 LIBFLAGS += -fvisibility=default
@@ -210,16 +210,16 @@ $(BUILD)/NativeModule.o: NativeModule.cpp
 # it in the same directory as this Makefile. If you do so, the build will
 # succeed without attempting to access the Internet.
 # WGET ?= wget
-WGET ?= $(CURL) -L -O
-libsimdpp-2.0-rc2.tar.gz:
-	$(WGET) https://storage.googleapis.com/hail-common/libsimdpp-2.0-rc2.tar.gz
+WGET ?= curl -L -O
+libsimdpp-2.1.tar.gz:
+	${WGET} https://storage.googleapis.com/hail-common/$@
 
-libsimdpp-2.0-rc2: libsimdpp-2.0-rc2.tar.gz
-	$(TAR) -xzf libsimdpp-2.0-rc2.tar.gz
+libsimdpp-2.1: libsimdpp-2.1.tar.gz
+	tar -xzf $<
 
-$(LIBBOOT): $(BUILD)/NativeBoot.o
-	-$(MKDIR) -p $(basename $(LIBBOOT))
-	$(CXX) $(LIBFLAGS) $(LIBDIRS) $(CXXFLAGS) $(BUILD)/NativeBoot.o -o $@
+$(shared_library): libsimdpp-2.1 ${OBJECTS}
+	mkdir -p $(dir $(shared_library))
+	${CXX} ${LIBFLAGS} ${LIBDIRS} ${CXXFLAGS} ${OBJECTS} -o $@ 
 
 $(LIBHAIL): $(BUILD_OBJECTS)
 	-$(MKDIR) -p $(basename $(LIBHAIL))
