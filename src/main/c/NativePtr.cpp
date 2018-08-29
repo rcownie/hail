@@ -45,12 +45,15 @@ void catch_signals() {
 
 class NativePtrInfo {
 public:
+  JavaVM* java_vm_;
   jclass class_ref_;
   jfieldID addrA_id_;
   jfieldID addrB_id_;
   
 public:
   NativePtrInfo(JNIEnv* env, int line) {
+    auto rc = env->GetJavaVM(&java_vm_); // needed for making C++-to-JVM calls
+    assert(rc == JNI_OK);
     auto cl = env->FindClass("is/hail/nativecode/NativeBase");
     class_ref_ = (jclass)env->NewGlobalRef(cl);
     env->DeleteLocalRef(cl);
@@ -85,7 +88,11 @@ static NativePtrInfo* get_info(JNIEnv* env, int line) {
   return &the_info;
 }
 
-class NativePtrInfo;
+JavaVM* get_saved_java_vm() {
+  // This will *not* be the first call to get_info(), so we don't need
+  // a valid JNIEnv*
+  return get_info(nullptr, 0)->java_vm_;
+}
 
 // We use this class for moving between a genuine std::shared_ptr<T>,
 // and the Scala NativeBase addrA, addrB.  Sometimes we have a temporary
