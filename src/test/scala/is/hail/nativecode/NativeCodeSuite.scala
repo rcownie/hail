@@ -135,5 +135,30 @@ class NativeCodeSuite extends SparkSuite {
     workerMod.close()
     st.close()
   }
+  
+  @Test def testNativeUpcall() = {
+    val sb = new StringBuilder()
+    sb.append(
+    """#include "hail/hail.h"
+      |
+      |NAMESPACE_HAIL_MODULE_BEGIN
+      |
+      |long testUpcall(NativeStatus* st, long a0) {
+      |  info("testUpcall makes upcall to info()\n");
+      |  return a0;
+      |}
+      |
+      |NAMESPACE_HAIL_MODULE_END
+      |""".stripMargin
+    )
+    val st = new NativeStatus()
+    val mod = new NativeModule("", sb.toString())
+    val testUpcall = mod.findLongFuncL1(st, "testUpcall")
+    mod.close()
+    assert(st.ok, st.toString())
+    assert(testUpcall(st, 99) == 99)
+    st.close()
+    testUpcall.close()
+  }
 
 }

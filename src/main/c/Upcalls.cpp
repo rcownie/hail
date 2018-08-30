@@ -5,6 +5,8 @@
 #include <mutex>
 #include <string>
 
+#define D(x) { printf("DEBUG[%d]: ", __LINE__); printf x ; printf("\n"); fflush(stdout); }
+
 namespace hail {
 
 class UpcallConfig {
@@ -16,9 +18,10 @@ class UpcallConfig {
   jmethodID error_method_;
 
   UpcallConfig() {
+    
     java_vm_ = get_saved_java_vm();
     JNIEnv* env = nullptr;
-    auto rc = java_vm_->GetEnv((void**)env, JNI_VERSION_1_8);
+    auto rc = java_vm_->GetEnv((void**)&env, JNI_VERSION_1_8);
     assert(rc == JNI_OK);
     auto cl = env->FindClass("is/hail/nativecode/Upcalls");
     auto init_method = env->GetMethodID(cl, "<init>", "()V");
