@@ -4,6 +4,7 @@
 #include "hail/NativeObj.h"
 #include "hail/NativeStatus.h"
 #include <jni.h>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -24,9 +25,9 @@ public:
   std::string new_name_;
   
 public:
-  NativeModule(const char* options, const char* source, const char* include, bool forceBuild);
+  NativeModule(const char* options, const char* source, const char* include);
   
-  NativeModule(bool isGlobal, const char* key, long binarySize, const void* binary);
+  NativeModule(bool isGlobal, const char* key, ssize_t binarySize, const void* binary);
 
   virtual ~NativeModule();
   
@@ -46,8 +47,6 @@ public:
 
   // Methods with names ending "_locked" must be called already holding the big_mutex
 
-  bool try_wait_for_build_locked();
-  
   bool try_load_locked();  
 };
 
