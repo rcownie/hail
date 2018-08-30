@@ -14,15 +14,16 @@ class MatrixRowsTable(TableIR):
 
 
 class TableJoin(TableIR):
-    def __init__(self, left, right, join_type):
+    def __init__(self, left, right, join_type, join_key):
         super().__init__()
         self.left = left
         self.right = right
         self.join_type = join_type
+        self.join_key = join_key
 
     def __str__(self):
-        return '(TableJoin {} {} {})'.format(
-            escape_id(self.join_type), self.left, self.right)
+        return '(TableJoin {} {} {} {})'.format(
+            escape_id(self.join_type), self.join_key, self.left, self.right)
 
 
 class TableUnion(TableIR):
@@ -45,15 +46,13 @@ class TableRange(TableIR):
 
 
 class TableMapGlobals(TableIR):
-    def __init__(self, child, new_row, value):
+    def __init__(self, child, new_row):
         super().__init__()
         self.child = child
         self.new_row = new_row
-        self.value = value
 
     def __str__(self):
-        return '(TableMapGlobals {} {} {})'.format(
-            self.value, self.child, self.new_row)
+        return '(TableMapGlobals {} {})'.format(self.child, self.new_row)
 
 
 class TableExplode(TableIR):
@@ -67,16 +66,16 @@ class TableExplode(TableIR):
 
 
 class TableKeyBy(TableIR):
-    def __init__(self, child, keys, n_partitions, sort):
+    def __init__(self, child, keys, is_sorted):
         super().__init__()
         self.child = child
         self.keys = keys
-        self.n_partitions = n_partitions
-        self.sort = sort
+        self.is_sorted = is_sorted
 
     def __str__(self):
-        return '(TableKeyBy ({}) {} {} {})'.format(
-            ' '.join([escape_id(x) for x in self.keys]), self.n_partitions, self.sort,
+        return '(TableKeyBy ({}) {} {})'.format(
+            ' '.join([escape_id(x) for x in self.keys]),
+            self.is_sorted,
             self.child)
 
 
@@ -188,17 +187,15 @@ class MatrixColsTable(TableIR):
 
 
 class TableParallelize(TableIR):
-    def __init__(self, typ, rows, n_partitions):
+    def __init__(self, rows, n_partitions):
         super().__init__()
-        self.typ = typ
         self.rows = rows
         self.n_partitions = n_partitions
 
     def __str__(self):
-        return '(TableParallelize {} {} {})'.format(
-            self.typ,
-            self.rows,
-            self.n_partitions)
+        return '(TableParallelize {} {})'.format(
+            self.n_partitions,
+            self.rows)
 
 
 class TableHead(TableIR):

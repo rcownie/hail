@@ -211,10 +211,6 @@ object Pretty {
             case MatrixMapCols(_, _, newKey) => prettyStringsOpt(newKey)
             case MatrixMapRows(_, _, newKey) =>
               prettyStringsOpt(newKey.map(_._1)) + " " + prettyStringsOpt(newKey.map(_._2))
-            case MatrixMapGlobals(_, _, value) =>
-              value.t.parsableString() + " " +
-                prettyStringLiteral(
-                  JsonMethods.compact(JSONAnnotationImpex.exportAnnotation(value.value, value.t)))
             case TableImport(paths, _, _) =>
               if (paths.length == 1)
                 paths.head
@@ -257,30 +253,21 @@ object Pretty {
               }(sb += '\n')
 
               ""
-            case TableKeyBy(_, keys, nPartitionKeys, sort) =>
+            case TableKeyBy(_, keys, isSorted) =>
               prettyIdentifiers(keys) + " " +
-                prettyIntOpt(nPartitionKeys) + " " +
-                prettyBooleanLiteral(sort)
+                prettyBooleanLiteral(isSorted)
             case TableRange(n, nPartitions) => s"$n $nPartitions"
             case TableRepartition(_, n, shuffle) => n.toString + " " + prettyBooleanLiteral(shuffle)
             case TableHead(_, n) => n.toString
-            case TableJoin(_, _, joinType) => joinType
+            case TableJoin(_, _, joinType, joinKey) => s"$joinType $joinKey"
             case TableLeftJoinRightDistinct(_, _, root) => prettyIdentifier(root)
             case TableMapRows(_, _, newKey, preservedKeyFields) =>
               prettyIdentifiersOpt(newKey) + " " + prettyIntOpt(preservedKeyFields)
             case TableKeyByAndAggregate(_, _, _, nPartitions, bufferSize) =>
               prettyIntOpt(nPartitions) + " " + bufferSize.toString
             case TableExplode(_, field) => field
-            case TableParallelize(typ, rows, nPartitions) =>
-              val valueType = TArray(typ.rowType)
-              typ.parsableString() + " " + valueType.parsableString() + " " +
-                prettyStringLiteral(
-                  JsonMethods.compact(JSONAnnotationImpex.exportAnnotation(rows, valueType))) + " " +
+            case TableParallelize(_, nPartitions) =>
                 prettyIntOpt(nPartitions)
-            case TableMapGlobals(_, _, value) =>
-              value.t.parsableString() + " " +
-                prettyStringLiteral(
-                  JsonMethods.compact(JSONAnnotationImpex.exportAnnotation(value.value, value.t)))
             case TableOrderBy(_, sortFields) => prettyIdentifiers(sortFields.map(sf =>
               (if (sf.sortOrder == Ascending) "A" else "D") + sf.field))
             case LocalizeEntries(_, name) => prettyStringLiteral(name)

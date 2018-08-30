@@ -3,6 +3,7 @@ package is.hail.expr.ir
 import is.hail.{HailContext, stats}
 import is.hail.annotations.aggregators.RegionValueAggregator
 import is.hail.annotations._
+import is.hail.asm4s.AsmFunction3
 import is.hail.expr.{JSONAnnotationImpex, Parser, TypedAggregator}
 import is.hail.expr.types._
 import is.hail.methods._
@@ -45,12 +46,12 @@ object Interpret {
 
     ir = LiftLiterals(ir).asInstanceOf[IR]
 
-    apply(ir, valueEnv, args, agg, None).asInstanceOf[T]
+    apply(ir, valueEnv, args, agg, None, Memo.empty[AsmFunction3[Region, Long, Boolean, Long]]).asInstanceOf[T]
   }
 
-  private def apply(ir: IR, env: Env[Any], args: IndexedSeq[(Any, Type)], agg: Option[Agg], aggregator: Option[TypedAggregator[Any]]): Any = {
+  private def apply(ir: IR, env: Env[Any], args: IndexedSeq[(Any, Type)], agg: Option[Agg], aggregator: Option[TypedAggregator[Any]], functionMemo: Memo[AsmFunction3[Region, Long, Boolean, Long]]): Any = {
     def interpret(ir: IR, env: Env[Any] = env, args: IndexedSeq[(Any, Type)] = args, agg: Option[Agg] = agg, aggregator: Option[TypedAggregator[Any]] = aggregator): Any =
-      apply(ir, env, args, agg, aggregator)
+      apply(ir, env, args, agg, aggregator, functionMemo)
     ir match {
       case I32(x) => x
       case I64(x) => x
@@ -441,7 +442,9 @@ object Interpret {
             val ord = ordering.typ.ordering.toOrdering
             new TakeByAggregator(aggType, null, nValue)(ord)
           case Statistics() => new StatAggregator()
-          case InfoScore() => new InfoScoreAggregator()
+          case InfoScore() =>
+            val IndexedSeq(aggType) = seqOpArgTypes
+            new InfoScoreAggregator(aggType)
           case Histogram() =>
             val Seq(start, end, bins) = constructorArgs
             val startValue = interpret(start, Env.empty[Any], null, null).asInstanceOf[Double]
@@ -464,7 +467,8 @@ object Interpret {
             val Seq(k, k0) = constructorArgs
             val kValue = interpret(k, Env.empty[Any], null, null).asInstanceOf[Int]
             val k0Value = interpret(k0, Env.empty[Any], null, null).asInstanceOf[Int]
-            new LinearRegressionAggregator(null, kValue, k0Value)
+            val IndexedSeq(_, xType) = seqOpArgTypes
+            new LinearRegressionAggregator(null, kValue, k0Value, xType)
           case Keyed(op) =>
             new KeyedAggregator(getAggregator(op, seqOpArgTypes.drop(1)))
           case Downsample() =>
@@ -544,13 +548,15 @@ object Interpret {
         interpret(ir.explicitNode, env, args, agg)
       case ir: AbstractApplyNode[_] =>
         val argTuple = TTuple(ir.args.map(_.typ): _*)
-        val wrappedArgs: IndexedSeq[BaseIR] = ir.args.zipWithIndex.map { case (x, i) =>
-          GetTupleElement(Ref("in", argTuple), i)
-        }.toFastIndexedSeq
-        val wrappedIR = Copy(ir, wrappedArgs).asInstanceOf[IR]
+        val f = functionMemo.getOrElseUpdate(ir, {
+          val wrappedArgs: IndexedSeq[BaseIR] = ir.args.zipWithIndex.map { case (x, i) =>
+            GetTupleElement(Ref("in", argTuple), i)
+          }.toFastIndexedSeq
+          val wrappedIR = Copy(ir, wrappedArgs).asInstanceOf[IR]
 
-        val (_, makeFunction) = Compile[Long, Long]("in", argTuple, MakeTuple(List(wrappedIR)))
-        val f = makeFunction(0)
+          val (_, makeFunction) = Compile[Long, Long]("in", argTuple, MakeTuple(List(wrappedIR)))
+          makeFunction(0)
+        })
         Region.scoped { region =>
           val rvb = new RegionValueBuilder()
           rvb.set(region)

@@ -3,24 +3,28 @@ package is.hail.rvd
 import is.hail.annotations._
 import is.hail.sparkextras._
 import is.hail.utils.fatal
-import org.apache.spark.rdd.RDD
 
 import scala.collection.generic.Growable
 
-class KeyedOrderedRVD(val rvd: OrderedRVD, val key: Array[String]) {
-  val typ: OrderedRVDType = rvd.typ
-  val (kType, _) = rvd.rowType.select(key)
-  require(kType isPrefixOf rvd.typ.kType)
+class KeyedOrderedRVD(val rvd: OrderedRVD, val key: Int) {
+  require(key <= rvd.typ.key.length && key >= 0)
+  val realType: OrderedRVDType = rvd.typ
+  val virtType = new OrderedRVDType(realType.key.take(key), realType.rowType)
+  val (kType, _) = rvd.rowType.select(virtType.key)
 
   private def checkJoinCompatability(right: KeyedOrderedRVD) {
-    if (!(kType isIsomorphicTo kType))
+    if (!(kType isIsomorphicTo right.kType))
       fatal(
-        s"""Incompatible join keys.  Keys must have same length and types, in order:
-           | Left key type: ${ kType.toString }
-           | Right key type: ${ kType.toString }
+        s"""Incompatible join keys. Keys must have same length and types, in order:
+           | Left join key type: ${ kType.toString }
+           | Right join key type: ${ right.kType.toString }
          """.stripMargin)
   }
 
+  // 'joinedType.key' must be the join key, followed by the remaining left key,
+  // followed by the (possibly renamed) remaining right key. 'joiner' must copy
+  // these 'joinedType.key' fields from the corresponding fields in the
+  // JoinedRegionValue.
   def orderedJoin(
     right: KeyedOrderedRVD,
     joinType: String,
@@ -28,18 +32,20 @@ class KeyedOrderedRVD(val rvd: OrderedRVD, val key: Array[String]) {
     joinedType: OrderedRVDType
   ): OrderedRVD = {
     checkJoinCompatability(right)
-    val lTyp = typ
-    val rTyp = right.typ
 
-    val newPartitioner = (joinType: @unchecked) match {
-      case "inner" | "left" => this.rvd.partitioner
-      case "outer" | "right" =>
-        this.rvd.partitioner.enlargeToRange(right.rvd.partitioner.range)
+    val newPartitioner = {
+      def leftPart = this.rvd.partitioner.strictify
+      def rightPart = right.rvd.partitioner.coarsen(key).extendKey(realType.kType)
+      (joinType: @unchecked) match {
+        case "left" => leftPart
+        case "right" => rightPart
+        case "inner" => leftPart.intersect(rightPart)
+        case "outer" => OrderedRVDPartitioner.generate(
+          realType.kType,
+          leftPart.rangeBounds ++ rightPart.rangeBounds)
+      }
     }
-    val repartitionedLeft =
-      this.rvd.constrainToOrderedPartitioner(this.typ, newPartitioner)
-    val repartitionedRight =
-      right.rvd.constrainToOrderedPartitioner(right.typ, newPartitioner)
+    val repartitionedLeft = rvd.constrainToOrderedPartitioner(newPartitioner)
     val compute: (OrderedRVIterator, OrderedRVIterator, Iterable[RegionValue] with Growable[RegionValue]) => Iterator[JoinedRegionValue] =
       (joinType: @unchecked) match {
         case "inner" => _.innerJoin(_, _)
@@ -47,12 +53,14 @@ class KeyedOrderedRVD(val rvd: OrderedRVD, val key: Array[String]) {
         case "right" => _.rightJoin(_, _)
         case "outer" => _.outerJoin(_, _)
       }
+    val lTyp = virtType
+    val rTyp = right.virtType
+    val rRowType = right.realType.rowType
 
-    repartitionedLeft.zipPartitions(
-      joinedType,
-      newPartitioner,
-      repartitionedRight,
-      preservesPartitioning = true
+    repartitionedLeft.alignAndZipPartitions(
+      joinedType.copy(key = joinedType.key.take(realType.key.length)),
+      right.rvd,
+      kType
     ) { (ctx, leftIt, rightIt) =>
       val sideBuffer = ctx.freshContext.region
       joiner(
@@ -60,8 +68,8 @@ class KeyedOrderedRVD(val rvd: OrderedRVD, val key: Array[String]) {
         compute(
           OrderedRVIterator(lTyp, leftIt, ctx),
           OrderedRVIterator(rTyp, rightIt, ctx),
-          new RegionValueArrayBuffer(rTyp.rowType, sideBuffer)))
-    }
+          new RegionValueArrayBuffer(rRowType, sideBuffer)))
+    }.extendKeyPreservesPartitioning(joinedType.key)
   }
 
   def orderedJoinDistinct(
@@ -71,69 +79,66 @@ class KeyedOrderedRVD(val rvd: OrderedRVD, val key: Array[String]) {
     joinedType: OrderedRVDType
   ): OrderedRVD = {
     checkJoinCompatability(right)
-    val rekeyedLTyp = new OrderedRVDType(typ.partitionKey, key, typ.rowType)
-    val rekeyedRTyp = new OrderedRVDType(right.typ.partitionKey, right.key, right.typ.rowType)
+    val lTyp = virtType
+    val rTyp = right.virtType
 
-    val newPartitioner = this.rvd.partitioner
-    val repartitionedRight = right.rvd.constrainToOrderedPartitioner(
-      right.typ.copy(partitionKey = right.typ.key.take(newPartitioner.partitionKey.length)),
-      newPartitioner)
     val compute: (OrderedRVIterator, OrderedRVIterator) => Iterator[JoinedRegionValue] =
       (joinType: @unchecked) match {
         case "inner" => _.innerJoinDistinct(_)
         case "left" => _.leftJoinDistinct(_)
       }
 
-    rvd.zipPartitions(
+    rvd.alignAndZipPartitions(
       joinedType,
-      newPartitioner,
-      repartitionedRight,
-      preservesPartitioning = true
+      right.rvd,
+      kType
     ) { (ctx, leftIt, rightIt) =>
       joiner(
         ctx,
         compute(
-          OrderedRVIterator(rekeyedLTyp, leftIt, ctx),
-          OrderedRVIterator(rekeyedRTyp, rightIt, ctx)))
+          OrderedRVIterator(lTyp, leftIt, ctx),
+          OrderedRVIterator(rTyp, rightIt, ctx)))
     }
   }
 
   def orderedZipJoin(right: KeyedOrderedRVD): ContextRDD[RVDContext, JoinedRegionValue] = {
-    val newPartitioner = rvd.partitioner.enlargeToRange(right.rvd.partitioner.range)
+    checkJoinCompatability(right)
+    val ranges = this.rvd.partitioner.coarsenedRangeBounds(key) ++
+      right.rvd.partitioner.coarsenedRangeBounds(key)
+    val newPartitioner = OrderedRVDPartitioner.generate(virtType.key, kType, ranges)
 
-    val repartitionedLeft = rvd.constrainToOrderedPartitioner(typ, newPartitioner)
-    val repartitionedRight = right.rvd.constrainToOrderedPartitioner(right.typ, newPartitioner)
+    val repartitionedLeft = this.rvd.constrainToOrderedPartitioner(newPartitioner)
+    val repartitionedRight = right.rvd.constrainToOrderedPartitioner(newPartitioner)
 
-    val leftType = this.typ
-    val rightType = right.typ
-    repartitionedLeft.zipPartitions(
-      repartitionedRight,
-      preservesPartitioning = true
-    ) { (ctx, leftIt, rightIt) =>
-      OrderedRVIterator(leftType, leftIt, ctx)
-        .zipJoin(OrderedRVIterator(rightType, rightIt, ctx))
-    }
+    val leftType = this.virtType
+    val rightType = right.virtType
+    repartitionedLeft.crddBoundary.czipPartitions(repartitionedRight.crddBoundary)
+      { (ctx, leftIt, rightIt) =>
+        OrderedRVIterator(leftType, leftIt, ctx)
+          .zipJoin(OrderedRVIterator(rightType, rightIt, ctx))
+      }
   }
 
   def orderedMerge(right: KeyedOrderedRVD): OrderedRVD = {
     checkJoinCompatability(right)
-    require(this.typ.rowType == right.typ.rowType)
+    require(this.realType.rowType == right.realType.rowType)
 
-    val newPartitioner = OrderedRVDPartitioner.mergePartitioners(this.rvd.partitioner, right.rvd.partitioner)
+    val ranges = this.rvd.partitioner.coarsenedRangeBounds(key) ++
+      right.rvd.partitioner.coarsenedRangeBounds(key)
+    val newPartitioner = OrderedRVDPartitioner.generate(virtType.key, kType, ranges)
+
     val repartitionedLeft =
-      this.rvd.constrainToOrderedPartitioner(this.typ, newPartitioner)
-    val repartitionedRight =
-      right.rvd.constrainToOrderedPartitioner(right.typ, newPartitioner)
-    val leftType = this.typ
-    val rightType = right.typ
-    repartitionedLeft.zipPartitions(
-      this.typ,
-      newPartitioner,
-      repartitionedRight,
-      preservesPartitioning = true
+      this.rvd.constrainToOrderedPartitioner(newPartitioner)
+    val lType = this.virtType
+    val rType = right.virtType
+
+    repartitionedLeft.alignAndZipPartitions(
+      this.virtType,
+      right.rvd,
+      kType
     ) { (ctx, leftIt, rightIt) =>
-      OrderedRVIterator(leftType, leftIt, ctx)
-        .merge(OrderedRVIterator(rightType, rightIt, ctx))
+      OrderedRVIterator(lType, leftIt, ctx)
+        .merge(OrderedRVIterator(rType, rightIt, ctx))
     }
   }
 }

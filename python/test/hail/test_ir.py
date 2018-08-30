@@ -97,19 +97,20 @@ class ValueIRTests(unittest.TestCase):
 
 
 class TableIRTests(unittest.TestCase):
+
     def table_irs(self):
         b = ir.TrueIR()
         table_read = ir.TableRead(
-            'src/test/resources/backward_compatability/1.0.0/table/0.ht', False, None)
+            resource('backward_compatability/1.0.0/table/0.ht'), False, None)
         table_read_row_type = hl.dtype('struct{idx: int32, f32: float32, i64: int64, m: float64, astruct: struct{a: int32, b: float64}, mstruct: struct{x: int32, y: str}, aset: set<str>, mset: set<float64>, d: dict<array<str>, float64>, md: dict<int32, str>, h38: locus<GRCh38>, ml: locus<GRCh37>, i: interval<locus<GRCh37>>, c: call, mc: call, t: tuple(call, str, str), mt: tuple(locus<GRCh37>, bool)}')
 
         matrix_read = ir.MatrixRead(
-            'src/test/resources/backward_compatability/1.0.0/matrix_table/0.hmt', False, False)
+            resource('backward_compatability/1.0.0/matrix_table/0.hmt'), False, False)
 
         range = ir.TableRange(10, 4)
         table_irs = [
             ir.TableUnkey(table_read),
-            ir.TableKeyBy(table_read, ['m', 'd'], 1, True),
+            ir.TableKeyBy(table_read, ['m', 'd'], False),
             ir.TableFilter(table_read, b),
             table_read,
             ir.MatrixColsTable(matrix_read),
@@ -123,13 +124,10 @@ class TableIRTests(unittest.TestCase):
                 1, 2),
             ir.TableJoin(
                 table_read,
-                ir.TableRange(100, 10), 'inner'),
+                ir.TableRange(100, 10), 'inner', 1),
             ir.MatrixEntriesTable(matrix_read),
             ir.MatrixRowsTable(matrix_read),
-            ir.TableParallelize(
-                'Table{global:Struct{},key:None,row:Struct{a:Int32}}',
-                ir.Value(hl.tarray(hl.tstruct(a=hl.tint32)), [{'a':None}, {'a':5}, {'a':-3}]),
-                None),
+            ir.TableParallelize(ir.Literal(hl.tarray(hl.tstruct(a=hl.tint32)), [{'a':None}, {'a':5}, {'a':-3}]), None),
             ir.TableMapRows(
                 table_read,
                 ir.MakeStruct([
@@ -139,8 +137,7 @@ class TableIRTests(unittest.TestCase):
             ir.TableMapGlobals(
                 table_read,
                 ir.MakeStruct([
-                    ('foo', ir.NA(hl.tarray(hl.tint32)))]),
-                ir.Value(hl.tstruct(), {})),
+                    ('foo', ir.NA(hl.tarray(hl.tint32)))])),
             ir.TableRange(100, 10),
             ir.TableRepartition(table_read, 10, False),
             ir.TableUnion(
@@ -196,3 +193,35 @@ class TableIRTests(unittest.TestCase):
                 Env.hail().expr.Parser.parse_matrix_ir(str(x))
             except Exception as e:
                 raise ValueError(str(x)) from e
+
+
+class ValueTests(unittest.TestCase):
+
+    def values(self):
+        values = [
+            (hl.tbool, True),
+            (hl.tint32, 0),
+            (hl.tint64, 0),
+            (hl.tfloat32, 0.5),
+            (hl.tfloat64, 0.5),
+            (hl.tstr, "foo"),
+            (hl.tstruct(x=hl.tint32), hl.Struct(x=0)),
+            (hl.tarray(hl.tint32), [0, 1, 4]),
+            (hl.tset(hl.tint32), {0, 1, 4}),
+            (hl.tdict(hl.tstr, hl.tint32), {"a": 0, "b": 1, "c": 4}),
+            (hl.tinterval(hl.tint32), hl.Interval(0, 1, True, False)),
+            (hl.tlocus(hl.default_reference()), hl.Locus("1", 1)),
+            (hl.tcall, hl.Call([0, 1]))
+        ]
+        return values
+
+    def test_value_same_after_parsing(self):
+        for t, v in self.values():
+            row_v = ir.Literal(t, v)
+            map_globals_ir = ir.TableMapGlobals(
+                ir.TableRange(1, 1),
+                ir.InsertFields(
+                    ir.Ref("global", hl.tstruct()),
+                    [("foo", row_v)]))
+            new_globals = hl.Table._from_ir(map_globals_ir).globals.value
+            self.assertEquals(new_globals, hl.Struct(foo=v))

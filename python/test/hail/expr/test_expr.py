@@ -405,7 +405,7 @@ class Tests(unittest.TestCase):
         self.assertAlmostEqual(r.multiple_p_value, 0.56671386)
         self.assertAlmostEqual(r.n, 5)
 
-    def test_aggregators_downsample(self):
+    def test_aggregator_downsample(self):
         xs = [2, 6, 4, 9, 1, 8, 5, 10, 3, 7]
         ys = [2, 6, 4, 9, 1, 8, 5, 10, 3, 7]
         label1 = ["2", "6", "4", "9", "1", "8", "5", "10", "3", "7"]
@@ -422,6 +422,12 @@ class Tests(unittest.TestCase):
                         (10.0, 10.0, ('10', 'ten'))])
         for point in zip(xs, ys, label):
             self.assertTrue(point in expected)
+
+    def test_downsample_aggregator_on_empty_table(self):
+        ht = hl.utils.range_table(1)
+        ht = ht.annotate(y=ht.idx).filter(False)
+        r = ht.aggregate(agg.downsample(ht.idx, ht.y, n_divisions=10))
+        self.assertTrue(len(r) == 0)
 
     def test_aggregator_info_score(self):
         gen_file = resource('infoScoreTest.gen')
@@ -448,6 +454,16 @@ class Tests(unittest.TestCase):
         if not violations.count() == 0:
             violations.show()
             self.fail("disagreement between computed info score and truth")
+
+    def test_aggregator_info_score_works_with_bgen_import(self):
+        sample_file = resource('random.sample')
+        bgen_file = resource('random.bgen')
+        hl.index_bgen(bgen_file)
+        bgenmt = hl.import_bgen(bgen_file, ['GT', 'GP'], sample_file)
+        result = bgenmt.annotate_rows(info=hl.agg.info_score(bgenmt.GP)).rows().take(1)
+        result = result[0].info
+        self.assertAlmostEqual(result.score, -0.235041090, places=3)
+        self.assertEqual(result.n_included, 8)
 
     def test_aggregator_group_by(self):
         t = hl.Table.parallelize([
@@ -484,7 +500,20 @@ class Tests(unittest.TestCase):
         self.assertEqual(r.inbreeding['IBD'].n_called, 2)
         self.assertAlmostEqual(r.inbreeding['IBD'].expected_homs, 1.64)
         self.assertEqual(r.inbreeding['IBD'].observed_homs, 1)
-        
+
+    def test_aggregator_group_by_sorts_result(self):
+        t = hl.Table.parallelize([ # the `s` key is stored before the `m` in java.util.HashMap
+            {"group": "m", "x": 1},
+            {"group": "s", "x": 2},
+            {"group": "s", "x": 3},
+            {"group": "m", "x": 4},
+            {"group": "m", "x": 5}
+        ], hl.tstruct(group=hl.tstr, x=hl.tint32), n_partitions=1)
+
+        grouped_expr = t.aggregate(hl.array(hl.agg.group_by(t.group, hl.agg.sum(t.x))))
+        self.assertEqual(grouped_expr, hl.sorted(grouped_expr).value)
+
+
     def test_joins_inside_aggregators(self):
         table = hl.utils.range_table(10)
         table2 = hl.utils.range_table(10)
@@ -1424,7 +1453,7 @@ class Tests(unittest.TestCase):
         self.check_expr(c2_hetvar[1], 1, tint32)
         self.check_expr(c2_hetvar.phased, True, tbool)
         self.check_expr(c2_hetvar.is_hom_var(), False, tbool)
-        self.check_expr(c2_hetvar.is_het_nonref(), True, tbool)
+        self.check_expr(c2_hetvar.is_het_non_ref(), True, tbool)
 
         self.check_expr(c1.ploidy, 1, tint32)
         self.check_expr(c1[0], 1, tint32)
@@ -1884,6 +1913,10 @@ class Tests(unittest.TestCase):
         res = hl.chi_squared_test(51, 43, 22, 92).value
         self.assertAlmostEqual(res['p_value'] / 1.462626e-7, 1.0, places=4)
         self.assertAlmostEqual(res['odds_ratio'], 4.95983087)
+        
+        res = hl.chi_squared_test(61, 17493, 95, 84145).value
+        self.assertAlmostEqual(res['p_value'] / 4.74710374e-13, 1.0, places=4)
+        self.assertAlmostEqual(res['odds_ratio'], 3.08866103)
 
     def test_fisher_exact_test(self):
         res = hl.fisher_exact_test(0, 0, 0, 0).value
@@ -1952,3 +1985,29 @@ class Tests(unittest.TestCase):
         self.assertEqual(hl.format("%s", hl.struct(foo=5, bar=True, baz=hl.array([4, 5]))).value, '[5,true,[4,5]]')
         self.assertEqual(hl.format("%s %s", hl.locus("1", 356), hl.tuple([9, True, hl.null(hl.tstr)])).value, '1:356 [9,true,null]')
         self.assertEqual(hl.format("%b %B %b %b", hl.null(hl.tint), hl.null(hl.tstr), True, "hello").value, "false FALSE true true")
+
+    def test_dict_and_set_type_promotion(self):
+        d = hl.literal({5: 5}, dtype='dict<int64, int64>')
+        s = hl.literal({5}, dtype='set<int64>')
+
+        self.assertEqual(d[5].value, 5)
+        self.assertEqual(d.get(5).value, 5)
+        self.assertEqual(d.get(2, 3).value, 3)
+        self.assertTrue(d.contains(5).value)
+        self.assertTrue(~d.contains(2).value)
+
+        self.assertTrue(s.contains(5).value)
+        self.assertTrue(~s.contains(2).value)
+
+    def test_nan_roundtrip(self):
+        a = [math.nan, math.inf, -math.inf, 0, 1]
+        round_trip = hl.literal(a).value
+        self.assertTrue(math.isnan(round_trip[0]))
+        self.assertTrue(math.isinf(round_trip[1]))
+        self.assertTrue(math.isinf(round_trip[2]))
+        self.assertEqual(round_trip[-2:], [0, 1])
+
+    def test_approx_equal(self):
+        self.assertTrue(hl.approx_equal(0.25, 0.25000001).value)
+        self.assertTrue(hl.approx_equal(hl.null(hl.tint64), 5).value is None)
+        self.assertFalse(hl.approx_equal(0.25, 0.251, absolute=True, tolerance=1e-3).value)

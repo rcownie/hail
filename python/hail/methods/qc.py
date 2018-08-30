@@ -224,7 +224,7 @@ def variant_qc(mt, name='variant_qc') -> MatrixTable:
     `het_freq_hwe` and `p_value_hwe` are calculated as in
     :func:`.functions.hardy_weinberg_test`, with non-diploid calls
     (``ploidy != 2``) ignored in the counts. As this test is only
-    statistically rigorous in the biallelic setting, :func:`variant_qc`
+    statistically rigorous in the biallelic setting, :func:`.variant_qc`
     sets both fields to missing for multiallelic variants. Consider using
     :func:`~hail.methods.split_multi` to split multi-allelic variants beforehand.
 
@@ -480,7 +480,12 @@ def vep(dataset: Union[Table, MatrixTable], config, block_size=1000, name='vep',
 
     **Annotations**
 
-    A new row field is added in the location specified by `name` with type given by the type given by the `json_vep_schema` (if `csq` is ``False``) or :py:data:`.tstr` (if `csq` is ``True``).
+    A new row field is added in the location specified by `name` with type given
+    by the type given by the `json_vep_schema` (if `csq` is ``False``) or
+    :py:data:`.tstr` (if `csq` is ``True``).
+
+    If csq is ``True``, then the CSQ header string is also added as a global
+    field with name ``name + '_csq_header'``.
 
     Parameters
     ----------
@@ -510,6 +515,10 @@ def vep(dataset: Union[Table, MatrixTable], config, block_size=1000, name='vep',
         ht = dataset.select()
 
     annotations = Table(Env.hail().methods.VEP.apply(ht._jt, config, csq, block_size))
+
+    if csq:
+        dataset = dataset.annotate_globals(
+            **{name + '_csq_header': annotations['vep_csq_header'].value})
 
     if isinstance(dataset, MatrixTable):
         return dataset.annotate_rows(**{name: annotations[dataset.row_key].vep})
