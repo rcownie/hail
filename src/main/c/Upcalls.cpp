@@ -13,7 +13,7 @@ class UpcallConfig {
   jobject upcalls_;
   jmethodID info_method_;
   jmethodID warn_method_;
-  jmethodID errotr_method_;
+  jmethodID error_method_;
 
   UpcallConfig() {
     java_vm_ = get_saved_java_vm();
@@ -22,9 +22,15 @@ class UpcallConfig {
     assert(rc == JNI_OK);
     auto cl = env->FindClass("is/hail/nativecode/Upcalls");
     auto init_method = env->GetMethodID(cl, "<init>", "()V");
-    upcalls_ = env->NewObject(cl, init_method);
-    
-    
+    // NewObject gives a local ref only valid during this downcall
+    auto local_upcalls = env->NewObject(cl, init_method);
+    // Get a global ref to the new object
+    upcalls_ = env->NewGlobalRef(local_upcalls);
+    // Java method signatures are described here:
+    // http://journals.ecs.soton.ac.uk/java/tutorial/native1.1/implementing/method.html
+    info_method_ = env->GetMethodID(cl, "info", "(Ljava/lang/String;)V");
+    warn_method_ = env->GetMethodID(cl, "warn", "(Ljava/lang/String;)V");
+    error_method_ = env->GetMethodID(cl, "error", "(Ljava/lang/String;)V");
   }
 };
 
@@ -52,9 +58,9 @@ UpcallEnv::UpcallEnv() :
   // The version checks that the running JVM version is compatible
   // with the features used in this code.
   auto vm = config_->java_vm_;
-  auto rc = vm->GetEnv((void**)env, JNI_VERSION_1_8);
+  auto rc = vm->GetEnv((void**)&env_, JNI_VERSION_1_8);
   if (rc == JNI_EDETACHED) {
-    if (vm->AttachCurrentThread(env, nullptr) != JNI_OK) {
+    if (vm->AttachCurrentThread((void**)&env_, nullptr) != JNI_OK) {
       fprintf(stderr, "FATAL: vm->AttachCurrentThread() failed\n");
       assert(0);
     }
@@ -69,14 +75,22 @@ UpcallEnv::~UpcallEnv() {
   if (did_attach_) config_->java_vm_->DetachCurrentThread();
 }
 
-UpcallEnv::info(const std::string& msg) {
-
+void UpcallEnv::info(const std::string& msg) {
+  jstring msgJ = env_->NewStringUTF(msg.c_str());
+  env_->CallVoidMethod(config_->upcalls_, config_->info_method_, msgJ);
+  env_->DeleteLocalRef(msgJ);
 }
 
-UpcallEnv::warn(const std::string& msg) {
+void UpcallEnv::warn(const std::string& msg) {
+  jstring msgJ = env_->NewStringUTF(msg.c_str());
+  env_->CallVoidMethod(config_->upcalls_, config_->info_method_, msgJ);
+  env_->DeleteLocalRef(msgJ);
 }
 
-UpcallEnv::error(const std::string& msg) {
+void UpcallEnv::error(const std::string& msg) {
+  jstring msgJ = env_->NewStringUTF(msg.c_str());
+  env_->CallVoidMethod(config_->upcalls_, config_->info_method_, msgJ);
+  env_->DeleteLocalRef(msgJ);
 }
 
 } // namespace hail

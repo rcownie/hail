@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string>
 
+namespace hail {
+
 class UpcallConfig;
 
 class UpcallEnv {
@@ -26,5 +28,7 @@ class UpcallEnv {
   void error(const std::string& msg);
 
 };
+
+} // end hail
 
 #endif
