@@ -147,7 +147,7 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
       // Experiments on Mac (LLVM) show -O2 code about 1.08x faster than -O1,
       // but -O3 is no better than -O2
       val options = "-O2"
-      val mod = new NativeModule(options, code.toString(), false)
+      val mod = new NativeModule(options, code.toString())
       val st = new NativeStatus()
       mod.findOrBuild(st)
       if (st.fail) System.err.println(s"findOrBuild ${st}")
@@ -748,6 +748,8 @@ trait Decoder extends Closeable {
   def readRegionValue(region: Region): Long
 
   def readByte(): Byte
+
+  def dropUndecodedData(): Unit
 }
 
 class MethodBuilderSelfLike(val mb: MethodBuilder) extends MethodBuilderLike[MethodBuilderSelfLike] {
@@ -1443,6 +1445,13 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
       -1L
     }
   }
+
+  // If  we're going to seek() on the input stream, we need the decoder
+  // to get in step with the new position.
+  def dropUndecodedData(): Unit = {
+    Memory.storeLong(decoder.get()+posOffset, 0L)
+    Memory.storeLong(decoder.get()+sizeOffset, 0L)
+  }
 }
 
 final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, InputBuffer, Long]) extends Decoder {
@@ -1460,6 +1469,8 @@ final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, I
     numItems += 1
     result
   }
+
+  def dropUndecodedData() { }
 }
 
 final class PackDecoder(rowType: Type, in: InputBuffer) extends Decoder {
@@ -1470,6 +1481,8 @@ final class PackDecoder(rowType: Type, in: InputBuffer) extends Decoder {
   }
 
   def readByte(): Byte = in.readByte()
+
+  def dropUndecodedData() { }
 
   def readBinary(region: Region, off: Long) {
     val length = in.readInt()
