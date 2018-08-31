@@ -8,6 +8,8 @@
 
 namespace hail {
 
+// UpcallConfig holds once-per-session data such as jmethodID's
+
 class UpcallConfig {
  public:
   JavaVM* java_vm_;
@@ -17,8 +19,7 @@ class UpcallConfig {
   jmethodID warn_method_;
   jmethodID error_method_;
 
-  UpcallConfig() {
-    
+  UpcallConfig() {    
     java_vm_ = get_saved_java_vm();
     JNIEnv* env = nullptr;
     auto rc = java_vm_->GetEnv((void**)&env, JNI_VERSION_1_8);
@@ -45,7 +46,7 @@ UpcallConfig* get_config() {
   return &config;
 }
 
-} // end anonymous
+} // end anon
 
 // Code for JNI interaction is adapted from here:
 // https://stackoverflow.com/questions/30026030/what-is-the-best-way-to-save-jnienv/30026231#30026231
@@ -79,8 +80,11 @@ UpcallEnv::~UpcallEnv() {
   if (did_attach_) config_->java_vm_->DetachCurrentThread();
 }
 
+// set_test_msg is plumbed through to Scala in exactly the same way as the
+// info/warn/error methods, but it saves the msg in Upcalls.testMsg
+// where we can verify that the upcall delivered it correctly.
+
 void UpcallEnv::set_test_msg(const std::string& msg) {
-  fprintf(stderr, "DEBUG: UpcallEnv::set_test_msg ...\n");
   jstring msgJ = env_->NewStringUTF(msg.c_str());
   env_->CallVoidMethod(config_->upcalls_, config_->setTestMsg_method_, msgJ);
   env_->DeleteLocalRef(msgJ);
