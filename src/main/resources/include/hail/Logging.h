@@ -8,6 +8,8 @@
 // {info,warn,error} in generated code without qualifiying as "Logging.info"
 
 namespace hail {
+  
+void set_test_msg(const std::string& msg);
 
 void info(const std::string& msg);
 

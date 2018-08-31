@@ -140,11 +140,14 @@ class NativeCodeSuite extends SparkSuite {
     val sb = new StringBuilder()
     sb.append(
     """#include "hail/hail.h"
+      |#include <cstdio>
       |
       |NAMESPACE_HAIL_MODULE_BEGIN
       |
       |long testUpcall(NativeStatus* st, long a0) {
-      |  info("testUpcall makes upcall to info()\n");
+      |  fprintf(stderr, "DEBUG: testUpcall ...\n");
+      |  set_test_msg("Hello!");
+      |  fprintf(stderr, "DEBUG: testUpcall done\n");
       |  return a0;
       |}
       |
@@ -153,7 +156,10 @@ class NativeCodeSuite extends SparkSuite {
     )
     val st = new NativeStatus()
     val mod = new NativeModule("", sb.toString())
+    System.err.println(s"Upcalls.testMsg <${Upcalls.testMsg}>")
     val testUpcall = mod.findLongFuncL1(st, "testUpcall")
+    System.err.println(s"Upcalls.testMsg <${Upcalls.testMsg}>")
+    assert(Upcalls.testMsg.equals("Hello!"))
     mod.close()
     assert(st.ok, st.toString())
     assert(testUpcall(st, 99) == 99)

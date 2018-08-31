@@ -22,6 +22,9 @@ class UpcallEnv {
   // Destructor restores the previous state
   ~UpcallEnv();
   
+  // Test with same interface as logging calls 
+  void set_test_msg(const std::string& msg);
+  
   // Logging (through is.hail.utils)
   void info(const std::string& msg);
   void warn(const std::string& msg);

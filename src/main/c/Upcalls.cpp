@@ -1,11 +1,10 @@
 #include "hail/Upcalls.h"
 #include "hail/NativePtr.h"
 #include <jni.h>
+#include <cassert>
 #include <cstdio>
 #include <mutex>
 #include <string>
-
-#define D(x) { printf("DEBUG[%d]: ", __LINE__); printf x ; printf("\n"); fflush(stdout); }
 
 namespace hail {
 
@@ -13,6 +12,7 @@ class UpcallConfig {
  public:
   JavaVM* java_vm_;
   jobject upcalls_;
+  jmethodID setTestMsg_method_;
   jmethodID info_method_;
   jmethodID warn_method_;
   jmethodID error_method_;
@@ -31,6 +31,7 @@ class UpcallConfig {
     upcalls_ = env->NewGlobalRef(local_upcalls);
     // Java method signatures are described here:
     // http://journals.ecs.soton.ac.uk/java/tutorial/native1.1/implementing/method.html
+    setTestMsg_method_ = env->GetMethodID(cl, "setTestMsg", "(Ljava/lang/String;)V");
     info_method_ = env->GetMethodID(cl, "info", "(Ljava/lang/String;)V");
     warn_method_ = env->GetMethodID(cl, "warn", "(Ljava/lang/String;)V");
     error_method_ = env->GetMethodID(cl, "error", "(Ljava/lang/String;)V");
@@ -76,6 +77,13 @@ UpcallEnv::UpcallEnv() :
 
 UpcallEnv::~UpcallEnv() {
   if (did_attach_) config_->java_vm_->DetachCurrentThread();
+}
+
+void UpcallEnv::set_test_msg(const std::string& msg) {
+  fprintf(stderr, "DEBUG: UpcallEnv::set_test_msg ...\n");
+  jstring msgJ = env_->NewStringUTF(msg.c_str());
+  env_->CallVoidMethod(config_->upcalls_, config_->setTestMsg_method_, msgJ);
+  env_->DeleteLocalRef(msgJ);
 }
 
 void UpcallEnv::info(const std::string& msg) {
