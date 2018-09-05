@@ -529,6 +529,7 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
   def readToEndOfBlock(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
     val result = in.readToEndOfBlock(toAddr, toBuf, toOff, n)
     if (result > 0) bytePos += result
+    System.err.println(s"DEBUG: LEB128 readToEndOfBlock(toAddr ${toAddr}, toOff ${toOff}, n ${n}) -> ${result}")
     result
   }
 }
@@ -571,6 +572,7 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
         Memory.memcpy(toBuf, toOff, decompBuf, pos, ngot)
       }
     }
+    System.err.println(s"DEBUG: LZ4 readToEndOfBlock(toAddr ${toAddr}, toOff ${toOff}, n ${n}) -> ${ngot}")
     ngot
   }
 }
@@ -724,6 +726,7 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
         Memory.memcpy(toBuf, toOff, buf, off, ngot)
       }
     }
+    System.err.println(s"DEBUG: Blocking readToEndOfBlock(toAddr ${toAddr}, toOff ${toOff}, n ${n}) -> ${ngot}")
     ngot
   }
 }
@@ -1396,6 +1399,7 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     var done = false
     while (!done) {
       rc = decode_one_byte(st, decoder.get(), pushSize)
+      System.err.println(s"DEBUG: decode_one_byte() -> ${rc.toInt}")
       if (rc <= 0) {
         rc = -rc
         done = true
@@ -1415,6 +1419,7 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     while (!done) {
       val startByte = (Memory.loadByte(decoderBuf+decoderPos) & 0xff)
       rc = decode_until_done_or_need_push(st, decoder.get(), region.get(), pushSize)
+      System.err.println(s"DEBUG: decode_until_done() -> ${rc}")
       if (rc <= 0) {
         done = true
       } else {
