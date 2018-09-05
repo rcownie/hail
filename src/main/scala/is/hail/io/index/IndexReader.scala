@@ -57,8 +57,7 @@ class IndexReader(hConf: Configuration, path: String, cacheCapacity: Int = 8) ex
       cache.get(offset).asInstanceOf[InternalNode]
     } else {
       cacheMisses += 1
-      is.seek(offset)
-      internalDecoder.dropUndecodedData()
+      internalDecoder.seek(offset)
       assert(internalDecoder.readByte() == 1)
       rv.setOffset(internalDecoder.readRegionValue(region))
       val node = InternalNode(SafeRow(internalType, rv))
@@ -74,8 +73,7 @@ class IndexReader(hConf: Configuration, path: String, cacheCapacity: Int = 8) ex
       cache.get(offset).asInstanceOf[LeafNode]
     } else {
       cacheMisses += 1
-      is.seek(offset)
-      leafDecoder.dropUndecodedData()
+      leafDecoder.seek(offset)
       assert(leafDecoder.readByte() == 0)
       rv.setOffset(leafDecoder.readRegionValue(region))
       val node = LeafNode(SafeRow(leafType, rv))

@@ -8,10 +8,11 @@ import is.hail.nativecode._
 import is.hail.rvd.{OrderedRVDPartitioner, OrderedRVDSpec, RVDContext, RVDSpec, UnpartitionedRVDSpec}
 import is.hail.sparkextras._
 import is.hail.utils._
+import org.apache.hadoop.fs.Seekable
 import org.apache.spark.rdd.RDD
 import org.json4s.{Extraction, JValue}
 import org.json4s.jackson.JsonMethods
-import java.io.{Closeable, InputStream, OutputStream, PrintWriter}
+import java.io.{Closeable, InputStream, IOException, OutputStream, PrintWriter}
 import scala.collection.mutable.ArrayBuffer
 
 import is.hail.asm4s._
@@ -428,7 +429,14 @@ trait InputBuffer extends Closeable {
 
   def readBoolean(): Boolean = readByte() != 0
 
+  // C++ decoder must buffer data ahead of the decode to go fast
   def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int
+
+  // IndexReader seek's on the InputStream, but the seek must pass
+  // through all layers of buffering to keep everything in step
+  @throws(classOf[ClassCastException])
+  @throws(classOf[IOException])
+  def seek(pos: Long): Unit
 }
 
 final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
@@ -528,6 +536,10 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
     if (result > 0) bytePos += result
     result
   }
+
+  @throws(classOf[ClassCastException])
+  @throws(classOf[IOException])
+  def seek(pos: Long): Unit = in.asInstanceOf[Seekable].seek(pos)
 }
 
 final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends InputBlockBuffer {
@@ -575,6 +587,12 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       }
     }
     if (ngot > 0) ngot else -1
+  }
+
+  @throws(classOf[ClassCastException])
+  @throws(classOf[IOException])
+  def seek(pos: Long): Unit = {
+    throw new IOException("LZ4InputBlockBuffer does not support seek")
   }
 }
 
@@ -738,6 +756,12 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     val result = if (ngot > 0) ngot else -1
     result
   }
+
+  @throws(classOf[ClassCastException])
+  @throws(classOf[IOException])
+  def seek(pos: Long): Unit = {
+    throw new IOException("BlockingInputBuffer does not support seek")
+  }
 }
 
 trait Decoder extends Closeable {
@@ -749,7 +773,10 @@ trait Decoder extends Closeable {
 
   def readByte(): Byte
 
-  def dropUndecodedData(): Unit
+  // seek will be passed through all InputBuffer layers to the InputStream
+  @throws(classOf[ClassCastException])
+  @throws(classOf[IOException])
+  def seek(pos: Long): Unit
 }
 
 class MethodBuilderSelfLike(val mb: MethodBuilder) extends MethodBuilderLike[MethodBuilderSelfLike] {
@@ -1446,12 +1473,9 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     }
   }
 
-  // If  we're going to seek() on the input stream, we need the decoder
-  // to get in step with the new position.
-  def dropUndecodedData(): Unit = {
-    Memory.storeLong(decoder.get()+posOffset, 0L)
-    Memory.storeLong(decoder.get()+sizeOffset, 0L)
-  }
+  @throws(classOf[ClassCastException])
+  @throws(classOf[IOException])
+  def seek(pos: Long): Unit = in.seek(pos)
 }
 
 final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, InputBuffer, Long]) extends Decoder {
@@ -1470,7 +1494,9 @@ final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, I
     result
   }
 
-  def dropUndecodedData() { }
+  @throws(classOf[ClassCastException])
+  @throws(classOf[IOException])
+  def seek(pos: Long): Unit = in.seek(pos)
 }
 
 final class PackDecoder(rowType: Type, in: InputBuffer) extends Decoder {
@@ -1575,6 +1601,10 @@ final class PackDecoder(rowType: Type, in: InputBuffer) extends Decoder {
         readArray(t, region)
     }
   }
+
+  @throws(classOf[ClassCastException])
+  @throws(classOf[IOException])
+  def seek(pos: Long): Unit = in.seek(pos)
 }
 
 trait Encoder extends Closeable {
