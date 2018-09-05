@@ -3,7 +3,6 @@ package is.hail.methods
 import is.hail.utils._
 import is.hail.variant._
 import is.hail.expr.types._
-import is.hail.nativecode.NativeCode
 import is.hail.table.Table
 import is.hail.stats.{LogisticRegressionModel, RegressionUtils, eigSymD}
 import is.hail.annotations.{Annotation, UnsafeRow}
@@ -191,19 +190,19 @@ object Skat {
         } else {
           Row(key, size, null, null, null)
         }
-      }
+      }.persist()
     }
     
     val skatRdd = if (logistic) logisticSkat() else linearSkat()
     
     val skatSignature = TStruct(
-      ("key", keyType),
+      ("id", keyType),
       ("size", TInt32()),
       ("q_stat", TFloat64()),
       ("p_value", TFloat64()),
       ("fault", TInt32()))
 
-    Table(vsm.hc, skatRdd, skatSignature, Some(FastIndexedSeq("key")))
+    Table(vsm.hc, skatRdd, skatSignature, Some(FastIndexedSeq("id")))
   }
 
   def computeKeyGsWeightRdd(vsm: MatrixTable,
@@ -330,9 +329,7 @@ object Skat {
     sigma: Double, c1: Double, lim1: Int, acc: Double, trace: Array[Double],
     ifault: IntByReference): Double
 
-  // NativeCode needs to control the initial loading of the libhail DLL, and
-  // the call to getHailName() guarantees that.
-  Native.register(NativeCode.getHailName())
+  Native.register("hail")
   
   // gramian is the m x m matrix (G * sqrt(W)).t * P_0 * (G * sqrt(W)) which has the same non-zero eigenvalues
   // as the n x n matrix in the paper P_0^{1/2} * (G * W * G.t) * P_0^{1/2}
