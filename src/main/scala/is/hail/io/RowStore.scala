@@ -430,9 +430,8 @@ trait InputBuffer extends Closeable {
 
   // C++ decoder must buffer data ahead of the decode to go fast, but must not
   // go across a block boundary because IndexReader will seek() the InputStream
-  // after each RegionValue.
+  // after each RegionValue, invalidating any read-ahead data.
   def readToEndOfBlock(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int
-
 }
 
 final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
@@ -560,7 +559,7 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
 
   def readToEndOfBlock(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
     var ngot = (lim - pos)
-    if (ngot == 0) {
+    while (ngot == 0) {
       pos = 0
       ngot = readBlock(decompBuf)
       if (ngot > n) ngot = n
@@ -712,29 +711,20 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
   }
 
   def readToEndOfBlock(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
-    var ngot = 0
-    while ((off <= end) && (ngot < n)) {
-      var have = (end - off)
-      if (have == 0) {
-        blockBytePos += end
-        have = in.readBlock(buf)
-        if (have < 0) have = -1
-        end = have
-        off = 0
-      }
-      if (have > 0) {
-        val chunk = if (have < n-ngot) have else n-ngot
-        if (toAddr != 0) { // copy directly to off-heap buffer
-          Memory.memcpy(toAddr+toOff+ngot, buf, off, chunk)
-        } else {
-          Memory.memcpy(toBuf, toOff+ngot, buf, off, chunk)
-        }
-        off += chunk
-        ngot += chunk
+    var ngot = (end - off)
+    while (ngot == 0) {
+      readBlock()
+      ngot = end
+      if (ngot > n) ngot = n
+    }
+    if (ngot > 0) {
+      if (toAddr != 0) { // copy directly to off-heap buffer
+        Memory.memcpy(toAddr+toOff, buf, off, ngot)
+      } else {
+        Memory.memcpy(toBuf, toOff, buf, off, ngot)
       }
     }
-    val result = if (ngot > 0) ngot else -1
-    result
+    ngot
   }
 }
 
