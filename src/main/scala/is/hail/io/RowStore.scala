@@ -8,11 +8,10 @@ import is.hail.nativecode._
 import is.hail.rvd.{OrderedRVDPartitioner, OrderedRVDSpec, RVDContext, RVDSpec, UnpartitionedRVDSpec}
 import is.hail.sparkextras._
 import is.hail.utils._
-import org.apache.hadoop.fs.Seekable
 import org.apache.spark.rdd.RDD
 import org.json4s.{Extraction, JValue}
 import org.json4s.jackson.JsonMethods
-import java.io.{Closeable, InputStream, IOException, OutputStream, PrintWriter}
+import java.io.{Closeable, InputStream, OutputStream, PrintWriter}
 import scala.collection.mutable.ArrayBuffer
 
 import is.hail.asm4s._
@@ -429,14 +428,11 @@ trait InputBuffer extends Closeable {
 
   def readBoolean(): Boolean = readByte() != 0
 
-  // C++ decoder must buffer data ahead of the decode to go fast
-  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int
+  // C++ decoder must buffer data ahead of the decode to go fast, but must not
+  // go across a block boundary because IndexReader will seek() the InputStream
+  // after each RegionValue.
+  def readToEndOfBlock(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int
 
-  // IndexReader seek's on the InputStream, but the seek must pass
-  // through all layers of buffering to keep everything in step
-  @throws(classOf[ClassCastException])
-  @throws(classOf[IOException])
-  def seek(pos: Long): Unit
 }
 
 final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
@@ -531,15 +527,11 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
     in.readDoubles(to, toOff, n)
   }
 
-  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
-    val result = in.speculativeRead(toAddr, toBuf, toOff, n)
+  def readToEndOfBlock(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
+    val result = in.readToEndOfBlock(toAddr, toBuf, toOff, n)
     if (result > 0) bytePos += result
     result
   }
-
-  @throws(classOf[ClassCastException])
-  @throws(classOf[IOException])
-  def seek(pos: Long): Unit = in.asInstanceOf[Seekable].seek(pos)
 }
 
 final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends InputBlockBuffer {
@@ -566,33 +558,21 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     result
   }
 
-  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
-    var ngot = 0
-    while ((pos <= lim) && (ngot < n)) {
-      var have = (lim - pos)
-      if (have == 0) {
-        have = readBlock(decompBuf) // -1 for end-of-file
-        lim = have
-        pos = 0
-      }
-      if (have > 0) {
-        val chunk = if (have < n-ngot) have else n-ngot
-        if (toAddr != 0) { // copy directly to off-heap buffer
-          Memory.memcpy(toAddr+toOff+ngot, decompBuf, pos, chunk)
-        } else {
-          Memory.memcpy(toBuf, toOff+ngot, decompBuf, pos, chunk)
-        }
-        pos += chunk
-        ngot += chunk
+  def readToEndOfBlock(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
+    var ngot = (lim - pos)
+    if (ngot == 0) {
+      pos = 0
+      ngot = readBlock(decompBuf)
+      if (ngot > n) ngot = n
+    }
+    if (ngot > 0) {
+      if (toAddr != 0) { // copy directly to off-heap buffer
+        Memory.memcpy(toAddr+toOff, decompBuf, pos, ngot)
+      } else {
+        Memory.memcpy(toBuf, toOff, decompBuf, pos, ngot)
       }
     }
-    if (ngot > 0) ngot else -1
-  }
-
-  @throws(classOf[ClassCastException])
-  @throws(classOf[IOException])
-  def seek(pos: Long): Unit = {
-    throw new IOException("LZ4InputBlockBuffer does not support seek")
+    ngot
   }
 }
 
@@ -731,7 +711,7 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     }
   }
 
-  def speculativeRead(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
+  def readToEndOfBlock(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
     var ngot = 0
     while ((off <= end) && (ngot < n)) {
       var have = (end - off)
@@ -756,12 +736,6 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     val result = if (ngot > 0) ngot else -1
     result
   }
-
-  @throws(classOf[ClassCastException])
-  @throws(classOf[IOException])
-  def seek(pos: Long): Unit = {
-    throw new IOException("BlockingInputBuffer does not support seek")
-  }
 }
 
 trait Decoder extends Closeable {
@@ -772,11 +746,6 @@ trait Decoder extends Closeable {
   def readRegionValue(region: Region): Long
 
   def readByte(): Byte
-
-  // seek will be passed through all InputBuffer layers to the InputStream
-  @throws(classOf[ClassCastException])
-  @throws(classOf[IOException])
-  def seek(pos: Long): Unit
 }
 
 class MethodBuilderSelfLike(val mb: MethodBuilder) extends MethodBuilderLike[MethodBuilderSelfLike] {
@@ -1427,7 +1396,7 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
 
   def pushData(size: Long): Long = {
     val tellBefore = tell()
-    val ngot = in.speculativeRead(decoderBuf+decoderSize, tmpBuf, 0, size.toInt)
+    val ngot = in.readToEndOfBlock(decoderBuf+decoderSize, tmpBuf, 0, size.toInt)
     ngot
   }
 
@@ -1472,10 +1441,6 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
       -1L
     }
   }
-
-  @throws(classOf[ClassCastException])
-  @throws(classOf[IOException])
-  def seek(pos: Long): Unit = in.seek(pos)
 }
 
 final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, InputBuffer, Long]) extends Decoder {
@@ -1493,10 +1458,6 @@ final class CompiledPackDecoder(in: InputBuffer, f: () => AsmFunction2[Region, I
     numItems += 1
     result
   }
-
-  @throws(classOf[ClassCastException])
-  @throws(classOf[IOException])
-  def seek(pos: Long): Unit = in.seek(pos)
 }
 
 final class PackDecoder(rowType: Type, in: InputBuffer) extends Decoder {
@@ -1601,10 +1562,6 @@ final class PackDecoder(rowType: Type, in: InputBuffer) extends Decoder {
         readArray(t, region)
     }
   }
-
-  @throws(classOf[ClassCastException])
-  @throws(classOf[IOException])
-  def seek(pos: Long): Unit = in.seek(pos)
 }
 
 trait Encoder extends Closeable {
