@@ -55,17 +55,9 @@ object Table {
   def read(hc: HailContext, path: String): Table =
     new Table(hc, TableIR.read(hc, path, dropRows = false, None))
 
-  def parallelize(hc: HailContext, rowsJSON: String, signature: TStruct,
-    keyNames: Option[java.util.ArrayList[String]], nPartitions: Option[Int]): Table = {
-    val parsedRows = JSONAnnotationImpex.importAnnotation(JsonMethods.parse(rowsJSON), TArray(signature))
-      .asInstanceOf[IndexedSeq[Row]]
-    parallelize(hc, parsedRows, signature, keyNames.map(_.asScala.toArray.toFastIndexedSeq), nPartitions)
-  }
-
-  def parallelize(hc: HailContext, rows: IndexedSeq[Row], signature: TStruct,
-    key: Option[IndexedSeq[String]], nPartitions: Option[Int]): Table = {
-    val typ = TableType(signature, key.map(_.toArray.toFastIndexedSeq), TStruct())
-    new Table(hc, TableParallelize(typ, rows, nPartitions))
+  def parallelize(ir: String, nPartitions: Option[Int]): Table = {
+    val rowsIR = Parser.parse_value_ir(ir)
+    new Table(HailContext.get, TableParallelize(rowsIR, nPartitions))
   }
 
   def importFam(hc: HailContext, path: String, isQuantPheno: Boolean = false,
@@ -227,27 +219,6 @@ class Table(val hc: HailContext, val tir: TableIR) {
   if (key.exists(key => !key.forall(fieldNames.contains(_))))
     fatal(s"Key names found that are not column names: ${ key.get.filterNot(fieldNames.contains(_)).mkString(", ") }")
 
-  def rowEvalContext(): EvalContext = {
-    val ec = EvalContext(
-      "global" -> globalSignature,
-      "row" -> signature)
-    ec
-  }
-
-  def aggEvalContext(): EvalContext = {
-    val ec = EvalContext("global" -> globalSignature,
-      "AGG" -> aggType())
-    ec
-  }
-
-  def aggType(): TAggregable = {
-    val aggSymbolTable = Map(
-      "global" -> (0, globalSignature),
-      "row" -> (1, signature)
-    )
-    TAggregable(signature, aggSymbolTable)
-  }
-
   def fields: Array[Field] = signature.fields.toArray
 
   val keyFieldIdx: Option[Array[Int]] =
@@ -281,7 +252,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
   def nPartitions: Int = rvd.getNumPartitions
 
   def keySignature: Option[TStruct] = key.map { key =>
-    val (t, _) = signature.select(key.toArray)
+    val (t, _) = signature.select(key)
     t
   }
 
@@ -406,7 +377,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
   }
 
   def aggregate(expr: String): (Any, Type) =
-    aggregate(Parser.parse_value_ir(expr, typ.refMap))
+    aggregate(Parser.parse_value_ir(expr, IRParserEnvironment(typ.refMap)))
 
   def aggregate(query: IR): (Any, Type) = {
     val t = ir.TableAggregate(tir, query)
@@ -419,12 +390,12 @@ class Table(val hc: HailContext, val tir: TableIR) {
   }
 
   def selectGlobal(expr: String): Table = {
-    val ir = Parser.parse_value_ir(expr, typ.refMap)
+    val ir = Parser.parse_value_ir(expr, IRParserEnvironment(typ.refMap))
     new Table(hc, TableMapGlobals(tir, ir))
   }
 
   def filter(cond: String, keep: Boolean): Table = {
-    var irPred = Parser.parse_value_ir(cond, typ.refMap)
+    var irPred = Parser.parse_value_ir(cond, IRParserEnvironment(typ.refMap))
     new Table(hc,
       TableFilter(tir, ir.filterPredicateWithKeep(irPred, keep)))
   }
@@ -464,12 +435,12 @@ class Table(val hc: HailContext, val tir: TableIR) {
     select(expr, Option(newKey).map(_.asScala.toFastIndexedSeq), Option(preservedKeyFields).map(_.toInt))
 
   def select(expr: String, newKey: Option[IndexedSeq[String]], preservedKeyFields: Option[Int]): Table = {
-    val ir = Parser.parse_value_ir(expr, typ.refMap)
+    val ir = Parser.parse_value_ir(expr, IRParserEnvironment(typ.refMap))
     new Table(hc, TableMapRows(tir, ir, newKey, preservedKeyFields))
   }
 
   def join(other: Table, joinType: String): Table =
-    new Table(hc, TableJoin(this.tir, other.tir, joinType))
+    new Table(hc, TableJoin(this.tir, other.tir, joinType, typ.keyOrEmpty.length))
 
   def leftJoinRightDistinct(other: Table, root: String): Table =
     new Table(hc, TableLeftJoinRightDistinct(tir, other.tir, root))
@@ -517,8 +488,8 @@ class Table(val hc: HailContext, val tir: TableIR) {
 
   def keyByAndAggregate(expr: String, key: String, nPartitions: Option[Int], bufferSize: Int): Table = {
     new Table(hc, TableKeyByAndAggregate(tir,
-      Parser.parse_value_ir(expr, typ.refMap),
-      Parser.parse_value_ir(key, typ.refMap),
+      Parser.parse_value_ir(expr, IRParserEnvironment(typ.refMap)),
+      Parser.parse_value_ir(key, IRParserEnvironment(typ.refMap)),
       nPartitions,
       bufferSize
     ))
@@ -528,7 +499,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
     new MatrixTable(hc, UnlocalizeEntries(tir, cols.tir, entriesFieldName))
 
   def aggregateByKey(expr: String): Table = {
-    val x = Parser.parse_value_ir(expr, typ.refMap)
+    val x = Parser.parse_value_ir(expr, IRParserEnvironment(typ.refMap))
     new Table(hc, TableAggregateByKey(tir, x))
   }
 
@@ -795,7 +766,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
       case ordered: OrderedRVD => ordered
       case unordered =>
         OrderedRVD.coerce(
-          new OrderedRVDType(key.get.toArray, signature),
+          OrderedRVDType(key.get, signature),
           unordered)
     }
 
@@ -803,7 +774,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
 
     val typToInsert: Type = other.valueSignature
 
-    val (newRVType, ins) = signature.unsafeStructInsert(typToInsert, List(fieldName))
+    val (newRowType, ins) = signature.unsafeStructInsert(typToInsert, List(fieldName))
 
     val partBc = hc.sc.broadcast(leftORVD.partitioner)
     val rightSignature = other.signature
@@ -833,8 +804,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
 
     val localRVRowType = signature
     val pkIndex = signature.fieldIdx(key.get(0))
-    val newTableType = typ.copy(rowType = newRVType)
-    val newOrderedRVType = new OrderedRVDType(key.get.toArray, newRVType)
+    val newOrderedRVType = OrderedRVDType(key.get, newRowType)
     val newRVD = leftORVD.zipPartitionsPreservesPartitioning(
       newOrderedRVType,
       zipRDD
@@ -861,7 +831,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
         assert(typToInsert.typeCheck(value))
 
         rvb.set(rv.region)
-        rvb.start(newRVType)
+        rvb.start(newRowType)
 
         ins(rv.region, rv.offset, rvb, () => rvb.addAnnotation(typToInsert, value))
 
@@ -871,7 +841,7 @@ class Table(val hc: HailContext, val tir: TableIR) {
       }
     }
 
-    copy2(rvd = newRVD, signature = newRVType)
+    copy2(rvd = newRVD, signature = newRowType)
   }
 
   def filterPartitions(parts: java.util.ArrayList[Int], keep: Boolean): Table =

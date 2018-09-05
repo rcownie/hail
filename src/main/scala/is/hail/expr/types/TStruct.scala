@@ -1,16 +1,15 @@
 package is.hail.expr.types
 
 import is.hail.annotations.{Annotation, AnnotationPathException, _}
-import is.hail.asm4s.{Code, _}
+import is.hail.asm4s.Code
+import is.hail.expr.Parser
 import is.hail.expr.ir.EmitMethodBuilder
-import is.hail.expr.{EvalContext, HailRep, Parser}
 import is.hail.utils._
 import org.apache.spark.sql.Row
 import org.json4s.CustomSerializer
 import org.json4s.JsonAST.JString
 
 import scala.collection.JavaConverters._
-import scala.collection.mutable
 
 class TStructSerializer extends CustomSerializer[TStruct](format => (
   { case JString(s) => Parser.parseStructType(s) },
@@ -425,7 +424,7 @@ final case class TStruct(fields: IndexedSeq[Field], override val required: Boole
     }
   }
 
-  def select(keep: Array[String]): (TStruct, (Row) => Row) = {
+  def select(keep: IndexedSeq[String]): (TStruct, (Row) => Row) = {
     val t = TStruct(keep.map { n =>
       n -> field(n).typ
     }: _*)
@@ -437,7 +436,7 @@ final case class TStruct(fields: IndexedSeq[Field], override val required: Boole
     (t, selectF)
   }
 
-  def typeAfterSelect(keep: Array[Int]): TStruct =
+  def typeAfterSelect(keep: IndexedSeq[Int]): TStruct =
     TStruct(keep.map(i => fieldNames(i) -> types(i)): _*)
 
   override val fundamentalType: TStruct = {

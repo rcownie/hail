@@ -508,15 +508,6 @@ case class MatrixFilterRows(child: MatrixIR, pred: IR) extends MatrixIR {
 
   def typ: MatrixType = child.typ
 
-  val tAggElt: Type = child.typ.entryType
-  val aggSymTab = Map(
-    "global" -> (0, child.typ.globalType),
-    "va" -> (1, child.typ.rvRowType),
-    "g" -> (2, child.typ.entryType),
-    "sa" -> (3, child.typ.colType))
-
-  val tAgg = TAggregable(tAggElt, aggSymTab)
-
   override def columnCount: Option[Int] = child.columnCount
 
   def execute(hc: HailContext): MatrixValue = {
@@ -693,7 +684,7 @@ case class MatrixAggregateRowsByKey(child: MatrixIR, expr: IR) extends MatrixIR 
     val newRVType = typ.rvRowType
     val newRowType = typ.rowType
     val rvType = prev.typ.rvRowType
-    val selectIdx = prev.typ.orvdType.kRowFieldIdx
+    val selectIdx = prev.typ.orvdType.kFieldIdx
     val keyOrd = prev.typ.orvdType.kRowOrd
     val localGlobalsType = prev.typ.globalType
     val localColsType = TArray(minColType)
@@ -840,6 +831,7 @@ case class MatrixAggregateColsByKey(child: MatrixIR, aggIR: IR) extends MatrixIR
     // local things for serialization
     val oldNCols = mv.nCols
     val oldRVRowType = mv.typ.rvRowType
+    val oldEntriesIndex = mv.typ.entriesIdx
     val oldColsType = TArray(mv.typ.colType)
     val oldColValues = mv.colValues
     val oldColValuesBc = mv.colValues.broadcast
@@ -848,7 +840,6 @@ case class MatrixAggregateColsByKey(child: MatrixIR, aggIR: IR) extends MatrixIR
 
     val newRVType = typ.rvRowType
     val newColType = typ.colType
-    val newEntriesIndex = typ.entriesIdx
 
     val keyIndices = mv.typ.colKey.map(k => mv.typ.colType.field(k).index)
     val keys = oldColValuesBc.value.map { a => Row.fromSeq(keyIndices.map(a.asInstanceOf[Row].get)) }.toSet.toArray
@@ -951,7 +942,6 @@ case class MatrixAggregateColsByKey(child: MatrixIR, aggIR: IR) extends MatrixIR
 
     val mapPartitionF = { (i: Int, ctx: RVDContext, it: Iterator[RegionValue]) =>
       val rvb = new RegionValueBuilder()
-      val newRV = RegionValue()
 
       val partitionRegion = ctx.freshContext.region
 
@@ -1021,8 +1011,9 @@ case class MatrixAggregateColsByKey(child: MatrixIR, aggIR: IR) extends MatrixIR
         rvb.start(newRVType)
         rvb.startStruct()
         var k = 0
-        while (k < newEntriesIndex) {
-          rvb.addField(oldRVRowType, rv, k)
+        while (k < newRVType.size) {
+          if (k != oldEntriesIndex)
+            rvb.addField(oldRVRowType, rv, k)
           k += 1
         }
 
@@ -1033,13 +1024,6 @@ case class MatrixAggregateColsByKey(child: MatrixIR, aggIR: IR) extends MatrixIR
           i += 1
         }
         rvb.endArray()
-        k += 1
-
-        while (k < newRVType.fields.length) {
-          rvb.addField(oldRVRowType, rv, k)
-          k += 1
-        }
-
         rvb.endStruct()
         rv.setOffset(rvb.end())
         rv
@@ -1281,7 +1265,6 @@ case class MatrixMapRows(child: MatrixIR, newRow: IR, newKey: Option[(IndexedSeq
         rvb.end()
       } else 0L
 
-
       val cols = if (rowIterationNeedsCols) {
         rvb.start(localColsType)
         rvb.addAnnotation(localColsType, colValuesBc.value)
@@ -1354,15 +1337,6 @@ case class MatrixMapCols(child: MatrixIR, newCol: IR, newKey: Option[IndexedSeq[
     assert(newChildren.length == 2)
     MatrixMapCols(newChildren(0).asInstanceOf[MatrixIR], newChildren(1).asInstanceOf[IR], newKey)
   }
-
-  val tAggElt: Type = child.typ.entryType
-  val aggSymTab = Map(
-    "global" -> (0, child.typ.globalType),
-    "va" -> (1, child.typ.rvRowType),
-    "g" -> (2, child.typ.entryType),
-    "sa" -> (3, child.typ.colType))
-
-  val tAgg = TAggregable(tAggElt, aggSymTab)
 
   val typ: MatrixType = {
     val newColType = newCol.typ.asInstanceOf[TStruct]
@@ -2077,8 +2051,8 @@ case class TableToMatrixTable(
       }
     }
 
-    val ordType = new OrderedRVDType(rowKey.toArray ++ Array(INDEX_UID), rowEntryStruct)
-    val ordTypeNoIndex = new OrderedRVDType(rowKey.toArray, rowEntryStruct)
+    val ordType = OrderedRVDType(rowKey ++ FastIndexedSeq(INDEX_UID), rowEntryStruct)
+    val ordTypeNoIndex = OrderedRVDType(rowKey, rowEntryStruct)
     val ordered = OrderedRVD.coerce(ordType, rowKey.length, rowEntryRVD)
     val orderedEntryIndices = entryFields.map(rowEntryStruct.fieldIdx)
     val orderedRowIndices = (rowKey ++ rowFields).map(rowEntryStruct.fieldIdx)

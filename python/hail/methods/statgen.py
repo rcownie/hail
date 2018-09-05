@@ -695,13 +695,13 @@ def skat(key_expr, weight_expr, y, x, covariates, logistic=False,
     present values 0 or 1) or Boolean, in which case true and false are coded
     as 1 and 0, respectively.
 
-    The resulting :class:`.Table` provides the group's key, the size (number of
-    rows) in the group, the variance component score `q_stat`, the SKAT
-    p-value, and a fault flag. For the toy example above, the table has the
+    The resulting :class:`.Table` provides the group's key (`id`), thenumber of
+    rows in the group (`size`), the variance component score `q_stat`, the SKAT
+    `p-value`, and a `fault` flag. For the toy example above, the table has the
     form:
 
     +-------+------+--------+---------+-------+
-    |  key  | size | q_stat | p_value | fault |
+    |  id   | size | q_stat | p_value | fault |
     +=======+======+========+=========+=======+
     | geneA |   2  | 4.136  | 0.205   |   0   |
     +-------+------+--------+---------+-------+
@@ -1330,7 +1330,7 @@ def pc_relate(call_expr, min_individual_maf, *, k=None, scores_expr=None,
 @typecheck(ds=oneof(Table, MatrixTable),
            keep_star=bool,
            left_aligned=bool)
-def split_multi(ds, keep_star=False, left_aligned=False) -> Union[Table, MatrixTable]:
+def split_multi(ds, keep_star=False, left_aligned=False):
     """Split multiallelic variants.
 
     The resulting dataset will be keyed by the split locus and alleles.
@@ -1463,10 +1463,11 @@ def split_multi(ds, keep_star=False, left_aligned=False) -> Union[Table, MatrixT
     return left.union(moved) if is_table else left.union_rows(moved)
 
 
-@typecheck(ds=MatrixTable,
+@typecheck(ds=oneof(Table, MatrixTable),
            keep_star=bool,
-           left_aligned=bool)
-def split_multi_hts(ds, keep_star=False, left_aligned=False) -> MatrixTable:
+           left_aligned=bool,
+           vep_root=str)
+def split_multi_hts(ds, keep_star=False, left_aligned=False, vep_root='vep'):
     """Split multiallelic variants for datasets that contain one or more fields
     from a standard high-throughput sequencing entry schema.
 
@@ -1590,24 +1591,40 @@ def split_multi_hts(ds, keep_star=False, left_aligned=False) -> MatrixTable:
 
     Parameters
     ----------
+    ds : :class:`.MatrixTable` or :class:`.Table`
+        An unsplit dataset.
     keep_star : :obj:`bool`
         Do not filter out * alleles.
     left_aligned : :obj:`bool`
         If ``True``, variants are assumed to be left
         aligned and have unique loci. This avoids a shuffle. If the assumption
         is violated, an error is generated.
+    vep_root : :obj:`str`
+        Top-level location of vep data. All variable-length VEP fields
+        (intergenic_consequences, motif_feature_consequences,
+        regulatory_feature_consequences, and transcript_consequences)
+        will be split properly (i.e. a_index corresponding to the VEP allele_num).
 
     Returns
     -------
-    :class:`.MatrixTable`
+    :class:`.MatrixTable` or :class:`.Table`
         A biallelic variant dataset.
-
     """
 
-    entry_fields = set(ds.entry)
     split = split_multi(ds, keep_star=keep_star, left_aligned=left_aligned)
-    update_entries_expression = {}
 
+    row_fields = set(ds.row)
+    update_rows_expression = {}
+    if vep_root in row_fields:
+        update_rows_expression[vep_root] = split[vep_root].annotate(**{
+            x: split[vep_root][x].filter(lambda csq: csq.allele_num == split.a_index)
+            for x in ('intergenic_consequences', 'motif_feature_consequences',
+                      'regulatory_feature_consequences', 'transcript_consequences')})
+
+    if isinstance(ds, Table):
+        return split.annotate(**update_rows_expression).drop('old_locus', 'old_alleles')
+    entry_fields = set(ds.entry)
+    update_entries_expression = {}
     if 'GT' in entry_fields:
         update_entries_expression['GT'] = hl.downcode(split.GT, split.a_index)
     if 'DP' in entry_fields:
@@ -1634,8 +1651,9 @@ def split_multi_hts(ds, keep_star=False, left_aligned=False) -> MatrixTable:
         update_entries_expression['PGT'] = hl.downcode(split.PGT, split.a_index)
     if 'PID' in entry_fields:
         update_entries_expression['PID'] = split.PID
-
-    return split.annotate_entries(**update_entries_expression).drop('old_locus', 'old_alleles')
+    return split._annotate_all(
+        row_exprs=update_rows_expression,
+        entry_exprs=update_entries_expression).drop('old_locus', 'old_alleles')
 
 
 @typecheck(call_expr=expr_call)
