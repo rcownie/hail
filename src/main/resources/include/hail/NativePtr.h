@@ -2,18 +2,20 @@
 #define HAIL_NATIVEPTR_H 1
 
 #include "hail/NativeObj.h"
+#include "hail/NativeStatus.h"
 #include <jni.h>
 #include <memory>
+#include <string>
 
 namespace hail {
 
-using LongFuncN = int64_t(...);
-using PtrFuncN = NativeObjPtr(...);
+using LongFuncN = int64_t(NativeStatus*, ...);
+using PtrFuncN = NativeObjPtr(NativeStatus*, ...);
 
 template<typename ReturnT>
 class NativeFuncObj : public NativeObj {
 public:
-  using FuncType = ReturnT(...);
+  using FuncType = ReturnT(NativeStatus*, ...);
 public:
   NativeObjPtr module_; // keep-alive for the loaded module
   FuncType *func_;
@@ -69,6 +71,8 @@ NativeObj* get_from_NativePtr(JNIEnv* env, jobject obj);
 void init_NativePtr(JNIEnv* env, jobject obj, NativeObjPtr* ptr);
 
 void move_to_NativePtr(JNIEnv* env, jobject obj, NativeObjPtr* ptr);
+
+JavaVM* get_saved_java_vm();
 
 } // end hail
 
