@@ -22,6 +22,8 @@ class UpcallEnv {
   // Destructor restores the previous state
   ~UpcallEnv();
   
+  JNIEnv* env() const { return env_; }
+  
   // Test with same interface as logging calls 
   void set_test_msg(const std::string& msg);
   

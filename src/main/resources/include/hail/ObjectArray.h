@@ -26,6 +26,9 @@ class ObjectArray : public NativeObj {
 
   ~ObjectArray();
   
+  ObjectArray(const ObjectArray& b) = delete;
+  ObjectArray& operator=(const ObjectArray& b) = delete;
+  
   size_t size() const { return vec_.size(); }
   
   jobject operator[](ssize_t idx) const { return vec_[idx]; }
