@@ -41,6 +41,8 @@ class UpcallEnv {
   // Destructor restores the previous state
   ~UpcallEnv();
   
+  const UpcallConfig* config() { return config_; }
+  
   JNIEnv* env() const { return env_; }
   
   // Test with same interface as logging calls 

@@ -101,7 +101,7 @@ ssize_t DecoderBase::read_to_end_of_block() {
   UpcallEnv up;
   jint rc = up.env()->CallIntMethod(
     input_->at(0), 
-    up.config_->InputBuffer_readToEndOfBlock_,
+    up.config()->InputBuffer_readToEndOfBlock_,
     (jlong)(buf_+size_),
     tmp_array->array(),
     (jint)0,
