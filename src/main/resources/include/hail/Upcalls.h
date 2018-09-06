@@ -21,6 +21,9 @@ class UpcallConfig {
   jmethodID InputStream_close_; // close()
   jmethodID InputStream_read_;  // read(buf: Array[Byte], off: int, len: Int): Int
   jmethodID InputStream_skip_;  // skip(len: Long): Long
+  // InputBuffer methods
+  jmethodID InputBuffer_close_; // close()
+  jmethodID InputBuffer_readToEndOfBlock_;
   
   UpcallConfig();
 };

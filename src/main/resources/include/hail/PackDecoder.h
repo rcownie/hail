@@ -2,6 +2,7 @@
 #define HAIL_PACKDECODER_H 1
 
 #include "hail/NativeObj.h"
+#include "hail/ObjectArray.h"
 #include "hail/Region.h"
 #include <unordered_map>
 #include <map>
@@ -21,7 +22,7 @@
 # define MAYBE_INLINE
 #endif
 
-#define LIKELY(condition) __builtin_expect(static_cast<bool>(condition), 1)
+#define LIKELY(condition)   __builtin_expect(static_cast<bool>(condition), 1)
 #define UNLIKELY(condition) __builtin_expect(static_cast<bool>(condition), 0)
 
 namespace hail {
@@ -81,6 +82,7 @@ public:
   int64_t stat_int32_;
   int64_t stat_double_;
   std::unordered_map<int32_t, MyFreq> freq_int32_;
+  ObjectArrayPtr input_;
   ssize_t capacity_;
   char*   buf_;
   ssize_t pos_;
@@ -89,122 +91,25 @@ public:
   char    tag_[8];
   
 public:
-  DecoderBase(ssize_t bufCapacity = 0) :
-    total_usec_(0),
-    total_size_(0),
-    stat_int32_(0),
-    stat_double_(0),
-    capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
-    buf_((char*)malloc(capacity_+kSentinelSize)),
-    pos_(0),
-    size_(0),
-    rv_base_(nullptr) {
-    sprintf(tag_, "%04lx", ((long)this & 0xffff) | 0x8000);
-  }
+  DecoderBase(ObjectArray* a, ssize_t bufCapacity = 0);
   
-  void analyze() {
-#ifdef MYSTATS
-    std::map<double, std::vector<int32_t> > vals;
-    ssize_t total = 0;
-    for (auto& pair : freq_int32_) {
-      total += pair.second.freq_;
-    }
-    for (auto& pair : freq_int32_) {
-      double percent = -(100.0*pair.second.freq_)/total;
-      vals[percent].push_back(pair.first);
-    }
-    char buf[128];
-    sprintf(buf, "/tmp/stats_%s", tag_);
-    FILE* f = fopen(buf, "a");
-    double sum = 0.0;
-    for (auto& pair : vals) {
-      double score = -pair.first;
-      for (auto val : pair.second) {
-        sum += score;
-        fprintf(f, "%5.3f cumulative %5.3f val %d\n", score, sum, val);
-        if (score >= 95.0) break;
-      }
-    }
-    fclose(f);
-#endif
-  }
+  void analyze();
   
-  virtual ~DecoderBase() {
-    auto buf = buf_;
-    buf_ = nullptr;
-    if (buf) free(buf);
-  }
+  virtual ~DecoderBase();
   
-  virtual int64_t get_field_offset(int field_size, const char* s) {
-    auto zeroObj = reinterpret_cast<DecoderBase*>(0L);
-    if (!strcmp(s, "capacity_")) return (int64_t)&zeroObj->capacity_;
-    if (!strcmp(s, "buf_"))      return (int64_t)&zeroObj->buf_;
-    if (!strcmp(s, "pos_"))      return (int64_t)&zeroObj->pos_;
-    if (!strcmp(s, "size_"))     return (int64_t)&zeroObj->size_;
-    if (!strcmp(s, "rv_base_"))  return (int64_t)&zeroObj->rv_base_;
-    return -1;
-  }
+  virtual int64_t get_field_offset(int field_size, const char* s);
   
-  // Return values:
-  //   0  => have a complete RegionValue
-  //   >0 => need push of more data
-  //   -1 => no more RegionValue's and no more data
-  virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) = 0;
-  
-  ssize_t prepare_for_push() {
-    if (pos_ < size_) {
-      memcpy(buf_, buf_+pos_, size_-pos_);
-    }
-    size_ -= pos_;
-    pos_ = 0;
-    return (capacity_ - size_); // capacity for new data
-  }
-  
-  void accept_push(ssize_t push_size) {
-    if (push_size <= 0) return;
-    size_ += push_size;
-    total_size_ += push_size;
-    memset(&buf_[size_], 0xff, kSentinelSize-1);
-    buf_[size_+kSentinelSize-1] = 0x00; // terminator for LEB128 loop
-  }
-  
-  ssize_t decode_one_byte(ssize_t push_size) {
-    accept_push(push_size);
-    if (pos_ >= size_) {
-      return prepare_for_push(); // returns > 0
-    }
-    return -(buf_[pos_++] & 0xff); // returns <= 0
-  }
+  ssize_t read_to_end_of_block();
 
+  // Returns -1 if input stream is exhausted, else 0x00-0xff  
+  ssize_t decode_one_byte();
+
+  // Returns -1 if input stream is exhausted, else RegionValue addr  
+  virtual ssize_t decode_one_item(Region* region) = 0;
+  
 #ifdef MYDEBUG
-  void hexify(char* out, ssize_t pos, char* p, ssize_t n) {    
-    for (int j = 0; j < n; j += 8) {
-      sprintf(out, "[%4ld] ", pos+j);
-      out += strlen(out);
-      for (int k = 0; k < 8; ++k) {
-        if (j+k >= n) {
-          *out++ = ' ';
-          *out++ = ' ';
-        } else {
-          int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
-          int nibble = (c>>4) & 0xff;
-          *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
-          nibble = (c & 0xf);
-          *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
-        }
-        *out++ = ' ';
-      }
-      *out++ = ' ';
-      for (int k = 0; k < 8; ++k) {
-        int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
-        *out++ = ((' ' <= c) && (c <= '~')) ? c : '.';
-      }
-      *out++ = '\n';
-    }
-    *out++ = 0;
-  }
-#endif
-    
+  void hexify(char* out, ssize_t pos, char* p, ssize_t n);
+#endif    
 };
 
 //
