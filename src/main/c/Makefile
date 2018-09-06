@@ -15,13 +15,15 @@ LIBSIMDPP :=libsimdpp-2.1
 OBJECTS := \
   davies.o \
   ibs.o \
+  Logging.o \
   NativeCodeSuite.o \
   NativeLongFunc.o \
   NativeModule.o \
   NativePtr.o \
   NativeStatus.o \
   ObjectArray.o \
-  Region.o
+  Region.o \
+  Upcalls.o
 
 BUILD_OBJECTS := $(OBJECTS:%=$(BUILD)/%)
 
