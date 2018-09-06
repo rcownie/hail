@@ -15,6 +15,14 @@ class ObjectArray : public NativeObj {
  public:
   // Construct from a Scala Array[Object] passed through JNI as jobjectArray
   ObjectArray(JNIEnv* env, jobjectArray objects);
+  
+  ObjectArray(JNIEnv* env, jobject a0);
+  
+  ObjectArray(JNIEnv* env, jobject a0, jobject a1);
+  
+  ObjectArray(JNIEnv* env, jobject a0, jobject a1, jobject a2);
+  
+  ObjectArray(JNIEnv* env, jobject a0, jobject a1, jobject a2, jobject a3);
 
   ~ObjectArray();
   

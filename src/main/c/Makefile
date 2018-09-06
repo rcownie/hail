@@ -20,6 +20,7 @@ OBJECTS := \
   NativeModule.o \
   NativePtr.o \
   NativeStatus.o \
+  ObjectArray.o \
   Region.o
 
 BUILD_OBJECTS := $(OBJECTS:%=$(BUILD)/%)
