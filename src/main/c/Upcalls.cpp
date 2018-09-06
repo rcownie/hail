@@ -8,36 +8,30 @@
 
 namespace hail {
 
-// UpcallConfig holds once-per-session data such as jmethodID's
-
-class UpcallConfig {
- public:
-  JavaVM* java_vm_;
-  jobject upcalls_;
-  jmethodID setTestMsg_method_;
-  jmethodID info_method_;
-  jmethodID warn_method_;
-  jmethodID error_method_;
-
-  UpcallConfig() {    
-    java_vm_ = get_saved_java_vm();
-    JNIEnv* env = nullptr;
-    auto rc = java_vm_->GetEnv((void**)&env, JNI_VERSION_1_8);
-    assert(rc == JNI_OK);
-    auto cl = env->FindClass("is/hail/nativecode/Upcalls");
-    auto init_method = env->GetMethodID(cl, "<init>", "()V");
-    // NewObject gives a local ref only valid during this downcall
-    auto local_upcalls = env->NewObject(cl, init_method);
-    // Get a global ref to the new object
-    upcalls_ = env->NewGlobalRef(local_upcalls);
-    // Java method signatures are described here:
-    // http://journals.ecs.soton.ac.uk/java/tutorial/native1.1/implementing/method.html
-    setTestMsg_method_ = env->GetMethodID(cl, "setTestMsg", "(Ljava/lang/String;)V");
-    info_method_ = env->GetMethodID(cl, "info", "(Ljava/lang/String;)V");
-    warn_method_ = env->GetMethodID(cl, "warn", "(Ljava/lang/String;)V");
-    error_method_ = env->GetMethodID(cl, "error", "(Ljava/lang/String;)V");
-  }
-};
+UpcallConfig::UpcallConfig() {    
+  java_vm_ = get_saved_java_vm();
+  JNIEnv* env = nullptr;
+  auto rc = java_vm_->GetEnv((void**)&env, JNI_VERSION_1_8);
+  assert(rc == JNI_OK);
+  auto cl0 = env->FindClass("is/hail/nativecode/Upcalls");
+  auto init_method = env->GetMethodID(cl0, "<init>", "()V");
+  // NewObject gives a local ref only valid during this downcall
+  auto local_upcalls = env->NewObject(cl0, init_method);
+  // Get a global ref to the new object
+  upcalls_ = env->NewGlobalRef(local_upcalls);
+  // Java method signatures are described here:
+  // http://journals.ecs.soton.ac.uk/java/tutorial/native1.1/implementing/method.html
+  // "javap -v ClassName" can be used to show method signatures
+  Upcalls_setTestMsg_ = env->GetMethodID(cl0, "setTestMsg", "(Ljava/lang/String;)V");
+  Upcalls_info_  = env->GetMethodID(cl0, "info", "(Ljava/lang/String;)V");
+  Upcalls_warn_  = env->GetMethodID(cl0, "warn", "(Ljava/lang/String;)V");
+  Upcalls_error_ = env->GetMethodID(cl0, "error", "(Ljava/lang/String;)V");
+  // InputStream methods
+  auto cl1 = env->FindClass("java/io/InputStream");
+  InputStream_close_ = env->GetMethodID(cl1, "close", "()V");
+  InputStream_read_  = env->GetMethodID(cl1, "read", "([BII)I");
+  InputStream_skip_  = env->GetMethodID(cl1, "skip", "(J)J");
+}
 
 namespace {
 
@@ -86,25 +80,25 @@ UpcallEnv::~UpcallEnv() {
 
 void UpcallEnv::set_test_msg(const std::string& msg) {
   jstring msgJ = env_->NewStringUTF(msg.c_str());
-  env_->CallVoidMethod(config_->upcalls_, config_->setTestMsg_method_, msgJ);
+  env_->CallVoidMethod(config_->upcalls_, config_->Upcalls_setTestMsg_, msgJ);
   env_->DeleteLocalRef(msgJ);
 }
 
 void UpcallEnv::info(const std::string& msg) {
   jstring msgJ = env_->NewStringUTF(msg.c_str());
-  env_->CallVoidMethod(config_->upcalls_, config_->info_method_, msgJ);
+  env_->CallVoidMethod(config_->upcalls_, config_->Upcalls_info_, msgJ);
   env_->DeleteLocalRef(msgJ);
 }
 
 void UpcallEnv::warn(const std::string& msg) {
   jstring msgJ = env_->NewStringUTF(msg.c_str());
-  env_->CallVoidMethod(config_->upcalls_, config_->info_method_, msgJ);
+  env_->CallVoidMethod(config_->upcalls_, config_->Upcalls_warn_, msgJ);
   env_->DeleteLocalRef(msgJ);
 }
 
 void UpcallEnv::error(const std::string& msg) {
   jstring msgJ = env_->NewStringUTF(msg.c_str());
-  env_->CallVoidMethod(config_->upcalls_, config_->info_method_, msgJ);
+  env_->CallVoidMethod(config_->upcalls_, config_->Upcalls_error_, msgJ);
   env_->DeleteLocalRef(msgJ);
 }
 

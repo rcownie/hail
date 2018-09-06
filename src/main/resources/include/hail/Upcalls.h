@@ -7,11 +7,27 @@
 
 namespace hail {
 
-class UpcallConfig;
+// UpcallConfig holds jmethodID's for various class methods
+class UpcallConfig {
+ public:
+  JavaVM* java_vm_;
+  jobject upcalls_;
+  // Upcalls methods
+  jmethodID Upcalls_setTestMsg_;
+  jmethodID Upcalls_info_;
+  jmethodID Upcalls_warn_;
+  jmethodID Upcalls_error_;
+  // InputStream methods
+  jmethodID InputStream_close_; // close()
+  jmethodID InputStream_read_;  // read(buf: Array[Byte], off: int, len: Int): Int
+  jmethodID InputStream_skip_;  // skip(len: Long): Long
+  
+  UpcallConfig();
+};
 
 class UpcallEnv {
  private:
-  UpcallConfig* config_; // once-per-session jobject/classID/methodID's
+  const UpcallConfig* config_; // once-per-session jobject/classID/methodID's
   JNIEnv* env_;
   bool did_attach_;
   
