@@ -8,7 +8,7 @@ namespace hail {
 namespace {
 
 ssize_t capacity_table[] = { 4*1024, 8*1024, 16*1024, 32*1024, 64*1024, 128*1024, 256*1024 };
-constexpr ssize_t kNumBuckets = sizeof(capacity_table)/sizeof(capacity_table[0]);
+constexpr int kNumBuckets = sizeof(capacity_table)/sizeof(capacity_table[0]);
 
 std::mutex big_mutex;
 std::vector<ByteArray> byte_array_buckets[kNumBuckets];
@@ -36,7 +36,7 @@ ByteArrayPtr alloc_byte_array(ssize_t min_capacity) {
     return std::make_shared<ByteArray>(capacity, global_ref);
   } else {
     // Take the most-recently-used ByteArray from the bucket
-    auto ptr = std::make_shared<ByteArray>(bucket.last());
+    auto ptr = std::make_shared<ByteArray>(bucket.back());
     bucket.resize(bucket.size()-1);
     return ptr;
   }

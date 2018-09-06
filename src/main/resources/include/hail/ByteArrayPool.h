@@ -16,6 +16,8 @@ class ByteArray {
   jbyteArray array_;
 
  public:
+  ByteArray() : capacity_(0) { }
+
   ByteArray(ssize_t capacity, jbyteArray array) : capacity_(capacity), array_(array) { }
   
   ByteArray(const ByteArray& b) : capacity_(b.capacity_), array_(b.array_) { }
