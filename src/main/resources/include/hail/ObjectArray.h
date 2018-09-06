@@ -36,7 +36,7 @@ class ObjectArray : public NativeObj {
   jobject operator[](ssize_t idx) const { return vec_[idx]; }
 };
 
-using ObjectArrayPtr = typename std::shared_ptr<ObjectArray>;
+using ObjectArrayPtr = std::shared_ptr<ObjectArray>;
 
 }
 

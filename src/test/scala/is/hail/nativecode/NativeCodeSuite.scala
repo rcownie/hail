@@ -164,8 +164,8 @@ class NativeCodeSuite extends SparkSuite {
   }
   
   @Test def testObjectArray() = {
-    class MyObject(num: Int) {
-      def plus(n: Int) = num+n
+    class MyObject(num: Long) {
+      def plus(n: Long) = num+n
     }
 
     val sb = new StringBuilder()
@@ -194,7 +194,6 @@ class NativeCodeSuite extends SparkSuite {
       |  UpcallEnv up;
       |  JNIEnv* env = up.env();
       |  auto h = reinterpret_cast<ObjectHolder*>(holder);
-      |  fprintf(stderr, "DEBUG: size %ld idx %ld\n", h->objects_->size(), idx);
       |  auto obj = h->objects_->at(idx);
       |  auto cl = env->GetObjectClass(obj);
       |  auto plus_method = env->GetMethodID(cl, "plus", "(J)J");
@@ -212,6 +211,7 @@ class NativeCodeSuite extends SparkSuite {
     assert(st.ok, st.toString())
     mod.close()
     val objArray = new ObjectArray(new MyObject(1000), new MyObject(2000))
+    System.err.println("DEBUG: objArray.get() ${objArray.get()}")
     val holder = new NativePtr(makeObjectHolder, st, objArray.get())
     objArray.close()
     assert(testPlus(st, holder.get(), 0, 44) == 1044)
