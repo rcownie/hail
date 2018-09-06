@@ -2,7 +2,7 @@ package is.hail.expr.ir
 
 import is.hail.HailContext
 import is.hail.annotations._
-import is.hail.annotations.aggregators.{RegionValueAggregator, RegionValueCountAggregator}
+import is.hail.annotations.aggregators.RegionValueAggregator
 import is.hail.expr.types._
 import is.hail.expr.{TableAnnotationImpex, ir}
 import is.hail.rvd._
@@ -10,7 +10,6 @@ import is.hail.sparkextras.ContextRDD
 import is.hail.table.{Ascending, SortField, TableSpec}
 import is.hail.utils._
 import is.hail.variant._
-import org.apache.spark.HashPartitioner
 import org.apache.spark.sql.Row
 
 import scala.reflect.ClassTag
@@ -70,8 +69,15 @@ case class TableRead(path: String, spec: TableSpec, typ: TableType, dropRows: Bo
       BroadcastRow(globals, typ.globalType, hc.sc),
       if (dropRows)
         UnpartitionedRVD.empty(hc.sc, typ.rowType)
-      else
-        spec.rowsComponent.read(hc, path, typ.rowType))
+      else {
+        val rvd = spec.rowsComponent.read(hc, path, typ.rowType)
+        (rvd, typ.key) match {
+          case (ordered: OrderedRVD, Some(k))
+            if ordered.typ.key.startsWith(k) => ordered
+          case (_, Some(k)) => rvd.toOrderedRVD.changeKey(k)
+          case (_, None) => rvd.toUnpartitionedRVD
+        }
+      })
   }
 }
 
@@ -195,7 +201,7 @@ case class TableKeyBy(child: TableIR, keys: IndexedSeq[String], isSorted: Boolea
 
   val children: IndexedSeq[BaseIR] = Array(child)
 
-  val typ: TableType = child.typ.copy(key = Some(keys))
+  val typ: TableType = child.typ.copy(key = if (keys.isEmpty) None else Some(keys))
 
   def copy(newChildren: IndexedSeq[BaseIR]): TableKeyBy = {
     assert(newChildren.length == 1)
@@ -206,7 +212,8 @@ case class TableKeyBy(child: TableIR, keys: IndexedSeq[String], isSorted: Boolea
     val tv = child.execute(hc)
     val orvd = tv.enforceOrderingRVD.toOrderedRVD
     val nPreservedFields = keys.zip(orvd.typ.key).takeWhile { case (l, r) => l == r }.length
-    assert(!isSorted || nPreservedFields > 0 || (orvd.typ.key.isEmpty && keys.isEmpty))
+    assert(!isSorted || nPreservedFields > 0 || keys.isEmpty)
+
     val rvd = if (nPreservedFields == keys.length) {
       orvd
     } else if (isSorted) {
@@ -215,7 +222,7 @@ case class TableKeyBy(child: TableIR, keys: IndexedSeq[String], isSorted: Boolea
     } else {
       orvd.changeKey(keys)
     }.toOldStyleRVD
-    tv.copy(typ = typ, rvd = rvd)
+    tv.copy(typ = typ, rvd = if (typ.key.isDefined) rvd else rvd.toUnpartitionedRVD)
   }
 }
 
@@ -534,13 +541,11 @@ case class TableLeftJoinRightDistinct(left: TableIR, right: TableIR, root: Strin
   }
 }
 
-// Must not modify key ordering.
-// newKey is key of resulting Table, if newKey=None then result is unkeyed.
-// preservedKeyFields is length of initial sequence of key fields whose values are unchanged.
-// Thus if number of partition keys of underlying OrderedRVD is <= preservedKeyFields,
-// partition bounds will remain valid.
-case class TableMapRows(child: TableIR, newRow: IR, newKey: Option[IndexedSeq[String]], preservedKeyFields: Option[Int]) extends TableIR {
-  require(!(newKey.isDefined ^ preservedKeyFields.isDefined))
+// Must leave key fields unchanged. 'newKey' is used to rename key fields only.
+case class TableMapRows(child: TableIR, newRow: IR, newKey: Option[IndexedSeq[String]]) extends TableIR {
+  require(newKey.isDefined == child.typ.key.isDefined)
+  require(newKey.forall(_.length == child.typ.key.get.length))
+  val preservedKeyFields = child.typ.key.map(_.length)
   val children: IndexedSeq[BaseIR] = Array(child, newRow)
 
   val typ: TableType = {
@@ -550,7 +555,7 @@ case class TableMapRows(child: TableIR, newRow: IR, newKey: Option[IndexedSeq[St
 
   def copy(newChildren: IndexedSeq[BaseIR]): TableMapRows = {
     assert(newChildren.length == 2)
-    TableMapRows(newChildren(0).asInstanceOf[TableIR], newChildren(1).asInstanceOf[IR], newKey, preservedKeyFields)
+    TableMapRows(newChildren(0).asInstanceOf[TableIR], newChildren(1).asInstanceOf[IR], newKey)
   }
 
   override def partitionCounts: Option[IndexedSeq[Long]] = child.partitionCounts
@@ -678,22 +683,11 @@ case class TableMapRows(child: TableIR, newRow: IR, newKey: Option[IndexedSeq[St
       }
     }
 
-    val newRVD = tv.rvd match {
-      case ordered: OrderedRVD =>
-        typ.key match {
-          case Some(key) =>
-            if (preservedKeyFields.get != 0)
-              ordered.truncateKey(ordered.typ.key.take(preservedKeyFields.get))
-                .mapPartitionsWithIndexPreservesPartitioning(OrderedRVDType(key.take(preservedKeyFields.get), typ.rowType), itF)
-                .extendKeyPreservesPartitioning(key)
-            else
-              ordered.mapPartitionsWithIndex(typ.rowType, itF)
-          case None =>
-            ordered.mapPartitionsWithIndex(typ.rowType, itF)
-        }
-      case unordered: UnpartitionedRVD =>
-        unordered.mapPartitionsWithIndex(typ.rowType, itF)
-    }
+    val orvd = tv.enforceOrderingRVD.toOrderedRVD
+    val newRVD = orvd
+      .truncateKey(orvd.typ.key.take(typ.rvdType.key.length))
+      .mapPartitionsWithIndexPreservesPartitioning(typ.rvdType, itF)
+      .toOldStyleRVD
 
     TableValue(typ, tv.globals, newRVD)
   }
@@ -811,7 +805,10 @@ case class TableUnion(children: IndexedSeq[TableIR]) extends TableIR {
   def execute(hc: HailContext): TableValue = {
     val tvs = children.map(_.execute(hc))
     tvs(0).copy(
-      rvd = RVD.union(tvs.map(_.rvd)))
+      rvd = if (typ.key.isDefined)
+        OrderedRVD.union(tvs.map(_.rvd.asInstanceOf[OrderedRVD]))
+      else
+        RVD.union(tvs.map(_.rvd)))
   }
 }
 
@@ -909,7 +906,7 @@ case class TableKeyByAndAggregate(
   private val keyType = newKey.typ.asInstanceOf[TStruct]
   val typ: TableType = TableType(rowType = keyType ++ coerce[TStruct](expr.typ),
     globalType = child.typ.globalType,
-    key = Some(keyType.fieldNames)
+    key = if (keyType.fieldNames.isEmpty) None else Some(keyType.fieldNames)
   )
 
   def execute(hc: HailContext): TableValue = {
@@ -1039,8 +1036,12 @@ case class TableKeyByAndAggregate(
         }
       })
 
-    val orvdType = new OrderedRVDType(keyType.fieldNames, typ.rowType)
-    prev.copy(typ = typ, rvd = OrderedRVD.coerce(orvdType, crdd))
+    prev.copy(
+      typ = typ,
+      rvd = if (typ.key.isDefined)
+        OrderedRVD.coerce(typ.rvdType, crdd)
+      else
+        UnpartitionedRVD(typ.rowType, crdd))
   }
 }
 

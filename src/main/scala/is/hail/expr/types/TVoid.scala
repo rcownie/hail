@@ -2,8 +2,11 @@ package is.hail.expr.types
 
 import is.hail.annotations.{CodeOrdering, ExtendedOrdering}
 import is.hail.expr.ir.EmitMethodBuilder
+import is.hail.expr.types.physical.PVoid
 
 case object TVoid extends Type {
+  def physicalType: PVoid.type = PVoid
+
   override val required = true
 
   override def _toPretty = "Void"

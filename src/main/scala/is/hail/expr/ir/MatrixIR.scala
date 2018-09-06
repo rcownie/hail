@@ -171,9 +171,8 @@ abstract sealed class MatrixIR extends BaseIR {
       .getOrElse(
         Optimize(
           TableMapRows(
-            MatrixRowsTable(this),
+            TableUnkey(MatrixRowsTable(this)),
             MakeStruct(FastIndexedSeq()),
-            None,
             None
           ))
           .execute(HailContext.get)
@@ -1788,7 +1787,7 @@ case class MatrixAnnotateRowsTable(
     val tv = table.execute(hc)
     key match {
       // annotateRowsIntervals
-      case None if child.typ.rowPartitionKey.length == 1 &&
+      case None if
         table.typ.keyType.exists(k => k.size == 1 && k.types(0) == TInterval(child.typ.rowKeyStruct.types(0))) =>
         val typOrdering = child.typ.rowKeyStruct.types(0).ordering
 
@@ -1823,7 +1822,7 @@ case class MatrixAnnotateRowsTable(
         }).values
 
         val rvRowType = child.typ.rvRowType
-        val pkIndex = rvRowType.fieldIdx(child.typ.rowPartitionKey(0))
+        val kIndex = rvRowType.fieldIdx(child.typ.rowKey(0))
         val newMatrixType = child.typ.copy(rvRowType = newRVType)
         val newRVD = prev.rvd.zipPartitionsPreservesPartitioning(
           newMatrixType.orvdType,
@@ -1842,8 +1841,8 @@ case class MatrixAnnotateRowsTable(
 
           it.map { rv =>
             val ur = new UnsafeRow(rvRowType, rv)
-            val pk = ur.get(pkIndex)
-            val queries = iTree.queryValues(typOrdering, pk)
+            val k0 = ur.get(kIndex)
+            val queries = iTree.queryValues(typOrdering, k0)
             val value: Annotation = if (queries.isEmpty)
               null
             else

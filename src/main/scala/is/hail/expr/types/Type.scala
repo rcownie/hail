@@ -3,6 +3,7 @@ package is.hail.expr.types
 import is.hail.annotations._
 import is.hail.check.{Arbitrary, Gen}
 import is.hail.expr.ir.EmitMethodBuilder
+import is.hail.expr.types.physical.PType
 import is.hail.expr.{JSONAnnotationImpex, Parser, SparkAnnotationImpex}
 import is.hail.utils
 import is.hail.utils._
@@ -122,12 +123,12 @@ object Type {
   } yield (t, v)
 
   implicit def arbType = Arbitrary(genArb)
-
-  def parseMap(s: String): Map[String, Type] = Parser.parseAnnotationTypes(s)
 }
 
 abstract class Type extends BaseType with Serializable {
   self =>
+
+  def physicalType: PType
 
   def children: Seq[Type] = FastSeq()
 
@@ -295,6 +296,7 @@ abstract class Type extends BaseType with Serializable {
       case t2: TArray => t.isInstanceOf[TArray] && t.asInstanceOf[TArray].elementType.isOfType(t2.elementType)
       case t2: TSet => t.isInstanceOf[TSet] && t.asInstanceOf[TSet].elementType.isOfType(t2.elementType)
       case t2: TDict => t.isInstanceOf[TDict] && t.asInstanceOf[TDict].keyType.isOfType(t2.keyType) && t.asInstanceOf[TDict].valueType.isOfType(t2.valueType)
+      case TVoid => t == TVoid
     }
   }
 
