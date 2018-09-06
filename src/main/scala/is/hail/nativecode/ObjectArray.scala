@@ -7,32 +7,32 @@ class ObjectArray() extends NativeBase() {
   @native def nativeCtorO3(a0: Object, a1: Object, a2: Object): Unit
   @native def nativeCtorO4(a0: Object, a1: Object, a2: Object, a3: Object): Unit
   
-  this(b: ObjectArray) {
+  def this(b: ObjectArray) {
     this()
     super.copyAssign(b)
   }
   
-  this(a: Array[Object]) {
+  def this(a: Array[Object]) {
     this()
     nativeCtorArray(a)
   }
   
-  this(a0: Object) {
+  def this(a0: Object) {
     this()
-    nativeCtorO1(a0, a1)
+    nativeCtorO1(a0)
   }
 
-  this(a0: Object, a1: Object) {
+  def this(a0: Object, a1: Object) {
     this()
     nativeCtorO2(a0, a1)
   }
 
-  this(a0: Object, a1: Object, a2: Object) {
+  def this(a0: Object, a1: Object, a2: Object) {
     this()
     nativeCtorO3(a0, a1, a2)
   }
 
-  this(a0: Object, a1: Object, a2: Object, a3: Object) {
+  def this(a0: Object, a1: Object, a2: Object, a3: Object) {
     this()
     nativeCtorO4(a0, a1, a2, a3)
   }

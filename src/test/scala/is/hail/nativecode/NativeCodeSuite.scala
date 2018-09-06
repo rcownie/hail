@@ -162,5 +162,61 @@ class NativeCodeSuite extends SparkSuite {
     st.close()
     testUpcall.close()
   }
+  
+  @Test def testObjectArray() = {
+    class MyObject(num: Int) {
+      def plus(n: Int) = num+n
+    }
+
+    val sb = new StringBuilder()
+    sb.append(
+    """#include "hail/hail.h"
+      |#include "hail/ObjectArray.h"
+      |#include "hail/Upcalls.h"
+      |#include <cstdio>
+      |
+      |NAMESPACE_HAIL_MODULE_BEGIN
+      |
+      |class ObjectHolder : public NativeObj {
+      | public:
+      |  ObjectArrayPtr objects_;
+      |
+      |  ObjectHolder(ObjectArray* objects) :
+      |    objects_(std::dynamic_pointer_cast<ObjectArray>(objects->shared_from_this())) {
+      |  }
+      |};
+      |
+      |NativeObjPtr makeObjectHolder(NativeStatus*, long objects) {
+      |  return std::make_shared<ObjectHolder>(reinterpret_cast<ObjectArray*>(objects));
+      |}
+      |
+      |long testPlus(NativeStatus* st, long holder, long idx, long val) {
+      |  UpcallEnv up;
+      |  JNIEnv* env = up.env();
+      |  auto h = reinterpret_cast<ObjectHolder*>(holder);
+      |  fprintf(stderr, "DEBUG: size %ld idx %ld\n", h->objects_->size(), idx);
+      |  auto obj = h->objects_->at(idx);
+      |  auto cl = env->GetObjectClass(obj);
+      |  auto plus_method = env->GetMethodID(cl, "plus", "(J)J");
+      |  return env->CallLongMethod(obj, plus_method, val);
+      |}
+      |
+      |NAMESPACE_HAIL_MODULE_END
+      |""".stripMargin
+    )
+    val st = new NativeStatus()
+    val mod = new NativeModule("", sb.toString())
+    val makeObjectHolder = mod.findPtrFuncL1(st, "makeObjectHolder")
+    assert(st.ok, st.toString())
+    val testPlus = mod.findLongFuncL3(st, "testPlus")
+    assert(st.ok, st.toString())
+    mod.close()
+    val objArray = new ObjectArray(new MyObject(1000), new MyObject(2000))
+    val holder = new NativePtr(makeObjectHolder, st, objArray.get())
+    objArray.close()
+    assert(testPlus(st, holder.get(), 0, 44) == 1044)
+    assert(testPlus(st, holder.get(), 1, 55) == 2055)
+    testPlus.close()
+  }
 
 }

@@ -31,10 +31,12 @@ class ObjectArray : public NativeObj {
   
   size_t size() const { return vec_.size(); }
   
+  jobject at(ssize_t idx) const { return vec_[idx]; }
+  
   jobject operator[](ssize_t idx) const { return vec_[idx]; }
 };
 
-using ObjectArrayPtr = std::shared_ptr<ObjectArray>;
+using ObjectArrayPtr = typename std::shared_ptr<ObjectArray>;
 
 }
 
