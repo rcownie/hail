@@ -1012,7 +1012,7 @@ object EmitPackDecoder {
 object NativeDecode {
 
   def appendCode(sb: StringBuilder, rowType: Type, wantType: Type): Unit = {
-    val verbose = true
+    val verbose = false
     var seen = new ArrayBuffer[Int]()
     val localDefs = new StringBuilder()
     val entryCode = new StringBuilder()
@@ -1280,11 +1280,12 @@ object NativeDecode {
       |    this->set_input(inputArray);
       |  }
       |
+      |  virtual ~Decoder() { }
+      |
       |  virtual int64_t decode_one_item(Region* region) {
       |${localDefs}
       |    int s = 0;
       |    for (;;) {
-      |      fprintf(stderr, "DEBUG: decode_one_item s %d\\n", s);
       |      switch (s) {
       |${entryCode}
       |        default: break;
@@ -1317,7 +1318,6 @@ object NativeDecode {
       |  fprintf(stderr, "DEBUG: decode_one_item() -> 0x%lx rv_base_ %p\\n", (long)result, obj->rv_base_);
       |  gettimeofday(&tv1, nullptr);
       |  obj->total_usec_ += 1000000L*(tv1.tv_sec - tv0.tv_sec) + (tv1.tv_usec - tv0.tv_usec);
-      |  fprintf(stderr, "DEBUG: decode_one_item() returns\\n");
       |  return result;
       |}
       |
@@ -1367,7 +1367,7 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     decode_one_byte.close()
     decode_one_item.close()
     //decoder.close()
-    //st.close()
+    st.close()
   }
 
   def readByte(): Byte = {
