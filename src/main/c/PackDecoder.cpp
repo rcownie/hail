@@ -72,6 +72,7 @@ void DecoderBase::hexify(char* out, ssize_t pos, char* p, ssize_t n) {
     out += strlen(out);
     for (int k = 0; k < 8; ++k) {
 	  if (j+k >= n) {
+	  
 	    *out++ = ' ';
 	    *out++ = ' ';
 	  } else {
@@ -95,41 +96,47 @@ void DecoderBase::hexify(char* out, ssize_t pos, char* p, ssize_t n) {
 #endif
 
 ssize_t DecoderBase::read_to_end_of_block() {
+  fprintf(stderr, "DEBUG: read_to_end_of_block() ... pos %d size %d\n", (int)pos_, (int)size_);
   auto remnant = (size_ - pos_);
-  if (remnant < 0) return -1;
+  if (remnant < 0) {
+    fprintf(stderr, "DEBUG: read_to_end_of_block() -> -1 EOF\n");
+    return -1;
+  }
   if (remnant > 0) {
     memcpy(buf_, buf_+pos_, remnant);
   }
   pos_ = 0;
   size_ = remnant;
-  auto tmp_array = alloc_byte_array(0);
   UpcallEnv up;
-  jint rc = up.env()->CallIntMethod(
-    input_->at(0), 
-    up.config()->InputBuffer_readToEndOfBlock_,
-    (jlong)(buf_+size_),
-    tmp_array->array(),
-    (jint)0,
-    (jint)(capacity_-size_)
-  );
+  fprintf(stderr, "DEBUG: readToEndOfBlock(%ld) ...\n", capacity_-size_);
+  int32_t rc = up.InputBuffer_readToEndOfBlock(input_->at(0), buf_+size_, (jbyteArray)0,
+                                               0, capacity_-size_);
   fprintf(stderr, "DEBUG: readToEndOfBlock(%ld) -> %d\n", capacity_-size_, rc);
   if (rc < 0) {
     size_ = -1;
+    fprintf(stderr, "DEBUG: read_to_end_of_block() -> -1\n");
     return -1;
+  } else {
+    size_ += rc;
+    // buf is oversized for a sentinel to speed up one-byte-int decoding
+    memset(&buf_[size_], 0xff, kSentinelSize-1);
+    buf_[size_+kSentinelSize-1] = 0x00; // terminator for LEB128 loop
+    fprintf(stderr, "DEBUG: read_to_end_of_block() -> %d\n", (int)rc);
+    return rc;
   }
-  size_ += rc;
-  // buf is oversized for a sentinel to speed up one-byte-int decoding
-  memset(&buf_[size_], 0xff, kSentinelSize-1);
-  buf_[size_+kSentinelSize-1] = 0x00; // terminator for LEB128 loop
-  return rc;
 }
 
 int64_t DecoderBase::decode_one_byte() {
+  fprintf(stderr, "DEBUG: decode_one_byte() ... pos %d size %d\n", (int)pos_, (int)size_);
   ssize_t avail = (size_ - pos_);
   if (avail <= 0) {
-    if ((avail < 0) || (read_to_end_of_block() <= 0)) return -1;
+    if ((avail < 0) || (read_to_end_of_block() <= 0)) {
+      fprintf(stderr, "DEBUG: decode_one_byte() -> -1\n");
+      return -1;
+    }
   }
   int64_t result = (buf_[pos_++] & 0xff);
+  fprintf(stderr, "DEBUG: decode_one_byte() -> 0x%02x\n", (int)result);
   return result;
 }
 

@@ -88,6 +88,8 @@ void UpcallEnv::set_test_msg(const std::string& msg) {
   env_->DeleteLocalRef(msgJ);
 }
 
+// Logging
+
 void UpcallEnv::info(const std::string& msg) {
   jstring msgJ = env_->NewStringUTF(msg.c_str());
   env_->CallVoidMethod(config_->upcalls_, config_->Upcalls_info_, msgJ);
@@ -104,6 +106,23 @@ void UpcallEnv::error(const std::string& msg) {
   jstring msgJ = env_->NewStringUTF(msg.c_str());
   env_->CallVoidMethod(config_->upcalls_, config_->Upcalls_error_, msgJ);
   env_->DeleteLocalRef(msgJ);
+}
+
+// InputBuffer
+
+void UpcallEnv::InputBuffer_close(jobject obj) {
+  env_->CallVoidMethod(obj, config_->InputBuffer_close_);
+}
+
+int32_t UpcallEnv::InputBuffer_readToEndOfBlock(
+  jobject obj,
+  void* toAddr,
+  jbyteArray buf,
+  int32_t off,
+  int32_t n
+) {
+  return env_->CallIntMethod(obj, config_->InputBuffer_readToEndOfBlock_,
+                             (jlong)toAddr, buf, (jint)off, (jint)n);
 }
 
 } // namespace hail

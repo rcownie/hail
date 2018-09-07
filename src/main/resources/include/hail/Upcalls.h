@@ -52,6 +52,10 @@ class UpcallEnv {
   void info(const std::string& msg);
   void warn(const std::string& msg);
   void error(const std::string& msg);
+  
+  // InputBuffer
+  void InputBuffer_close(jobject obj);
+  int32_t InputBuffer_readToEndOfBlock(jobject obj, void* toAddr, jbyteArray buf, int32_t off, int32_t n);
 
 };
 

@@ -146,7 +146,7 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
       val code = new PrettyCode(sb.toString())
       // Experiments on Mac (LLVM) show -O2 code about 1.08x faster than -O1,
       // but -O3 is no better than -O2
-      val options = "-O2"
+      val options = "-ggdb -O0"
       val mod = new NativeModule(options, code.toString())
       val st = new NativeStatus()
       mod.findOrBuild(st)
@@ -1012,7 +1012,7 @@ object EmitPackDecoder {
 object NativeDecode {
 
   def appendCode(sb: StringBuilder, rowType: Type, wantType: Type): Unit = {
-    val verbose = false
+    val verbose = true
     var seen = new ArrayBuffer[Int]()
     val localDefs = new StringBuilder()
     val entryCode = new StringBuilder()
@@ -1044,7 +1044,6 @@ object NativeDecode {
         val initStr =
           if (typ.equals("std::vector<char>")) ""
           else if (!typ.equals("char*")) " = 0"
-          else if ((depth == 0) && (name.equals("addr"))) " = (char*)&this->rv_base_"
           else " = nullptr"
         localDefs.append(s"${typ} ${result}${initStr};\n")
       }
@@ -1285,6 +1284,7 @@ object NativeDecode {
       |${localDefs}
       |    int s = 0;
       |    for (;;) {
+      |      fprintf(stderr, "DEBUG: decode_one_item s %d\\n", s);
       |      switch (s) {
       |${entryCode}
       |        default: break;
@@ -1312,9 +1312,12 @@ object NativeDecode {
       |  auto obj = (DecoderBase*)decoder;
       |  struct timeval tv0, tv1;
       |  gettimeofday(&tv0, nullptr);
+      |  fprintf(stderr, "DEBUG: decode_one_item() ...\\n");
       |  auto result = obj->decode_one_item((Region*)region);
+      |  fprintf(stderr, "DEBUG: decode_one_item() -> 0x%lx rv_base_ %p\\n", (long)result, obj->rv_base_);
       |  gettimeofday(&tv1, nullptr);
       |  obj->total_usec_ += 1000000L*(tv1.tv_sec - tv0.tv_sec) + (tv1.tv_usec - tv0.tv_usec);
+      |  fprintf(stderr, "DEBUG: decode_one_item() returns\\n");
       |  return result;
       |}
       |
@@ -1363,23 +1366,27 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     make_decoder.close()
     decode_one_byte.close()
     decode_one_item.close()
-    decoder.close()
-    st.close()
+    //decoder.close()
+    //st.close()
   }
 
   def readByte(): Byte = {
+    info(s"DEBUG: readByte() ...")
     var rc = decode_one_byte(st, decoder.get())
+    info(s"DEBUG: readByte() -> ${rc}")
     if (rc < 0) rc = 0
     rc.toByte
   }
 
   def readRegionValue(region: Region): Long = {
-    val rc = decode_one_item(st, decoder.get(), region.get())
-    if (rc == -1L) {
+    info(s"DEBUG: readRegionValue() ...")
+    val result = decode_one_item(st, decoder.get(), region.get())
+    if (result == -1L) {
       throw new java.util.NoSuchElementException("NativePackDecoder bad RegionValue")
     }
     numItems += 1
-    rc
+    info(s"DEBUG: readRegionValue() -> ${result.toHexString}")
+    result
   }
 }
 
