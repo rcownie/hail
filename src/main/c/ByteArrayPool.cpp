@@ -1,5 +1,7 @@
 #include "hail/ByteArrayPool.h"
 #include "hail/Upcalls.h"
+#include <cassert>
+#include <mutex>
 #include <thread>
 #include <vector>
 

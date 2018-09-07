@@ -150,11 +150,10 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
       val mod = new NativeModule(options, code.toString())
       val st = new NativeStatus()
       mod.findOrBuild(st)
-      if (st.fail) System.err.println(s"findOrBuild ${st}")
-      assert(st.ok)
+      assert(st.ok, st.toString())
+      st.close()
       val modKey = mod.getKey()
       val modBinary = mod.getBinary()
-      st.close()
       mod.close()
       (in: InputStream) => new NativePackDecoder(child.buildInputBuffer(in), modKey, modBinary)
     } else {
@@ -1015,9 +1014,7 @@ object NativeDecode {
   def appendCode(sb: StringBuilder, rowType: Type, wantType: Type): Unit = {
     val verbose = false
     var seen = new ArrayBuffer[Int]()
-    val stateDefs = new StringBuilder()
     val localDefs = new StringBuilder()
-    val flushCode = new StringBuilder()
     val entryCode = new StringBuilder()
     val mainCode = new StringBuilder()
     
@@ -1040,7 +1037,6 @@ object NativeDecode {
         case "miss" => 0x20
       }
       if (seen.length <= depth) seen = seen.padTo(depth+1, 0)
-      val hasLocal = !name.equals("miss")
       val result = s"${name}${depth}"
       if ((seen(depth) & bit) == 0) {
         seen(depth) = (seen(depth) | bit)
@@ -1050,13 +1046,9 @@ object NativeDecode {
           else if (!typ.equals("char*")) " = 0"
           else if ((depth == 0) && (name.equals("addr"))) " = (char*)&this->rv_base_"
           else " = nullptr"
-        stateDefs.append(s"  ${typ} ${result}_${initStr};\n")
-        if (hasLocal) {
-          localDefs.append(s"    ${typ} ${result} = ${result}_;\n")
-          flushCode.append(s"    ${result}_ = ${result};\n")
-        }
+        localDefs.append(s"${typ} ${result}${initStr};\n")
       }
-      if (hasLocal) result else result+"_"
+      result
     }
 
     var numStates = 0
@@ -1285,49 +1277,45 @@ object NativeDecode {
       |template<int DecoderId>
       |class Decoder : public PackDecoderBase<DecoderId> {
       | public:
-      |  int s_ = 0;
-      |${stateDefs}
-      |
-      |  virtual ssize_t decode_until_done_or_need_push(Region* region, ssize_t push_size) {
-      |    this->accept_push(push_size);
+      |  virtual int64_t decode_one_item(Region* region) {
       |${localDefs}
-      |    int s = s_;
-      |    switch (s) {
+      |    int s = 0;
+      |    for (;;) {
+      |      switch (s) {
       |${entryCode}
-      |    }
+      |        default: break;
+      |      }
       |${mainCode}
-      |    s_ = 0; // initialize for next RegionValue
-      |    return 0;""".stripMargin)
+      |      return (int64_t)this->rv_base_;
+      |""".stripMargin)
       if (rowType.byteSize > 0) {
-        sb.append(s"""
-      |  pull:
-      |    s_ = s;
-      |${flushCode}
-      |    return this->prepare_for_push();""".stripMargin)
+        sb.append("pull:\n")
+        sb.append("  if (this->read_to_end_of_block() < 0) return -1;\n")
       }
       sb.append(s"""
       |  }
       |};
       |
-      |NativeObjPtr make_decoder(NativeStatus*, long decoderId) {
-      |  if (decoderId == 0) return std::make_shared< Decoder<0> >();
-      |  if (decoderId == 1) return std::make_shared< Decoder<1> >();
+      |NativeObjPtr make_decoder(NativeStatus*, long input, long decoderId) {
+      |  auto inputArray = reinterpret_cast<ObjectArray*>(input);
+      |  if (decoderId == 0) return std::make_shared< Decoder<0> >(inputArray);
+      |  if (decoderId == 1) return std::make_shared< Decoder<1> >(inputArray);
       |  return NativeObjPtr();
       |}
       |
-      |ssize_t decode_until_done_or_need_push(NativeStatus*, long decoder, long region, long push_size) {
+      |int64_t decode_one_item(NativeStatus*, long decoder, long region) {
       |  auto obj = (DecoderBase*)decoder;
       |  struct timeval tv0, tv1;
       |  gettimeofday(&tv0, nullptr);
-      |  auto result = obj->decode_until_done_or_need_push((Region*)region, push_size);
+      |  auto result = obj->decode_one_item((Region*)region);
       |  gettimeofday(&tv1, nullptr);
       |  obj->total_usec_ += 1000000L*(tv1.tv_sec - tv0.tv_sec) + (tv1.tv_usec - tv0.tv_usec);
       |  return result;
       |}
       |
-      |ssize_t decode_one_byte(NativeStatus*, long decoder, long push_size) {
+      |int64_t decode_one_byte(NativeStatus*, long decoder) {
       |  auto obj = (DecoderBase*)decoder;
-      |  auto result = obj->decode_one_byte(push_size);
+      |  auto result = obj->decode_one_byte();
       |#if 0
       |  if (result == 0) {
       |    double t = obj->total_usec_/1000000.0;
@@ -1349,92 +1337,44 @@ object NativeDecode {
 }
 
 final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: Array[Byte]) extends Decoder {
+  val st = new NativeStatus()
   val mod = new NativeModule(moduleKey, moduleBinary)
-  var st = new NativeStatus()
-  val make_decoder = mod.findPtrFuncL1(st, "make_decoder")
-  if (st.fail) System.err.println(s"ERROR: ${st}")
-  assert(st.ok)
-  val decode_until_done_or_need_push = mod.findLongFuncL3(st, "decode_until_done_or_need_push")
-  assert(st.ok)
-  val decode_one_byte = mod.findLongFuncL2(st, "decode_one_byte")
-  assert(st.ok)
-  val decoder = new NativePtr(make_decoder, st, in.decoderId)
-  val bufOffset = decoder.getFieldOffset(8, "buf_")
-  val posOffset = decoder.getFieldOffset(8, "pos_")
-  val sizeOffset = decoder.getFieldOffset(8, "size_")
-  val rvBaseOffset = decoder.getFieldOffset(8, "rv_base_")
-  var tmpBuf = new Array[Byte](0)
-  var numItems = 0
-  st.close()
+  val make_decoder = mod.findPtrFuncL2(st, "make_decoder")
+  assert(st.ok, st.toString())
+  val decode_one_byte = mod.findLongFuncL1(st, "decode_one_byte")
+  assert(st.ok, st.toString())
+  val decode_one_item = mod.findLongFuncL2(st, "decode_one_item")
   mod.close()
+  assert(st.ok, st.toString())
+  val input = new ObjectArray(in)
+  val decoder = new NativePtr(make_decoder, st, input.get(), in.decoderId)
+  input.close()
+  assert(st.ok, st.toString())
+  var numItems = 0
   val tag = ((decoder.get() & 0xffff) | 0x8000).toHexString
 
   def close(): Unit = {
     in.close()
-    decoder.close()
     make_decoder.close()
-    decode_until_done_or_need_push.close()
     decode_one_byte.close()
-  }
-
-  def decoderBuf = Memory.loadLong(decoder.get()+bufOffset)
-  def decoderPos = Memory.loadLong(decoder.get()+posOffset)
-  def decoderSize = Memory.loadLong(decoder.get()+sizeOffset)
-  def decoderStatus = s"buf_ ${decoderBuf.toHexString} pos_ ${decoderPos} size_ ${decoderSize}"
-
-  def tell(): Long = {
-    val remnant = (decoderSize - decoderPos)
-    in.tell()-remnant
-  }
-
-  def pushData(size: Long): Long = {
-    val tellBefore = tell()
-    val ngot = in.readToEndOfBlock(decoderBuf+decoderSize, tmpBuf, 0, size.toInt)
-    ngot
+    decode_one_item.close()
+    decoder.close()
+    st.close()
   }
 
   def readByte(): Byte = {
-    var rc = 0L
-    var pushSize = 0L
-    var done = false
-    while (!done) {
-      rc = decode_one_byte(st, decoder.get(), pushSize)
-      System.err.println(s"DEBUG: decode_one_byte() -> ${rc.toInt}")
-      if (rc <= 0) {
-        rc = -rc
-        done = true
-      } else {
-        pushSize = pushData(rc)
-        assert(pushSize > 0)
-      }
-    }
-    val result = rc.toByte
-    result
+    var rc = decode_one_byte(st, decoder.get())
+    if (rc < 0) rc = 0
+    rc.toByte
   }
 
   def readRegionValue(region: Region): Long = {
-    var rc = 0L
-    var pushSize = 0L
-    var done = false
-    while (!done) {
-      val startByte = (Memory.loadByte(decoderBuf+decoderPos) & 0xff)
-      rc = decode_until_done_or_need_push(st, decoder.get(), region.get(), pushSize)
-      System.err.println(s"DEBUG: decode_until_done() -> ${rc}")
-      if (rc <= 0) {
-        done = true
-      } else {
-        pushSize = pushData(rc)
-        assert(pushSize > 0)
-      }
-    }
-    if (rc == 0) {
-      val rvAddr = Memory.loadLong(decoder.get()+rvBaseOffset)
-      numItems += 1
-      rvAddr
-    } else {
+    val rc = decode_one_item(st, decoder.get(), region.get())
+    if (rc == -1L) {
       throw new java.util.NoSuchElementException("NativePackDecoder bad RegionValue")
-      -1L
     }
+    numItems += 1
+    rc
   }
 }
 

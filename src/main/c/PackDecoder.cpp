@@ -92,6 +92,7 @@ void DecoderBase::hexify(char* out, ssize_t pos, char* p, ssize_t n) {
 
 ssize_t DecoderBase::read_to_end_of_block() {
   auto remnant = (size_ - pos_);
+  if (remnant < 0) return -1;
   if (remnant > 0) {
     memcpy(buf_, buf_+pos_, remnant);
   }
@@ -119,15 +120,12 @@ ssize_t DecoderBase::read_to_end_of_block() {
   return rc;
 }
 
-ssize_t DecoderBase::decode_one_byte() {
+int64_t DecoderBase::decode_one_byte() {
   ssize_t avail = (size_ - pos_);
   if (avail <= 0) {
-    if (avail < 0) return -1;
-    read_to_end_of_block();
-    avail = (size_ - pos_);
-    if (avail <= 0) return -1;
+    if ((avail < 0) || (read_to_end_of_block() <= 0)) return -1;
   }
-  ssize_t result = (buf_[pos_++] & 0xff);
+  int64_t result = (buf_[pos_++] & 0xff);
   return result;
 }
 

@@ -102,10 +102,10 @@ public:
   ssize_t read_to_end_of_block();
 
   // Returns -1 if input stream is exhausted, else 0x00-0xff  
-  ssize_t decode_one_byte();
+  int64_t decode_one_byte();
 
   // Returns -1 if input stream is exhausted, else RegionValue addr  
-  virtual ssize_t decode_one_item(Region* region) = 0;
+  virtual int64_t decode_one_item(Region* region) = 0;
   
 #ifdef MYDEBUG
   void hexify(char* out, ssize_t pos, char* p, ssize_t n);
