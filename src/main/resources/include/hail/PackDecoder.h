@@ -91,13 +91,15 @@ public:
   char    tag_[8];
   
 public:
-  DecoderBase(ObjectArray* a, ssize_t bufCapacity = 0);
-  
-  void analyze();
+  DecoderBase(ssize_t bufCapacity = 0);
   
   virtual ~DecoderBase();
   
+  void set_input(ObjectArray* input);
+  
   virtual int64_t get_field_offset(int field_size, const char* s);
+  
+  void analyze();
   
   ssize_t read_to_end_of_block();
 

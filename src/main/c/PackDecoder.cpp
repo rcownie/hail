@@ -4,12 +4,12 @@
 
 namespace hail {
 
-DecoderBase::DecoderBase(ObjectArray* a, ssize_t bufCapacity) :
+DecoderBase::DecoderBase(ssize_t bufCapacity) :
   total_usec_(0),
   total_size_(0),
   stat_int32_(0),
   stat_double_(0),
-  input_(std::dynamic_pointer_cast<ObjectArray>(a->shared_from_this())),
+  input_(),
   capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
   buf_((char*)malloc(capacity_+kSentinelSize)),
   pos_(0),
@@ -22,6 +22,10 @@ DecoderBase::~DecoderBase() {
   auto buf = buf_;
   buf_ = nullptr;
   if (buf) free(buf);
+}
+
+void DecoderBase::set_input(ObjectArray* input) {
+  input_ = std::dynamic_pointer_cast<ObjectArray>(input->shared_from_this());
 }
 
 int64_t DecoderBase::get_field_offset(int field_size, const char* s) {

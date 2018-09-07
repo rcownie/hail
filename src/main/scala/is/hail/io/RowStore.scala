@@ -1277,6 +1277,10 @@ object NativeDecode {
       |template<int DecoderId>
       |class Decoder : public PackDecoderBase<DecoderId> {
       | public:
+      |  Decoder(ObjectArray* inputArray) {
+      |    this->set_input(inputArray);
+      |  }
+      |
       |  virtual int64_t decode_one_item(Region* region) {
       |${localDefs}
       |    int s = 0;
