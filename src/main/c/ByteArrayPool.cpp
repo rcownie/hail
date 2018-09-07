@@ -38,13 +38,17 @@ ByteArrayPtr alloc_byte_array(ssize_t min_capacity) {
     return std::make_shared<ByteArray>(capacity, global_ref);
   } else {
     // Take the most-recently-used ByteArray from the bucket
-    auto ptr = std::make_shared<ByteArray>(bucket.back());
+    auto& back = bucket.back();
+    auto ptr = std::make_shared<ByteArray>(back);
+    // back.~ByteArray() will be called, but does nothing with capacity_ < 0
+    back.capacity_ = -1;
     bucket.resize(bucket.size()-1);
     return ptr;
   }
 }
 
 ByteArray::~ByteArray() {
+  if (capacity_ < 0) return;
   int idx;
   for (idx = 0; idx < kNumBuckets; ++idx) {
     if (capacity_ == capacity_table[idx]) break;
