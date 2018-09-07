@@ -1293,6 +1293,7 @@ object NativeDecode {
         sb.append("  if (this->read_to_end_of_block() < 0) return -1;\n")
       }
       sb.append(s"""
+      |    }
       |  }
       |};
       |
