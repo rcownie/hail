@@ -20,7 +20,6 @@ DecoderBase::DecoderBase(ssize_t bufCapacity) :
 }
 
 DecoderBase::~DecoderBase() {
-  fprintf(stderr, "DEBUG: DecoderBase::dtor() %p\n", this);
   auto buf = buf_;
   buf_ = nullptr;
   if (buf) free(buf);
@@ -97,13 +96,11 @@ void DecoderBase::hexify(char* out, ssize_t pos, char* p, ssize_t n) {
 #endif
 
 ssize_t DecoderBase::read_to_end_of_block() {
-  fprintf(stderr, "DEBUG: read_to_end_of_block() ... pos %d size %d\n", (int)pos_, (int)size_);
   assert(size_ >= -1);
   assert(pos_ >= 0);
   assert(pos_ <= size_+1);
   auto remnant = (size_ - pos_);
   if (remnant < 0) {
-    fprintf(stderr, "DEBUG: read_to_end_of_block() -> -1 (old EOF)\n");
     return -1;
   }
   if (remnant > 0) {
@@ -111,39 +108,30 @@ ssize_t DecoderBase::read_to_end_of_block() {
   }
   pos_ = 0;
   size_ = remnant;
-  auto tmp = alloc_byte_array(0);
   UpcallEnv up;
-  int32_t rc = up.InputBuffer_readToEndOfBlock(input_->at(0), buf_+size_, tmp->array(),
+  int32_t rc = up.InputBuffer_readToEndOfBlock(input_->at(0), buf_+size_, (jbyteArray)0,
                                                0, capacity_-size_);
-  if (rc > capacity_-size_) {
-    fprintf(stderr, "DEBUG: rc %d > capacity_-size_ %d\n", rc, (int)(capacity_-size_));
-    assert(rc <= capacity_-size_);
-  }
+  assert(rc <= capacity_-size_);
   if (rc < 0) {
     size_ = -1;
-    fprintf(stderr, "DEBUG: read_to_end_of_block() -> -1 (new EOF)\n");
     return -1;
   } else {
     size_ += rc;
     // buf is oversized with space for a sentinel to speed up one-byte-int decoding
     memset(&buf_[size_], 0xff, kSentinelSize-1);
     buf_[size_+kSentinelSize-1] = 0x00; // terminator for LEB128 loop
-    fprintf(stderr, "DEBUG: read_to_end_of_block() -> %d\n", (int)rc);
     return rc;
   }
 }
 
 int64_t DecoderBase::decode_one_byte() {
-  fprintf(stderr, "DEBUG: decode_one_byte() ... pos %d size %d\n", (int)pos_, (int)size_);
   ssize_t avail = (size_ - pos_);
   if (avail <= 0) {
     if ((avail < 0) || (read_to_end_of_block() <= 0)) {
-      fprintf(stderr, "DEBUG: decode_one_byte() -> -1\n");
       return -1;
     }
   }
   int64_t result = (buf_[pos_++] & 0xff);
-  fprintf(stderr, "DEBUG: decode_one_byte() -> 0x%02x\n", (int)result);
   return result;
 }
 
