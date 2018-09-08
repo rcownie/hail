@@ -562,9 +562,9 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     while (ngot == 0) {
       pos = 0
       ngot = readBlock(decompBuf)
-      if (ngot > n) ngot = n
     }
     if (ngot > 0) {
+      if (ngot > n) ngot = n
       if (toAddr != 0) { // copy directly to off-heap buffer
         Memory.memcpy(toAddr+toOff, decompBuf, pos, ngot)
       } else {
@@ -717,9 +717,9 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
     while (ngot == 0) {
       readBlock()
       ngot = end
-      if (ngot > n) ngot = n
     }
     if (ngot > 0) {
+      if (ngot > n) ngot = n
       if (toAddr != 0) { // copy directly to off-heap buffer
         Memory.memcpy(toAddr+toOff, buf, off, ngot)
       } else {
@@ -1370,7 +1370,7 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
     make_decoder.close()
     decode_one_byte.close()
     decode_one_item.close()
-    //decoder.close()
+    decoder.close()
     st.close()
   }
 

@@ -12,7 +12,7 @@ DecoderBase::DecoderBase(ssize_t bufCapacity) :
   stat_double_(0),
   input_(),
   capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
-  buf_((char*)malloc(capacity_+kSentinelSize+64)),
+  buf_((char*)malloc(capacity_+kSentinelSize)),
   pos_(0),
   size_(0),
   rv_base_(nullptr) {
@@ -115,7 +115,10 @@ ssize_t DecoderBase::read_to_end_of_block() {
   UpcallEnv up;
   int32_t rc = up.InputBuffer_readToEndOfBlock(input_->at(0), buf_+size_, tmp->array(),
                                                0, capacity_-size_);
-  assert(rc <= capacity_-size_);
+  if (rc > capacity_-size_) {
+    fprintf(stderr, "DEBUG: rc %d > capacity_-size_ %d\n", rc, (int)(capacity_-size_));
+    assert(rc <= capacity_-size_);
+  }
   if (rc < 0) {
     size_ = -1;
     fprintf(stderr, "DEBUG: read_to_end_of_block() -> -1 (new EOF)\n");

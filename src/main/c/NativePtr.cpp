@@ -217,9 +217,7 @@ NATIVEMETHOD(void, NativeBase, nativeReset)(
   jlong addrB
 ) {
   TwoAddrs bufA(addrA, addrB);
-  fprintf(stderr, "DEBUG: NativeObjPtr.reset() ...\n");
   bufA.as_NativeObjPtr().reset();
-  fprintf(stderr, "DEBUG: nativeReset() done\n");
   // The Scala object fields are cleared in the wrapper
 }
 
