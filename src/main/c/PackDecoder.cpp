@@ -11,8 +11,8 @@ DecoderBase::DecoderBase(ssize_t bufCapacity) :
   stat_int32_(0),
   stat_double_(0),
   input_(),
-  capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
-  buf_((char*)malloc(capacity_+kSentinelSize)),
+  capacity_((bufCapacity > 0) ? bufCapacity : kDefaultCapacity),
+  buf_((char*)malloc(capacity_ + ((kSentinelSize+0x3f) & ~0x3f))),
   pos_(0),
   size_(0),
   rv_base_(nullptr) {
@@ -59,10 +59,10 @@ void DecoderBase::analyze() {
     for (auto val : pair.second) {
       sum += score;
       fprintf(f, "%5.3f cumulative %5.3f val %d\n", score, sum, val);
-       if (score >= 95.0) break;
-   }
- }
- fclose(f);
+      if (score >= 95.0) break;
+    }
+  }
+  fclose(f);
 #endif
 }
 
@@ -96,7 +96,8 @@ void DecoderBase::hexify(char* out, ssize_t pos, char* p, ssize_t n) {
 #endif
 
 ssize_t DecoderBase::read_to_end_of_block() {
-  assert(size_ >= -1);
+  assert(size_ >= 0);
+  assert(size_ <= capacity_);
   assert(pos_ >= 0);
   assert(pos_ <= size_+1);
   auto remnant = (size_ - pos_);
@@ -108,17 +109,19 @@ ssize_t DecoderBase::read_to_end_of_block() {
   }
   pos_ = 0;
   size_ = remnant;
+  int32_t chunk = (capacity_ - size_);
   UpcallEnv up;
   int32_t rc = up.InputBuffer_readToEndOfBlock(input_->at(0), buf_+size_, (jbyteArray)0,
-                                               0, capacity_-size_);
-  assert(rc <= capacity_-size_);
+                                               0, chunk);
+  fprintf(stderr, "DEBUG: readToEndOfBlock(%d) -> %d\n", chunk, rc);
+  assert(rc <= chunk);
   if (rc < 0) {
-    size_ = -1;
+    pos_ = (size_ + 1); // (pos > size) means end-of-file
     return -1;
   } else {
     size_ += rc;
     // buf is oversized with space for a sentinel to speed up one-byte-int decoding
-    memset(&buf_[size_], 0xff, kSentinelSize-1);
+    memset(buf_+size_, 0xff, kSentinelSize-1);
     buf_[size_+kSentinelSize-1] = 0x00; // terminator for LEB128 loop
     return rc;
   }
@@ -132,6 +135,7 @@ int64_t DecoderBase::decode_one_byte() {
     }
   }
   int64_t result = (buf_[pos_++] & 0xff);
+  fprintf(stderr, "DEBUG: decode_one_byte() -> 0x%02x\n", (int)result);
   return result;
 }
 
