@@ -570,6 +570,7 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       } else {
         Memory.memcpy(toBuf, toOff, decompBuf, pos, ngot)
       }
+      pos += ngot
     }
     System.err.println(s"DEBUG: LZ4 readToEndOfBlock(toAddr ${toAddr}, toOff ${toOff}, n ${n}) -> ${ngot}")
     ngot
@@ -724,6 +725,7 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       } else {
         Memory.memcpy(toBuf, toOff, buf, off, ngot)
       }
+      off += ngot
     }
     System.err.println(s"DEBUG: Blocking readToEndOfBlock(toAddr ${toAddr}, toOff ${toOff}, n ${n}) -> ${ngot}")
     ngot
@@ -1280,7 +1282,9 @@ object NativeDecode {
       |    this->set_input(inputArray);
       |  }
       |
-      |  virtual ~Decoder() { }
+      |  virtual ~Decoder() {
+      |    fprintf(stderr, "DEBUG: Decoder::dtor() ...\\n");
+      |  }
       |
       |  virtual int64_t decode_one_item(Region* region) {
       |${localDefs}
@@ -1371,21 +1375,17 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
   }
 
   def readByte(): Byte = {
-    info(s"DEBUG: readByte() ...")
     var rc = decode_one_byte(st, decoder.get())
-    info(s"DEBUG: readByte() -> ${rc}")
     if (rc < 0) rc = 0
     rc.toByte
   }
 
   def readRegionValue(region: Region): Long = {
-    info(s"DEBUG: readRegionValue() ...")
     val result = decode_one_item(st, decoder.get(), region.get())
     if (result == -1L) {
       throw new java.util.NoSuchElementException("NativePackDecoder bad RegionValue")
     }
     numItems += 1
-    info(s"DEBUG: readRegionValue() -> ${result.toHexString}")
     result
   }
 }

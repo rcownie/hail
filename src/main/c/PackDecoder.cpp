@@ -1,6 +1,7 @@
 #include "hail/PackDecoder.h"
 #include "hail/ByteArrayPool.h"
 #include "hail/Upcalls.h"
+#include <cassert>
 
 namespace hail {
 
@@ -11,7 +12,7 @@ DecoderBase::DecoderBase(ssize_t bufCapacity) :
   stat_double_(0),
   input_(),
   capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
-  buf_((char*)malloc(capacity_+kSentinelSize)),
+  buf_((char*)malloc(capacity_+kSentinelSize+64)),
   pos_(0),
   size_(0),
   rv_base_(nullptr) {
@@ -72,23 +73,22 @@ void DecoderBase::hexify(char* out, ssize_t pos, char* p, ssize_t n) {
     sprintf(out, "[%4ld] ", pos+j);
     out += strlen(out);
     for (int k = 0; k < 8; ++k) {
-	  if (j+k >= n) {
-	  
-	    *out++ = ' ';
-	    *out++ = ' ';
-	  } else {
-	    int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
-	    int nibble = (c>>4) & 0xff;
-	    *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
-	    nibble = (c & 0xf);
-	    *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
-	  }
-	  *out++ = ' ';
+      if (j+k >= n) {
+        *out++ = ' ';
+        *out++ = ' ';
+      } else {
+        int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
+        int nibble = (c>>4) & 0xff;
+        *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
+        nibble = (c & 0xf);
+        *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
+      }
+      *out++ = ' ';
     }
     *out++ = ' ';
     for (int k = 0; k < 8; ++k) {
-	  int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
-	  *out++ = ((' ' <= c) && (c <= '~')) ? c : '.';
+      int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
+      *out++ = ((' ' <= c) && (c <= '~')) ? c : '.';
     }
     *out++ = '\n';
   }
@@ -98,6 +98,9 @@ void DecoderBase::hexify(char* out, ssize_t pos, char* p, ssize_t n) {
 
 ssize_t DecoderBase::read_to_end_of_block() {
   fprintf(stderr, "DEBUG: read_to_end_of_block() ... pos %d size %d\n", (int)pos_, (int)size_);
+  assert(size_ >= -1);
+  assert(pos_ >= 0);
+  assert(pos_ <= size_+1);
   auto remnant = (size_ - pos_);
   if (remnant < 0) {
     fprintf(stderr, "DEBUG: read_to_end_of_block() -> -1 (old EOF)\n");
@@ -108,9 +111,11 @@ ssize_t DecoderBase::read_to_end_of_block() {
   }
   pos_ = 0;
   size_ = remnant;
+  auto tmp = alloc_byte_array(0);
   UpcallEnv up;
-  int32_t rc = up.InputBuffer_readToEndOfBlock(input_->at(0), buf_+size_, (jbyteArray)0,
+  int32_t rc = up.InputBuffer_readToEndOfBlock(input_->at(0), buf_+size_, tmp->array(),
                                                0, capacity_-size_);
+  assert(rc <= capacity_-size_);
   if (rc < 0) {
     size_ = -1;
     fprintf(stderr, "DEBUG: read_to_end_of_block() -> -1 (new EOF)\n");
