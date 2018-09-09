@@ -528,7 +528,6 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
   def readToEndOfBlock(toAddr: Long, toBuf: Array[Byte], toOff: Int, n: Int): Int = {
     val result = in.readToEndOfBlock(toAddr, toBuf, toOff, n)
     if (result > 0) bytePos += result
-    System.err.println(s"DEBUG: LEB128 readToEndOfBlock(toAddr ${toAddr}, toOff ${toOff}, n ${n}) -> ${result}")
     assert(result <= n)
     result
   }
@@ -573,7 +572,6 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       }
       pos += ngot
     }
-    System.err.println(s"DEBUG: LZ4 readToEndOfBlock(toAddr ${toAddr}, toOff ${toOff}, n ${n}) -> ${ngot}")
     assert(ngot <= n)
     ngot
   }
@@ -729,7 +727,6 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       }
       off += ngot
     }
-    System.err.println(s"DEBUG: Blocking readToEndOfBlock(toAddr ${toAddr}, toOff ${toOff}, n ${n}) -> ${ngot}")
     assert(ngot <= n)
     ngot
   }
@@ -1318,9 +1315,7 @@ object NativeDecode {
       |  auto obj = (DecoderBase*)decoder;
       |  struct timeval tv0, tv1;
       |  gettimeofday(&tv0, nullptr);
-      |  fprintf(stderr, "DEBUG: decode_one_item() ...\\n");
       |  auto result = obj->decode_one_item((Region*)region);
-      |  fprintf(stderr, "DEBUG: decode_one_item() -> 0x%lx rv_base_ %p\\n", (long)result, obj->rv_base_);
       |  gettimeofday(&tv1, nullptr);
       |  obj->total_usec_ += 1000000L*(tv1.tv_sec - tv0.tv_sec) + (tv1.tv_usec - tv0.tv_usec);
       |  return result;

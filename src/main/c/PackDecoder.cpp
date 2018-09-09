@@ -113,7 +113,6 @@ ssize_t DecoderBase::read_to_end_of_block() {
   UpcallEnv up;
   int32_t rc = up.InputBuffer_readToEndOfBlock(input_->at(0), buf_+size_, (jbyteArray)0,
                                                0, chunk);
-  fprintf(stderr, "DEBUG: readToEndOfBlock(%d) -> %d\n", chunk, rc);
   assert(rc <= chunk);
   if (rc < 0) {
     pos_ = (size_ + 1); // (pos > size) means end-of-file
@@ -135,7 +134,6 @@ int64_t DecoderBase::decode_one_byte() {
     }
   }
   int64_t result = (buf_[pos_++] & 0xff);
-  fprintf(stderr, "DEBUG: decode_one_byte() -> 0x%02x\n", (int)result);
   return result;
 }
 
