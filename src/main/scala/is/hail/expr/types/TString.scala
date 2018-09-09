@@ -28,19 +28,12 @@ class TString(override val required: Boolean) extends Type {
 
   override def scalaClassTag: ClassTag[String] = classTag[String]
 
-  override def unsafeOrdering(missingGreatest: Boolean): UnsafeOrdering = TBinary(required).unsafeOrdering(missingGreatest)
-
   val ordering: ExtendedOrdering =
     ExtendedOrdering.extendToNull(implicitly[Ordering[String]])
 
   override def byteSize: Long = 8
 
   override def fundamentalType: Type = TBinary(required)
-
-  def codeOrdering(mb: EmitMethodBuilder, other: Type): CodeOrdering = {
-    assert(this isOfType other)
-    TBinary(required).codeOrdering(mb, TBinary(other.required))
-  }
 }
 
 object TString {

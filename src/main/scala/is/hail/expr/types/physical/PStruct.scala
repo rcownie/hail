@@ -145,6 +145,7 @@ final case class PStruct(fields: IndexedSeq[PField], override val required: Bool
   }
 
   override def unsafeInsert(typeToInsert: PType, path: List[String]): (PType, UnsafeInserter) = {
+    val vt = virtualType
     if (path.isEmpty) {
       (typeToInsert, (region, offset, rvb, inserter) => inserter())
     } else {
@@ -160,7 +161,7 @@ final case class PStruct(fields: IndexedSeq[PField], override val required: Bool
             var i = 0
             while (i < j) {
               if (region != null)
-                rvb.addField(this, region, offset, i)
+                rvb.addField(vt, region, offset, i)
               else
                 rvb.setMissing()
               i += 1
@@ -172,7 +173,7 @@ final case class PStruct(fields: IndexedSeq[PField], override val required: Bool
             i += 1
             while (i < localSize) {
               if (region != null)
-                rvb.addField(this, region, offset, i)
+                rvb.addField(vt, region, offset, i)
               else
                 rvb.setMissing()
               i += 1
@@ -188,7 +189,7 @@ final case class PStruct(fields: IndexedSeq[PField], override val required: Bool
             var i = 0
             while (i < localSize) {
               if (region != null)
-                rvb.addField(this, region, offset, i)
+                rvb.addField(vt, region, offset, i)
               else
                 rvb.setMissing()
               i += 1
