@@ -142,17 +142,6 @@ abstract class Type extends BaseType with Serializable {
 
   def subst(): Type = this.setRequired(false)
 
-  def unsafeOrdering(missingGreatest: Boolean): UnsafeOrdering = ???
-
-  def unsafeOrdering(): UnsafeOrdering = unsafeOrdering(false)
-
-  def unsafeOrdering(rightType: Type, missingGreatest: Boolean): UnsafeOrdering = {
-    require(this.isOfType(rightType))
-    unsafeOrdering(missingGreatest)
-  }
-
-  def unsafeOrdering(rightType: Type): UnsafeOrdering = unsafeOrdering(rightType, false)
-
   def unsafeInsert(typeToInsert: Type, path: List[String]): (Type, UnsafeInserter) =
     TStruct.empty().unsafeInsert(typeToInsert, path)
 
@@ -222,10 +211,6 @@ abstract class Type extends BaseType with Serializable {
   def canCompare(other: Type): Boolean = this == other
 
   val ordering: ExtendedOrdering
-
-  def codeOrdering(mb: EmitMethodBuilder): CodeOrdering = codeOrdering(mb, this)
-
-  def codeOrdering(mb: EmitMethodBuilder, other: Type): CodeOrdering
 
   def jsonReader: JSONReader[Annotation] = new JSONReader[Annotation] {
     def fromJSON(a: JValue): Annotation = JSONAnnotationImpex.importAnnotation(a, self)

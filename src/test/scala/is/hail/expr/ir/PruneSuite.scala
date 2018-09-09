@@ -90,7 +90,6 @@ class PruneSuite extends SparkSuite {
     FastIndexedSeq("ck"),
     TStruct("ck" -> TString(), "c2" -> TInt32(), "c3" -> TArray(TStruct("cc" -> TInt32()))),
     FastIndexedSeq("rk"),
-    FastIndexedSeq("rk"),
     TStruct("rk" -> TInt32(), "r2" -> TStruct("x" -> TInt32()), "r3" -> TArray(TStruct("rr" -> TInt32()))),
     TStruct("e1" -> TFloat64(), "e2" -> TFloat64()))
   val mat = MatrixLiteral(MatrixValue(
@@ -469,6 +468,13 @@ class PruneSuite extends SparkSuite {
       TInt32(),
       Array(TArray(justA), null, null))
   }
+
+  @Test def testArrayScanMemo() {
+    checkMemo(ArrayScan(arr, I32(0), "comb", "foo", GetField(Ref("foo", ref.typ), "a")),
+      TArray(TInt32()),
+      Array(TArray(justA), null, null))
+  }
+
 
   @Test def testArrayForMemo() {
     checkMemo(ArrayFor(arr, "foo", Begin(FastIndexedSeq(GetField(Ref("foo", ref.typ), "a")))),
