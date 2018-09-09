@@ -74,7 +74,7 @@ public:
   
 class DecoderBase : public NativeObj {
 private:
-  static constexpr ssize_t kDefaultCapacity = (8*1024);
+  static constexpr ssize_t kDefaultCapacity = (64*1024);
   static constexpr ssize_t kSentinelSize = 16;
 public:
   int64_t total_usec_;
