@@ -94,17 +94,6 @@ object Parser extends JavaTokenParsers {
 
   def parseMatrixType(code: String): MatrixType = parse(matrix_type_expr, code)
 
-  def parseAnnotationTypes(code: String): Map[String, Type] = {
-    // println(s"code = $code")
-    if (code.matches("""\s*"""))
-      Map.empty[String, Type]
-    else
-      parseAll(type_fields, code) match {
-        case Success(result, _) => result.map(f => (f.name, f.typ)).toMap
-        case NoSuccess(msg, next) => ParserUtils.error(next.pos, msg)
-      }
-  }
-
   def parseAnnotationRoot(code: String, root: String): List[String] = {
     val path = parseAll(annotationIdentifier, code) match {
       case Success(result, _) => result.asInstanceOf[List[String]]
@@ -323,18 +312,8 @@ object Parser extends JavaTokenParsers {
       (("," ~ "row_key" ~ ":" ~ "[") ~> key) ~ (trailing_keys <~ "]") ~
       (("," ~ "row" ~ ":") ~> struct_expr) ~
       (("," ~ "entry" ~ ":") ~> struct_expr <~ "}") ^^ { case globalType ~ colKey ~ colType ~ rowPartitionKey ~ rowRestKey ~ rowType ~ entryType =>
-      MatrixType.fromParts(globalType, colKey, colType, rowPartitionKey, rowPartitionKey ++ rowRestKey, rowType, entryType)
+      MatrixType.fromParts(globalType, colKey, colType, rowPartitionKey ++ rowRestKey, rowType, entryType)
     }
-
-  def parsePhysicalType(code: String): PType = parse(physical_type, code)
-
-  def physical_type: Parser[PType] =
-    ("Default" ~ "[") ~> type_expr <~ "]" ^^ { t => PDefault(t) }
-
-  def parseEncodedType(code: String): PType = parse(physical_type, code)
-
-  def encoded_type: Parser[EncodedType] =
-    ("Default" ~ "[") ~> type_expr <~ "]" ^^ { t => EDefault(t) }
 
   def call: Parser[Call] = {
     wholeNumber ~ "/" ~ rep1sep(wholeNumber, "/") ^^ { case a0 ~ _ ~ arest =>
@@ -568,6 +547,7 @@ object Parser extends JavaTokenParsers {
       "ArrayFilter" ~> ir_identifier ~ ir_value_expr ~ ir_value_expr ^^ { case name ~ a ~ body => ir.ArrayFilter(a, name, body) } |
       "ArrayFlatMap" ~> ir_identifier ~ ir_value_expr ~ ir_value_expr ^^ { case name ~ a ~ body => ir.ArrayFlatMap(a, name, body) } |
       "ArrayFold" ~> ir_identifier ~ ir_identifier ~ ir_value_expr ~ ir_value_expr ~ ir_value_expr ^^ { case accumName ~ valueName ~ a ~ zero ~ body => ir.ArrayFold(a, zero, accumName, valueName, body) } |
+      "ArrayScan" ~> ir_identifier ~ ir_identifier ~ ir_value_expr ~ ir_value_expr ~ ir_value_expr ^^ { case accumName ~ valueName ~ a ~ zero ~ body => ir.ArrayScan(a, zero, accumName, valueName, body) } |
       "ArrayFor" ~> ir_identifier ~ ir_value_expr ~ ir_value_expr ^^ { case name ~ a ~ body => ir.ArrayFor(a, name, body) } |
       "ApplyAggOp" ~> agg_signature ~ ir_value_expr ~ ir_value_exprs ~ ir_value_exprs_opt ^^ { case aggSig ~ a ~ ctorArgs ~ initOpArgs => ir.ApplyAggOp(a, ctorArgs, initOpArgs, aggSig) } |
       "ApplyScanOp" ~> agg_signature ~ ir_value_expr ~ ir_value_exprs ~ ir_value_exprs_opt ^^ { case aggSig ~ a ~ ctorArgs ~ initOpArgs => ir.ApplyScanOp(a, ctorArgs, initOpArgs, aggSig) } |
@@ -628,8 +608,8 @@ object Parser extends JavaTokenParsers {
       "TableParallelize" ~> int32_literal_opt ~ ir_value_expr ^^ { case nPartitions ~ rows =>
         ir.TableParallelize(rows, nPartitions)
       } |
-      "TableMapRows" ~> string_literals_opt ~ int32_literal_opt ~ table_ir ~ ir_value_expr ^^ { case newKey ~ preservedKeyFields ~ child ~ newRow =>
-        ir.TableMapRows(child, newRow, newKey, preservedKeyFields)
+      "TableMapRows" ~> string_literals_opt ~ table_ir ~ ir_value_expr ^^ { case newKey ~ child ~ newRow =>
+        ir.TableMapRows(child, newRow, newKey)
       } |
       "TableMapGlobals" ~> table_ir ~ ir_value_expr ^^ { case child ~ newRow =>
         ir.TableMapGlobals(child, newRow)

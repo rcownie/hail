@@ -136,6 +136,19 @@ class IRSuite extends SparkSuite {
     assertEvalsTo(If(True(), NA(TInt32()), I32(7)), null)
   }
 
+  @Test def testIfWithDifferentRequiredness() {
+    val t = TStruct(true, "foo" -> TStruct("bar" -> TArray(TInt32Required, required = true)))
+    val value = Row(Row(FastIndexedSeq(1, 2, 3)))
+    assertEvalsTo(
+      If(
+        In(0, TBoolean()),
+        In(1, t),
+        MakeStruct(Seq("foo" -> MakeStruct(Seq("bar" -> ArrayRange(I32(0), I32(1), I32(1))))))),
+      FastIndexedSeq((true, TBoolean()), (value, t)),
+      value
+    )
+  }
+
   @Test def testLet() {
     assertEvalsTo(Let("v", I32(5), Ref("v", TInt32())), 5)
     assertEvalsTo(Let("v", NA(TInt32()), Ref("v", TInt32())), null)
@@ -312,6 +325,16 @@ class IRSuite extends SparkSuite {
       FastIndexedSeq(7, null, 2))
   }
 
+  @Test def testArrayScan() {
+    def scan(array: IR, zero: IR, f: (IR, IR) => IR): IR =
+      ArrayScan(array, zero, "_accum", "_elt", f(Ref("_elt", zero.typ), Ref("_accum", coerce[TArray](array.typ).elementType)))
+
+    assertEvalsTo(scan(TestUtils.IRArray(1, 2, 3), 0, (accum, elt) => accum + elt), FastIndexedSeq(0, 1, 3, 6))
+    assertEvalsTo(scan(TestUtils.IRArray(1, 2, 3), NA(TInt32()), (accum, elt) => accum + elt), FastIndexedSeq(null, null, null, null))
+    assertEvalsTo(scan(TestUtils.IRArray(1, null, 3), NA(TInt32()), (accum, elt) => accum + elt), FastIndexedSeq(null, null, null, null))
+    assertEvalsTo(scan(TestUtils.IRArray(1, null, 3), 0, (accum, elt) => accum + elt), FastIndexedSeq(0, 1, null, null))
+  }
+
   @Test def testDie() {
     assertFatal(Die("mumblefoo", TFloat64()), "mble")
   }
@@ -479,6 +502,7 @@ class IRSuite extends SparkSuite {
       ArrayFilter(a, "v", b),
       ArrayFlatMap(aa, "v", v),
       ArrayFold(a, I32(0), "x", "v", v),
+      ArrayScan(a, I32(0), "x", "v", v),
       ArrayFor(a, "v", Void()),
       ApplyAggOp(I32(0), FastIndexedSeq.empty, None, collectSig),
       ApplyAggOp(F64(-2.11), FastIndexedSeq(F64(-5.0), F64(5.0), I32(100)), None, histSig),
@@ -543,11 +567,11 @@ class IRSuite extends SparkSuite {
             MakeStruct(FastSeq("a" -> NA(TInt32()))),
             MakeStruct(FastSeq("a" -> I32(1)))
           ), TArray(TStruct("a" -> TInt32()))), None),
-        TableMapRows(read,
+        TableMapRows(TableUnkey(read),
           MakeStruct(FastIndexedSeq(
             "a" -> GetField(Ref("row", read.typ.rowType), "f32"),
             "b" -> F64(-2.11))),
-          None, None),
+          None),
         TableMapGlobals(read,
           MakeStruct(FastIndexedSeq(
             "foo" -> NA(TArray(TInt32()))))),

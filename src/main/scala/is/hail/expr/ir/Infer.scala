@@ -7,9 +7,11 @@ object Infer {
     ir match {
       case If(cond, cnsq, altr) =>
         assert(cond.typ.isOfType(TBoolean()))
-        assert(cnsq.typ == altr.typ, s"mismatch:\n  ${ cnsq.typ.parsableString() }\n  ${ altr.typ.parsableString() }\n  $cond")
-        cnsq.typ
-
+        assert(cnsq.typ.isOfType(altr.typ))
+        if (cnsq.typ != altr.typ)
+          cnsq.typ.deepOptional()
+        else
+          cnsq.typ
       case Let(name, value, body) =>
         body.typ
       case ApplyBinaryPrimOp(op, l, r) =>
@@ -44,6 +46,9 @@ object Infer {
       case ArrayFold(a, zero, accumName, valueName, body) =>
         assert(body.typ == zero.typ)
         zero.typ
+      case ArrayScan(a, zero, accumName, valueName, body) =>
+        assert(body.typ == zero.typ)
+        TArray(zero.typ)
       case ApplyAggOp(a, constructorArgs, initOpArgs, aggSig) =>
         AggOp.getType(aggSig)
       case ApplyScanOp(a, constructorArgs, initOpArgs, aggSig) =>

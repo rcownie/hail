@@ -299,7 +299,7 @@ object PruneDeadFields {
           globalType = requestedType.globalType), memo)
       case TableDistinct(child) =>
         memoizeTableIR(child, requestedType, memo)
-      case TableMapRows(child, newRow, newKey, preservedKeyFields) =>
+      case TableMapRows(child, newRow, newKey) =>
         val rowDep = memoizeAndGetDep(newRow, requestedType.rowType, child.typ, memo)
         memoizeTableIR(child, unify(child.typ, minimal(child.typ).copy(globalType = requestedType.globalType), rowDep), memo)
       case TableMapGlobals(child, newRow) =>
@@ -670,6 +670,16 @@ object PruneDeadFields {
           bodyEnv.delete(accumName).delete(valueName),
           memoizeValueIR(a, aType.copy(elementType = valueType), memo)
         )
+      case ArrayScan(a, zero, accumName, valueName, body) =>
+        val aType = a.typ.asInstanceOf[TArray]
+        val zeroEnv = memoizeValueIR(zero, zero.typ, memo)
+        val bodyEnv = memoizeValueIR(body, body.typ, memo)
+        val valueType = bodyEnv.lookupOption(valueName).map(_._2).getOrElse(minimal(-aType.elementType))
+        unifyEnvs(
+          zeroEnv,
+          bodyEnv.delete(accumName).delete(valueName),
+          memoizeValueIR(a, aType.copy(elementType = valueType), memo)
+        )
       case ArrayFor(a, valueName, body) =>
         assert(requestedType == TVoid)
         val aType = a.typ.asInstanceOf[TArray]
@@ -766,10 +776,10 @@ object PruneDeadFields {
         val child2 = rebuild(child, memo)
         val pred2 = rebuild(pred, child2.typ, memo)
         TableFilter(child2, pred2)
-      case TableMapRows(child, newRow, newKey, preservedKeyFields) =>
+      case TableMapRows(child, newRow, newKey) =>
         val child2 = rebuild(child, memo)
         val newRow2 = rebuild(newRow, child2.typ, memo)
-        TableMapRows(child2, newRow2, newKey, preservedKeyFields)
+        TableMapRows(child2, newRow2, newKey)
       case TableMapGlobals(child, newRow) =>
         // fixme push down into value
         val child2 = rebuild(child, memo)
@@ -933,6 +943,16 @@ object PruneDeadFields {
           valueName,
           rebuild(body, in.bind(accumName -> z2.typ, valueName -> -a2.typ.asInstanceOf[TArray].elementType), memo)
         )
+      case ArrayScan(a, zero, accumName, valueName, body) =>
+        val a2 = rebuild(a, in, memo)
+        val z2 = rebuild(zero, in, memo)
+        ArrayScan(
+          a2,
+          z2,
+          accumName,
+          valueName,
+          rebuild(body, in.bind(accumName -> z2.typ, valueName -> -a2.typ.asInstanceOf[TArray].elementType), memo)
+        )
       case ArrayFor(a, valueName, body) =>
         val a2 = rebuild(a, in, memo)
         val body2 = rebuild(body, in.bind(valueName -> -a2.typ.asInstanceOf[TArray].elementType), memo)
@@ -1006,8 +1026,9 @@ object PruneDeadFields {
         case ta: TArray =>
           val ra = rType.asInstanceOf[TArray]
           val uid = genUID()
-          val ref = Ref(uid, ta.elementType)
+          val ref = Ref(uid, -ta.elementType)
           ArrayMap(ir, uid, upcast(ref, ra.elementType))
+        case t => ir
       }
     }
   }
@@ -1049,7 +1070,7 @@ object PruneDeadFields {
     else {
       var table = ir
       if (upcastRow && ir.typ.rowType != rType.rowType) {
-        table = TableMapRows(table, upcast(Ref("row", table.typ.rowType), rType.rowType), rType.key, rType.key.map(_.length))
+        table = TableMapRows(table, upcast(Ref("row", table.typ.rowType), rType.rowType), rType.key)
       }
       if (upcastGlobals && ir.typ.globalType != rType.globalType) {
         table = TableMapGlobals(table,

@@ -2,6 +2,7 @@ package is.hail.expr.types
 
 import is.hail.annotations.{CodeOrdering, ExtendedOrdering}
 import is.hail.expr.ir.EmitMethodBuilder
+import is.hail.expr.types.physical.PTuple
 import is.hail.utils._
 
 import scala.collection.JavaConverters._
@@ -23,17 +24,14 @@ object TTuple {
 }
 
 final case class TTuple(_types: IndexedSeq[Type], override val required: Boolean = false) extends TBaseStruct {
+  def physicalType: PTuple = PTuple(types.map(_.physicalType), required)
+
   val types = _types.toArray
   val fieldRequired: Array[Boolean] = types.map(_.required)
 
   val fields: IndexedSeq[Field] = types.zipWithIndex.map { case (t, i) => Field(s"$i", t, i) }
 
   val ordering: ExtendedOrdering = TBaseStruct.getOrdering(types)
-
-  def codeOrdering(mb: EmitMethodBuilder, other: Type): CodeOrdering = {
-    assert(other isOfType this)
-    CodeOrdering.rowOrdering(this, other.asInstanceOf[TTuple], mb)
-  }
 
   val size: Int = types.length
 

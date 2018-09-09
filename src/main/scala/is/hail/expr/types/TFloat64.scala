@@ -5,6 +5,7 @@ import is.hail.asm4s.Code
 import is.hail.check.Arbitrary._
 import is.hail.check.Gen
 import is.hail.expr.ir.EmitMethodBuilder
+import is.hail.expr.types.physical.PFloat64
 import is.hail.utils._
 
 import scala.reflect.{ClassTag, _}
@@ -13,6 +14,8 @@ case object TFloat64Optional extends TFloat64(false)
 case object TFloat64Required extends TFloat64(true)
 
 class TFloat64(override val required: Boolean) extends TNumeric {
+  def physicalType: PFloat64 = PFloat64(required)
+
   override def _toPretty = "Float64"
 
   override def pyString(sb: StringBuilder): Unit = {
@@ -41,39 +44,8 @@ class TFloat64(override val required: Boolean) extends TNumeric {
 
   override def scalaClassTag: ClassTag[java.lang.Double] = classTag[java.lang.Double]
 
-  override def unsafeOrdering(missingGreatest: Boolean): UnsafeOrdering = new UnsafeOrdering {
-    def compare(r1: Region, o1: Long, r2: Region, o2: Long): Int = {
-      java.lang.Double.compare(r1.loadDouble(o1), r2.loadDouble(o2))
-    }
-  }
-
   val ordering: ExtendedOrdering =
     ExtendedOrdering.extendToNull(implicitly[Ordering[Double]])
-
-  def codeOrdering(mb: EmitMethodBuilder, other: Type): CodeOrdering = {
-    assert(other isOfType this)
-    new CodeOrdering {
-      type T = Double
-
-      def compareNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Int] =
-        Code.invokeStatic[java.lang.Double, Double, Double, Int]("compare", x, y)
-
-      override def ltNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
-        x < y
-
-      override def lteqNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
-        x <= y
-
-      override def gtNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
-        x > y
-
-      override def gteqNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
-        x >= y
-
-      override def equivNonnull(rx: Code[Region], x: Code[T], ry: Code[Region], y: Code[T], missingGreatest: Boolean): Code[Boolean] =
-        x.ceq(y)
-    }
-  }
 
   override def byteSize: Long = 8
 }

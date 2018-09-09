@@ -2,8 +2,11 @@ package is.hail.expr.types
 
 import is.hail.annotations.{CodeOrdering, ExtendedOrdering}
 import is.hail.expr.ir.EmitMethodBuilder
+import is.hail.expr.types.physical.PVoid
 
 case object TVoid extends Type {
+  def physicalType: PVoid.type = PVoid
+
   override val required = true
 
   override def _toPretty = "Void"
@@ -15,6 +18,4 @@ case object TVoid extends Type {
   override def _typeCheck(a: Any): Boolean = throw new UnsupportedOperationException("No elements of Void")
 
   override def isRealizable = false
-
-  def codeOrdering(mb: EmitMethodBuilder, other: Type): CodeOrdering = null
 }

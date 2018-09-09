@@ -5,16 +5,20 @@ import is.hail.utils._
 
 object TypeCheck {
   def apply(ir: IR, aggEnv: Option[Env[Type]] = None) {
+    apply(ir, new Env[Type](), aggEnv)
+  }
+
+  def apply(ir: IR, env: Env[Type], aggEnv: Option[Env[Type]]): Unit = {
     try {
-      apply(ir, new Env[Type](), aggEnv)
+      _apply(ir, env, aggEnv)
     } catch {
-      case e: Throwable => fatal(s"Error while typechecking IR:\n${Pretty(ir)}", e)
+      case e: Throwable => fatal(s"Error while typechecking IR:\n${ Pretty(ir) }", e)
     }
   }
 
-  def apply(ir: IR, env: Env[Type], aggEnv: Option[Env[Type]]) {
+  private def _apply(ir: IR, env: Env[Type], aggEnv: Option[Env[Type]]) {
     def check(ir: IR, env: Env[Type] = env, aggEnv: Option[Env[Type]] = aggEnv) {
-      apply(ir, env, aggEnv)
+      _apply(ir, env, aggEnv)
     }
 
     ir match {
@@ -139,6 +143,13 @@ object TypeCheck {
         check(body, env = env.bind(accumName -> zero.typ, valueName -> -tarray.elementType))
         assert(body.typ == zero.typ)
         assert(x.typ == zero.typ)
+      case x@ArrayScan(a, zero, accumName, valueName, body) =>
+        check(a)
+        val tarray = coerce[TArray](a.typ)
+        check(zero)
+        check(body, env = env.bind(accumName -> zero.typ, valueName -> -tarray.elementType))
+        assert(body.typ == zero.typ)
+        assert(x.typ == TArray(zero.typ))
       case x@ArrayFor(a, valueName, body) =>
         check(a)
         val tarray = coerce[TArray](a.typ)
@@ -178,7 +189,7 @@ object TypeCheck {
         }: _*))
       case x@SelectFields(old, fields) =>
         check(old)
-        assert{
+        assert {
           val oldfields = coerce[TStruct](old.typ).fieldNames.toSet
           fields.forall { id => oldfields.contains(id) }
         }

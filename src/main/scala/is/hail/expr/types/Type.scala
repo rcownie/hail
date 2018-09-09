@@ -3,6 +3,7 @@ package is.hail.expr.types
 import is.hail.annotations._
 import is.hail.check.{Arbitrary, Gen}
 import is.hail.expr.ir.EmitMethodBuilder
+import is.hail.expr.types.physical.PType
 import is.hail.expr.{JSONAnnotationImpex, Parser, SparkAnnotationImpex}
 import is.hail.utils
 import is.hail.utils._
@@ -122,12 +123,12 @@ object Type {
   } yield (t, v)
 
   implicit def arbType = Arbitrary(genArb)
-
-  def parseMap(s: String): Map[String, Type] = Parser.parseAnnotationTypes(s)
 }
 
 abstract class Type extends BaseType with Serializable {
   self =>
+
+  def physicalType: PType
 
   def children: Seq[Type] = FastSeq()
 
@@ -140,17 +141,6 @@ abstract class Type extends BaseType with Serializable {
   def isBound: Boolean = children.forall(_.isBound)
 
   def subst(): Type = this.setRequired(false)
-
-  def unsafeOrdering(missingGreatest: Boolean): UnsafeOrdering = ???
-
-  def unsafeOrdering(): UnsafeOrdering = unsafeOrdering(false)
-
-  def unsafeOrdering(rightType: Type, missingGreatest: Boolean): UnsafeOrdering = {
-    require(this.isOfType(rightType))
-    unsafeOrdering(missingGreatest)
-  }
-
-  def unsafeOrdering(rightType: Type): UnsafeOrdering = unsafeOrdering(rightType, false)
 
   def unsafeInsert(typeToInsert: Type, path: List[String]): (Type, UnsafeInserter) =
     TStruct.empty().unsafeInsert(typeToInsert, path)
@@ -222,10 +212,6 @@ abstract class Type extends BaseType with Serializable {
 
   val ordering: ExtendedOrdering
 
-  def codeOrdering(mb: EmitMethodBuilder): CodeOrdering = codeOrdering(mb, this)
-
-  def codeOrdering(mb: EmitMethodBuilder, other: Type): CodeOrdering
-
   def jsonReader: JSONReader[Annotation] = new JSONReader[Annotation] {
     def fromJSON(a: JValue): Annotation = JSONAnnotationImpex.importAnnotation(a, self)
   }
@@ -295,6 +281,7 @@ abstract class Type extends BaseType with Serializable {
       case t2: TArray => t.isInstanceOf[TArray] && t.asInstanceOf[TArray].elementType.isOfType(t2.elementType)
       case t2: TSet => t.isInstanceOf[TSet] && t.asInstanceOf[TSet].elementType.isOfType(t2.elementType)
       case t2: TDict => t.isInstanceOf[TDict] && t.asInstanceOf[TDict].keyType.isOfType(t2.keyType) && t.asInstanceOf[TDict].valueType.isOfType(t2.valueType)
+      case TVoid => t == TVoid
     }
   }
 
