@@ -91,21 +91,23 @@ public:
   char    tag_[8];
   
 public:
-  DecoderBase(ObjectArray* a, ssize_t bufCapacity = 0);
-  
-  void analyze();
+  DecoderBase(ssize_t bufCapacity = 0);
   
   virtual ~DecoderBase();
   
+  void set_input(ObjectArray* input);
+  
   virtual int64_t get_field_offset(int field_size, const char* s);
+  
+  void analyze();
   
   ssize_t read_to_end_of_block();
 
   // Returns -1 if input stream is exhausted, else 0x00-0xff  
-  ssize_t decode_one_byte();
+  int64_t decode_one_byte();
 
   // Returns -1 if input stream is exhausted, else RegionValue addr  
-  virtual ssize_t decode_one_item(Region* region) = 0;
+  virtual int64_t decode_one_item(Region* region) = 0;
   
 #ifdef MYDEBUG
   void hexify(char* out, ssize_t pos, char* p, ssize_t n);

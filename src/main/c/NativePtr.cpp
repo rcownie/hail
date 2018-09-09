@@ -1,5 +1,6 @@
 #include "hail/NativePtr.h"
 #include "hail/NativeObj.h"
+#include "hail/hail.h"
 #include <cassert>
 #include <csignal>
 #include <cstdio>
@@ -9,6 +10,21 @@
 #include <vector>
 #include <jni.h>
 #include <execinfo.h>
+#include <unistd.h>
+
+extern "C" int hail_gdb_breakpoint() {
+  // GdbConfig sets a breakpoint here
+  static int count = 0;
+  return ++count;;
+}
+
+extern "C" void hail_pause_for_gdb(const char* file, int line, const char* why) {
+#ifdef HAIL_ENABLE_DEBUG
+  fprintf(stderr, "DEBUG: %s,%d: HAIL_PAUSE %s ...\n", file, line, why);
+  int n = hail_gdb_breakpoint();
+  fprintf(stderr, "DEBUG: %s,%d: HAIL_PAUSE %s done (count %d)\n", file, line, why, n);
+#endif
+}
 
 namespace hail {
 
@@ -18,6 +34,39 @@ namespace hail {
   extern "C" JNIEXPORT typ JNICALL
 
 namespace {
+
+class GdbConfig {
+ public:
+  GdbConfig() {
+#if HAIL_ENABLE_DEBUG
+    fprintf(stderr, "DEBUG: trying to run gdb under xterm ...\n");
+    FILE* f = fopen("a.gdb", "w");
+    fprintf(f, "handle SIGSEGV noprint\n");
+    fprintf(f, "handle SIG62 noprint\n");
+    fprintf(f, "break hail_gdb_breakpoint\n");
+    fclose(f);
+    int pid = getpid();
+    char cmd[512];
+    sprintf(
+      cmd,
+      "xterm -rightbar -e \"sudo gdb -p %d -x a.gdb\" &\n",
+      pid
+    );
+    int rc = system(cmd);
+    fprintf(stderr, "DEBUG: system(\"%s\") -> %d\n", cmd, rc);
+    for (int j = 10; j >= 0; --j) {
+      fprintf(stderr, "%d", j);
+      if (j > 0) {
+        fprintf(stderr, "..");
+        sleep(1);
+      }
+    }
+    fprintf(stderr, " continue\n");
+#endif
+  }
+};
+
+GdbConfig gdb_config;
 
 void check_assumptions();
 
@@ -217,7 +266,6 @@ NATIVEMETHOD(void, NativeBase, nativeReset)(
   jlong addrB
 ) {
   TwoAddrs bufA(addrA, addrB);
-
   bufA.as_NativeObjPtr().reset();
   // The Scala object fields are cleared in the wrapper
 }

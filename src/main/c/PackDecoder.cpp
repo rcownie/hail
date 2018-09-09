@@ -1,17 +1,18 @@
 #include "hail/PackDecoder.h"
 #include "hail/ByteArrayPool.h"
 #include "hail/Upcalls.h"
+#include <cassert>
 
 namespace hail {
 
-DecoderBase::DecoderBase(ObjectArray* a, ssize_t bufCapacity) :
+DecoderBase::DecoderBase(ssize_t bufCapacity) :
   total_usec_(0),
   total_size_(0),
   stat_int32_(0),
   stat_double_(0),
-  input_(std::dynamic_pointer_cast<ObjectArray>(a->shared_from_this())),
-  capacity_(bufCapacity ? bufCapacity : kDefaultCapacity),
-  buf_((char*)malloc(capacity_+kSentinelSize)),
+  input_(),
+  capacity_((bufCapacity > 0) ? bufCapacity : kDefaultCapacity),
+  buf_((char*)malloc(capacity_ + ((kSentinelSize+0x3f) & ~0x3f))),
   pos_(0),
   size_(0),
   rv_base_(nullptr) {
@@ -22,6 +23,10 @@ DecoderBase::~DecoderBase() {
   auto buf = buf_;
   buf_ = nullptr;
   if (buf) free(buf);
+}
+
+void DecoderBase::set_input(ObjectArray* input) {
+  input_ = std::dynamic_pointer_cast<ObjectArray>(input->shared_from_this());
 }
 
 int64_t DecoderBase::get_field_offset(int field_size, const char* s) {
@@ -54,10 +59,10 @@ void DecoderBase::analyze() {
     for (auto val : pair.second) {
       sum += score;
       fprintf(f, "%5.3f cumulative %5.3f val %d\n", score, sum, val);
-       if (score >= 95.0) break;
-   }
- }
- fclose(f);
+      if (score >= 95.0) break;
+    }
+  }
+  fclose(f);
 #endif
 }
 
@@ -67,22 +72,22 @@ void DecoderBase::hexify(char* out, ssize_t pos, char* p, ssize_t n) {
     sprintf(out, "[%4ld] ", pos+j);
     out += strlen(out);
     for (int k = 0; k < 8; ++k) {
-	  if (j+k >= n) {
-	    *out++ = ' ';
-	    *out++ = ' ';
-	  } else {
-	    int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
-	    int nibble = (c>>4) & 0xff;
-	    *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
-	    nibble = (c & 0xf);
-	    *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
-	  }
-	  *out++ = ' ';
+      if (j+k >= n) {
+        *out++ = ' ';
+        *out++ = ' ';
+      } else {
+        int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
+        int nibble = (c>>4) & 0xff;
+        *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
+        nibble = (c & 0xf);
+        *out++ = ((nibble < 10) ? '0'+nibble : 'a'+nibble-10);
+      }
+      *out++ = ' ';
     }
     *out++ = ' ';
     for (int k = 0; k < 8; ++k) {
-	  int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
-	  *out++ = ((' ' <= c) && (c <= '~')) ? c : '.';
+      int c = (j+k < n) ? (p[j+k] & 0xff) : ' ';
+      *out++ = ((' ' <= c) && (c <= '~')) ? c : '.';
     }
     *out++ = '\n';
   }
@@ -91,43 +96,44 @@ void DecoderBase::hexify(char* out, ssize_t pos, char* p, ssize_t n) {
 #endif
 
 ssize_t DecoderBase::read_to_end_of_block() {
+  assert(size_ >= 0);
+  assert(size_ <= capacity_);
+  assert(pos_ >= 0);
+  assert(pos_ <= size_+1);
   auto remnant = (size_ - pos_);
+  if (remnant < 0) {
+    return -1;
+  }
   if (remnant > 0) {
     memcpy(buf_, buf_+pos_, remnant);
   }
   pos_ = 0;
   size_ = remnant;
-  auto tmp_array = alloc_byte_array(0);
+  int32_t chunk = (capacity_ - size_);
   UpcallEnv up;
-  jint rc = up.env()->CallIntMethod(
-    input_->at(0), 
-    up.config()->InputBuffer_readToEndOfBlock_,
-    (jlong)(buf_+size_),
-    tmp_array->array(),
-    (jint)0,
-    (jint)(capacity_-size_)
-  );
-  fprintf(stderr, "DEBUG: readToEndOfBlock(%ld) -> %d\n", capacity_-size_, rc);
+  int32_t rc = up.InputBuffer_readToEndOfBlock(input_->at(0), buf_+size_, (jbyteArray)0,
+                                               0, chunk);
+  assert(rc <= chunk);
   if (rc < 0) {
-    size_ = -1;
+    pos_ = (size_ + 1); // (pos > size) means end-of-file
     return -1;
+  } else {
+    size_ += rc;
+    // buf is oversized with space for a sentinel to speed up one-byte-int decoding
+    memset(buf_+size_, 0xff, kSentinelSize-1);
+    buf_[size_+kSentinelSize-1] = 0x00; // terminator for LEB128 loop
+    return rc;
   }
-  size_ += rc;
-  // buf is oversized for a sentinel to speed up one-byte-int decoding
-  memset(&buf_[size_], 0xff, kSentinelSize-1);
-  buf_[size_+kSentinelSize-1] = 0x00; // terminator for LEB128 loop
-  return rc;
 }
 
-ssize_t DecoderBase::decode_one_byte() {
+int64_t DecoderBase::decode_one_byte() {
   ssize_t avail = (size_ - pos_);
   if (avail <= 0) {
-    if (avail < 0) return -1;
-    read_to_end_of_block();
-    avail = (size_ - pos_);
-    if (avail <= 0) return -1;
+    if ((avail < 0) || (read_to_end_of_block() <= 0)) {
+      return -1;
+    }
   }
-  ssize_t result = (buf_[pos_++] & 0xff);
+  int64_t result = (buf_[pos_++] & 0xff);
   return result;
 }
 

@@ -58,7 +58,7 @@ public:
  public:  
   Region() :
     buf_(nullptr),
-    pos_(kChunkCap),
+    pos_(kChunkCap+1),
     chunks_used_(0) {
   }
   
