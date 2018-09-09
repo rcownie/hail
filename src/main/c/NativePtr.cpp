@@ -12,7 +12,7 @@
 #include <execinfo.h>
 #include <unistd.h>
 
-#define ENABLE_GDB_IN_XTERM 1
+#define ENABLE_GDB_IN_XTERM 0
 
 extern "C" int hail_gdb_breakpoint() {
   // GdbConfig sets a breakpoint here
@@ -267,11 +267,9 @@ NATIVEMETHOD(void, NativeBase, nativeReset)(
   jlong addrA,
   jlong addrB
 ) {
-  fprintf(stderr, "DEBUG: nativeReset addrB %p ...\n", (void*)addrB);
   TwoAddrs bufA(addrA, addrB);
   bufA.as_NativeObjPtr().reset();
   // The Scala object fields are cleared in the wrapper
-  fprintf(stderr, "DEBUG: nativeReset addrB %p done\n", (void*)addrB);
 }
 
 NATIVEMETHOD(jlong, NativeBase, nativeUseCount)(

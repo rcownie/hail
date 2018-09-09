@@ -529,6 +529,7 @@ final class LEB128InputBuffer(in: InputBuffer) extends InputBuffer {
     val result = in.readToEndOfBlock(toAddr, toBuf, toOff, n)
     if (result > 0) bytePos += result
     System.err.println(s"DEBUG: LEB128 readToEndOfBlock(toAddr ${toAddr}, toOff ${toOff}, n ${n}) -> ${result}")
+    assert(result <= n)
     result
   }
 }
@@ -573,6 +574,7 @@ final class LZ4InputBlockBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       pos += ngot
     }
     System.err.println(s"DEBUG: LZ4 readToEndOfBlock(toAddr ${toAddr}, toOff ${toOff}, n ${n}) -> ${ngot}")
+    assert(ngot <= n)
     ngot
   }
 }
@@ -728,6 +730,7 @@ final class BlockingInputBuffer(blockSize: Int, in: InputBlockBuffer) extends In
       off += ngot
     }
     System.err.println(s"DEBUG: Blocking readToEndOfBlock(toAddr ${toAddr}, toOff ${toOff}, n ${n}) -> ${ngot}")
+    assert(ngot <= n)
     ngot
   }
 }
@@ -1282,9 +1285,7 @@ object NativeDecode {
       |    this->set_input(inputArray);
       |  }
       |
-      |  virtual ~Decoder() {
-      |    fprintf(stderr, "DEBUG: Decoder::dtor() ...\\n");
-      |  }
+      |  virtual ~Decoder() { }
       |
       |  virtual int64_t decode_one_item(Region* region) {
       |${localDefs}
@@ -1356,7 +1357,6 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
   val decode_one_byte = mod.findLongFuncL1(st, "decode_one_byte")
   assert(st.ok, st.toString())
   val decode_one_item = mod.findLongFuncL2(st, "decode_one_item")
-  mod.close()
   assert(st.ok, st.toString())
   val input = new ObjectArray(in)
   val decoder = new NativePtr(make_decoder, st, input.get(), in.decoderId)
@@ -1364,14 +1364,19 @@ final class NativePackDecoder(in: InputBuffer, moduleKey: String, moduleBinary: 
   assert(st.ok, st.toString())
   var numItems = 0
   val tag = ((decoder.get() & 0xffff) | 0x8000).toHexString
-
+  
   def close(): Unit = {
-    in.close()
-    make_decoder.close()
-    decode_one_byte.close()
-    decode_one_item.close()
     decoder.close()
+    decode_one_item.close()
+    decode_one_byte.close()
+    make_decoder.close()
+    // NativePtr's to objects with destructors using the module code must
+    // *not* be close'd last, since the module will be dlclose'd before the
+    // destructor is called.  One safe policy is to close everything in
+    // reverse order, ending with the NativeModule
+    mod.close()
     st.close()
+    in.close()
   }
 
   def readByte(): Byte = {
