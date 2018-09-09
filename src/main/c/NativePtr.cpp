@@ -12,8 +12,6 @@
 #include <execinfo.h>
 #include <unistd.h>
 
-#define ENABLE_GDB_IN_XTERM 0
-
 extern "C" int hail_gdb_breakpoint() {
   // GdbConfig sets a breakpoint here
   static int count = 0;
@@ -21,7 +19,7 @@ extern "C" int hail_gdb_breakpoint() {
 }
 
 extern "C" void hail_pause_for_gdb(const char* file, int line, const char* why) {
-#if ENABLE_GDB_IN_XTERM
+#ifdef HAIL_ENABLE_DEBUG
   fprintf(stderr, "DEBUG: %s,%d: HAIL_PAUSE %s ...\n", file, line, why);
   int n = hail_gdb_breakpoint();
   fprintf(stderr, "DEBUG: %s,%d: HAIL_PAUSE %s done (count %d)\n", file, line, why, n);
@@ -40,7 +38,7 @@ namespace {
 class GdbConfig {
  public:
   GdbConfig() {
-#if ENABLE_GDB_IN_XTERM
+#if HAIL_ENABLE_DEBUG
     fprintf(stderr, "DEBUG: trying to run gdb under xterm ...\n");
     FILE* f = fopen("a.gdb", "w");
     fprintf(f, "handle SIGSEGV noprint\n");
