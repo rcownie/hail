@@ -31,7 +31,6 @@ OBJECTS := \
   NativePtr.o \
   NativeStatus.o \
   ObjectArray.o \
-  PackDecoder.o \
   Region.o \
   Upcalls.o
 
