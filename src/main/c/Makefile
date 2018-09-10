@@ -24,7 +24,6 @@ LIBSIMDPP :=libsimdpp-2.1
 OBJECTS := \
   davies.o \
   ibs.o \
-  ByteArrayPool.o \
   Logging.o \
   NativeCodeSuite.o \
   NativeLongFunc.o \

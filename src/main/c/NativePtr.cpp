@@ -38,7 +38,7 @@ namespace {
 class GdbConfig {
  public:
   GdbConfig() {
-#if HAIL_ENABLE_DEBUG
+#ifdef HAIL_ENABLE_DEBUG
     fprintf(stderr, "DEBUG: trying to run gdb under xterm ...\n");
     FILE* f = fopen("a.gdb", "w");
     fprintf(f, "handle SIGSEGV noprint\n");
