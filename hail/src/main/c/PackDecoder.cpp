@@ -1,5 +1,4 @@
 #include "hail/PackDecoder.h"
-#include "hail/ByteArrayPool.h"
 #include "hail/Upcalls.h"
 #include <cassert>
 
@@ -111,6 +110,7 @@ ssize_t DecoderBase::read_to_end_of_block() {
   size_ = remnant;
   int32_t chunk = (capacity_ - size_);
   UpcallEnv up;
+  // The unused Array[Byte] parameter gets (jbyteArray)0 which is Scala/Java nil
   int32_t rc = up.InputBuffer_readToEndOfBlock(input_->at(0), buf_+size_, (jbyteArray)0,
                                                0, chunk);
   assert(rc <= chunk);

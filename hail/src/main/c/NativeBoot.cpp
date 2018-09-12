@@ -1,6 +1,10 @@
+#include "hail/hail.h"
 #include <jni.h>
 #include <dlfcn.h>
 #include <cstdio>
+#include <cstdlib>
+#include <sys/types.h>
+#include <unistd.h>
 
 // Declare a function to be exported from a DLL with "C" linkage
 
