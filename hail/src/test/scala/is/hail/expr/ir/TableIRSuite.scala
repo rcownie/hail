@@ -217,7 +217,7 @@ class TableIRSuite extends SparkSuite {
         Some(1)),
       if (!leftProject.contains(1)) IndexedSeq("A", "B") else IndexedSeq("A")))
     val partitionedLeft = left.copy2(
-      rvd = left.value.enforceOrderingRVD.asInstanceOf[OrderedRVD]
+      rvd = left.value.rvd.asInstanceOf[OrderedRVD]
         .constrainToOrderedPartitioner(if (!leftProject.contains(1)) leftPart else leftPart.coarsen(1)))
 
     val (rightType, rightProjectF) = rowType.filter(f => !rightProject.contains(f.index))
@@ -227,7 +227,7 @@ class TableIRSuite extends SparkSuite {
         Some(1)),
       if (!rightProject.contains(1)) IndexedSeq("A", "B") else IndexedSeq("A")))
     val partitionedRight = right.copy2(
-      rvd = right.value.enforceOrderingRVD.asInstanceOf[OrderedRVD]
+      rvd = right.value.rvd.asInstanceOf[OrderedRVD]
         .constrainToOrderedPartitioner(if (!rightProject.contains(1)) rightPart else rightPart.coarsen(1)))
 
     val (_, joinProjectF) = joinedType.filter(f => !leftProject.contains(f.index) && !rightProject.contains(f.index - 2))
@@ -250,5 +250,15 @@ class TableIRSuite extends SparkSuite {
         FastIndexedSeq("k"))
 
     TableJoin(t1, t2, "left").execute(hc).rvd.count()
+  }
+
+  @Test def testTableRename() {
+    val before = TableMapGlobals(TableRange(10, 1), MakeStruct(Seq("foo" -> I32(0))))
+    val t = TableRename(before, Map("idx" -> "idx_"), Map("foo" -> "foo_"))
+    assert(t.typ == TableType(rowType = TStruct("idx_" -> TInt32()), key = Some(FastIndexedSeq("idx_")), globalType = TStruct("foo_" -> TInt32())))
+    val beforeValue = before.execute(hc)
+    val after = t.execute(hc)
+    assert(beforeValue.globals.safeValue == after.globals.safeValue)
+    assert(beforeValue.rdd.collect().toFastIndexedSeq == after.rdd.collect().toFastIndexedSeq)
   }
 }

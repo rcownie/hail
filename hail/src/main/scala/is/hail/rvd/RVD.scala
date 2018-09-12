@@ -48,7 +48,7 @@ object RVDSpec {
         using(RVDContext.default) { ctx =>
           HailContext.readRowsPartition(codecSpec.buildDecoder(rowType, requestedType))(ctx, in)
             .map { rv =>
-              val r = SafeRow(requestedType, rv.region, rv.offset)
+              val r = SafeRow(requestedType.physicalType, rv.region, rv.offset)
               ctx.region.clear()
               r
             }.toFastIndexedSeq
@@ -76,7 +76,7 @@ case class UnpartitionedRVDSpec(
   codecSpec: CodecSpec,
   partFiles: Array[String]) extends RVDSpec {
   def read(hc: HailContext, path: String, requestedType: TStruct): RVD =
-    UnpartitionedRVD(
+    OrderedRVD.unkeyed(
       requestedType,
       hc.readRows(path, rowType, codecSpec, partFiles, requestedType))
 
@@ -229,7 +229,7 @@ trait RVD {
       encodedData.iterator
         .map(RVD.bytesToRegionValue(dec, region, RegionValue(region)))
         .map { rv =>
-          val row = SafeRow(rowType, rv)
+          val row = SafeRow(rowType.physicalType, rv)
           region.clear()
           row
         }.toArray
@@ -444,12 +444,12 @@ trait RVD {
 
   def toRows: RDD[Row] = {
     val localRowType = rowType
-    map(rv => SafeRow(localRowType, rv.region, rv.offset))
+    map(rv => SafeRow(localRowType.physicalType, rv.region, rv.offset))
   }
 
   def subsetPartitions(keep: Array[Int]): RVD
 
-  def toUnpartitionedRVD: RVD
-
   def toOrderedRVD: OrderedRVD
+
+  def cast(newRowType: TStruct): RVD
 }
