@@ -146,7 +146,8 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
       val code = new PrettyCode(sb.toString())
       // Experiments on Mac (LLVM) show -O2 code about 1.08x faster than -O1,
       // but -O3 is no better than -O2.
-      val options = "-O2"
+      // UnsafeSuite.testCodec takes a long time on Mac with -O2, so use -O1
+      val options = "-O1"
       val mod = new NativeModule(options, code.toString())
       val st = new NativeStatus()
       mod.findOrBuild(st)
