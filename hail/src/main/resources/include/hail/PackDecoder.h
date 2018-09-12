@@ -11,12 +11,11 @@
 #include <cstdlib>
 #include <cstring>
 
-//#define MYDEBUG
-//#define MYSTATS
+//#define MYDEBUG 1
 
-#define BIG_METHOD_INLINE 0
+//#define BIG_METHOD_INLINE 1
 
-#if BIG_METHOD_INLINE
+#ifdef BIG_METHOD_INLINE
 # define MAYBE_INLINE inline
 #else
 # define MAYBE_INLINE
@@ -35,53 +34,27 @@ inline ssize_t missing_bytes(ssize_t nbits) {
   return ((nbits + 7) >> 3);
 }
   
-inline ssize_t elements_offset(ssize_t n, bool required, ssize_t align) {
-  return round_up_align(sizeof(int32_t) + (required ? 0 : missing_bytes(n)), align);
-}
+ssize_t elements_offset(ssize_t n, bool required, ssize_t align);
 
-inline void set_all_missing(char* miss, ssize_t nbits) {
-  memset(miss, 0xff, (nbits+7)>>3);
-  int partial = (nbits & 0x7);
-  if (partial != 0) miss[nbits>>3] = (1<<partial)-1;
-}
+void set_all_missing(char* miss, ssize_t nbits);
   
+void set_all_missing(std::vector<char>& missing_vec, ssize_t nbits);
+  
+void stretch_size(std::vector<char>& missing_vec, ssize_t minsize);
+
 inline bool is_missing(char* missing_base, ssize_t idx) {
   return (bool)((missing_base[idx>>3] >> (idx&7)) & 0x1);
 }
 
-inline void set_all_missing(std::vector<char>& missing_vec, ssize_t nbits) {
-  ssize_t nbytes = ((nbits+7)>>3);
-  if (missing_vec.size() < (size_t)nbytes) missing_vec.resize(nbytes);
-  memset(&missing_vec[0], 0xff, nbytes);
-  int partial = (nbits & 0x7);
-  if (partial != 0) missing_vec[nbits>>3] = (1<<partial)-1;
-}
-  
 inline bool is_missing(const std::vector<char>& missing_vec, ssize_t idx) {
   return (bool)((missing_vec[idx>>3] >> (idx&7)) & 0x1);
 }
 
-inline void stretch_size(std::vector<char>& missing_vec, ssize_t minsize) {
-  if (ssize(missing_vec) < minsize) missing_vec.resize(minsize);
-}
-
-class MyFreq {
-public:
-  int32_t freq_;
-
-  MyFreq() : freq_(0) { }
-};
-  
 class DecoderBase : public NativeObj {
 private:
   static constexpr ssize_t kDefaultCapacity = (64*1024);
   static constexpr ssize_t kSentinelSize = 16;
 public:
-  int64_t total_usec_;
-  int64_t total_size_;
-  int64_t stat_int32_;
-  int64_t stat_double_;
-  std::unordered_map<int32_t, MyFreq> freq_int32_;
   ObjectArrayPtr input_;
   ssize_t capacity_;
   char*   buf_;
@@ -98,8 +71,6 @@ public:
   void set_input(ObjectArray* input);
   
   virtual int64_t get_field_offset(int field_size, const char* s);
-  
-  void analyze();
   
   ssize_t read_to_end_of_block();
 
@@ -130,7 +101,9 @@ class PackDecoderBase : public DecoderBase {
     if (pos >= size_) return false;
     *addr = *(int8_t*)(buf_+pos);
     pos_ = pos+1;
-    //fprintf(stderr, "DEBUG: %s A decode_byte() -> 0x%02x [%p]\n", tag_, (*addr) & 0xff, addr);
+#ifdef MYDEBUG
+    fprintf(stderr, "DEBUG: %s A decode_byte() -> 0x%02x [%p]\n", tag_, (*addr) & 0xff, addr);
+#endif
     return true;
   }
   
@@ -293,13 +266,6 @@ class PackDecoderBase<1> : public DecoderBase {
   
   bool skip_int() {
     ssize_t pos = pos_;
-#ifndef MYSTATS
-    if (LIKELY(*(int8_t*)&buf_[pos] >= 0)) { pos_ = pos+1; return true; } // fast path
-    while (*(int8_t*)&buf_[pos++] < 0);
-    if (pos > size_) return false;
-    pos_ = pos;
-    return true;    
-#else
     int val = 0;
     for (int shift = 0;; shift += 7) {
       if (pos >= size_) return false;
@@ -307,9 +273,6 @@ class PackDecoderBase<1> : public DecoderBase {
       val |= ((b & 0x7f) << shift);
       if ((b & 0x80) == 0) break;
     }
-    freq_int32_[val].freq_++;
-    stat_int32_ += (pos - pos_);
-#endif
     pos_ = pos;
     return true;
   }
@@ -357,9 +320,6 @@ class PackDecoderBase<1> : public DecoderBase {
     ssize_t pos = pos_;
     if (pos+8 > size_) return false;
     *addr = *(double*)(buf_+pos);
-#ifdef MYSTATS
-    stat_double_ += 8;
-#endif
     pos_ = (pos+8);
 #ifdef MYDEBUG
     fprintf(stderr, "DEBUG: %s B decode_double() -> %12e\n", tag_, *addr);
@@ -370,9 +330,6 @@ class PackDecoderBase<1> : public DecoderBase {
   bool skip_double() {
     ssize_t pos = pos_ + sizeof(double);
     if (pos > size_) return false;
-#ifdef MYSTATS
-    stat_double_ += 8;
-#endif
     pos_ = pos;
     return true;
   }
@@ -402,10 +359,6 @@ MAYBE_INLINE bool PackDecoderBase<1>::decode_int_slow(int32_t* addr) {
   char hex[256];
   hexify(hex, pos_, buf_+pos_, pos-pos_);
   fprintf(stderr, "%s", hex);
-#endif
-#ifdef MYSTATS
-  freq_int32_[val].freq_++;
-  stat_int32_ += (pos - pos_);
 #endif
   pos_ = pos;
   return true;

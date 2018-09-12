@@ -4,11 +4,29 @@
 
 namespace hail {
 
+ssize_t elements_offset(ssize_t n, bool required, ssize_t align) {
+  return round_up_align(sizeof(int32_t) + (required ? 0 : missing_bytes(n)), align);
+}
+
+void set_all_missing(char* miss, ssize_t nbits) {
+  memset(miss, 0xff, (nbits+7)>>3);
+  int partial = (nbits & 0x7);
+  if (partial != 0) miss[nbits>>3] = (1<<partial)-1;
+}
+
+void set_all_missing(std::vector<char>& missing_vec, ssize_t nbits) {
+  ssize_t nbytes = ((nbits+7)>>3);
+  if (missing_vec.size() < (size_t)nbytes) missing_vec.resize(nbytes);
+  memset(&missing_vec[0], 0xff, nbytes);
+  int partial = (nbits & 0x7);
+  if (partial != 0) missing_vec[nbits>>3] = (1<<partial)-1;
+}
+
+void stretch_size(std::vector<char>& missing_vec, ssize_t minsize) {
+  if (ssize(missing_vec) < minsize) missing_vec.resize(minsize);
+}
+
 DecoderBase::DecoderBase(ssize_t bufCapacity) :
-  total_usec_(0),
-  total_size_(0),
-  stat_int32_(0),
-  stat_double_(0),
   input_(),
   capacity_((bufCapacity > 0) ? bufCapacity : kDefaultCapacity),
   buf_((char*)malloc(capacity_ + ((kSentinelSize+0x3f) & ~0x3f))),
@@ -36,33 +54,6 @@ int64_t DecoderBase::get_field_offset(int field_size, const char* s) {
   if (!strcmp(s, "size_"))     return (int64_t)&zeroObj->size_;
   if (!strcmp(s, "rv_base_"))  return (int64_t)&zeroObj->rv_base_;
   return -1;
-}
-
-void DecoderBase::analyze() {
-#ifdef MYSTATS
-  std::map<double, std::vector<int32_t> > vals;
-  ssize_t total = 0;
-  for (auto& pair : freq_int32_) {
-    total += pair.second.freq_;
-  }
-  for (auto& pair : freq_int32_) {
-    double percent = -(100.0*pair.second.freq_)/total;
-    vals[percent].push_back(pair.first);
-  }
-  char buf[128];
-  sprintf(buf, "/tmp/stats_%s", tag_);
-  FILE* f = fopen(buf, "a");
-  double sum = 0.0;
-  for (auto& pair : vals) {
-    double score = -pair.first;
-    for (auto val : pair.second) {
-      sum += score;
-      fprintf(f, "%5.3f cumulative %5.3f val %d\n", score, sum, val);
-      if (score >= 95.0) break;
-    }
-  }
-  fclose(f);
-#endif
 }
 
 #ifdef MYDEBUG

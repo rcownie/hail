@@ -145,8 +145,8 @@ final case class PackCodecSpec(child: BufferSpec) extends CodecSpec {
       NativeDecode.appendCode(sb, t, requestedType)
       val code = new PrettyCode(sb.toString())
       // Experiments on Mac (LLVM) show -O2 code about 1.08x faster than -O1,
-      // but -O3 is no better than -O2
-      val options = "-ggdb -O0"
+      // but -O3 is no better than -O2.
+      val options = "-O2"
       val mod = new NativeModule(options, code.toString())
       val st = new NativeStatus()
       mod.findOrBuild(st)
@@ -1313,30 +1313,12 @@ object NativeDecode {
       |
       |int64_t decode_one_item(NativeStatus*, long decoder, long region) {
       |  auto obj = (DecoderBase*)decoder;
-      |  struct timeval tv0, tv1;
-      |  gettimeofday(&tv0, nullptr);
-      |  auto result = obj->decode_one_item((Region*)region);
-      |  gettimeofday(&tv1, nullptr);
-      |  obj->total_usec_ += 1000000L*(tv1.tv_sec - tv0.tv_sec) + (tv1.tv_usec - tv0.tv_usec);
-      |  return result;
+      |  return obj->decode_one_item((Region*)region);
       |}
       |
       |int64_t decode_one_byte(NativeStatus*, long decoder) {
       |  auto obj = (DecoderBase*)decoder;
-      |  auto result = obj->decode_one_byte();
-      |#if 0
-      |  if (result == 0) {
-      |    double t = obj->total_usec_/1000000.0;
-      |    double d = obj->total_size_/(1024.0*1024.0);
-      |    if (t >= 0.001) {;
-      |      char logname[512]; sprintf(logname, \"/tmp/decode_%s.log\", obj->tag_);
-      |      FILE* log = fopen(logname, \"a\");
-      |      fprintf(log, \"DEBUG: cpu %.3fms for %.3fMB = %.3fMB/sec\\n\", 1000*t, d, d/t);
-      |      fclose(log);
-      |    }
-      |  }
-      |#endif
-      |  return result;
+      |  return obj->decode_one_byte();
       |}
       |
       |NAMESPACE_HAIL_MODULE_END
